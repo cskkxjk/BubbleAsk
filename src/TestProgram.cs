@@ -1,0 +1,799 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace BubbleAsk
+{
+    /// <summary>无界面自测：编译成控制台 exe，跑完输出 PASS/FAIL 并用退出码汇报。</summary>
+    internal static class TestProgram
+    {
+        private const int EmFormatRange = 0x0439;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left, Top, Right, Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CharRange
+        {
+            public int Min, Max;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FormatRange
+        {
+            public IntPtr Hdc;
+            public IntPtr HdcTarget;
+            public NativeRect Rect;
+            public NativeRect PageRect;
+            public CharRange Range;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref FormatRange lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        private static int _failures;
+
+        [STAThread]
+        private static int Main(string[] args)
+        {
+            // 开发用：单独跑一次截图遮罩，把结果打到标准输出，方便脚本化验证。
+            //   BubbleAsk.Tests.exe --capture
+            if (args != null && args.Length > 0 && string.Equals(args[0], "--capture", StringComparison.OrdinalIgnoreCase))
+            {
+                string shot = ScreenCapture.CaptureInteractive();
+                if (string.IsNullOrEmpty(shot))
+                {
+                    Console.WriteLine("CANCELLED");
+                    return 2;
+                }
+                Console.WriteLine("SAVED " + shot + " " + new FileInfo(shot).Length);
+                return 0;
+            }
+
+            string outDir = args != null && args.Length > 0 ? args[0] : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest");
+            Directory.CreateDirectory(outDir);
+
+            TestJson();
+            TestPrompt();
+            TestHotkeyParse();
+            TestConfigRoundTrip();
+            TestProviders();
+            TestEndpoints();
+            TestPayload(outDir);
+            TestDeltaParsing();
+            TestStreaming();
+            TestStreamingError();
+            TestApiChat();
+            TestOffscreenForm(outDir);
+            TestBubble(outDir);
+            TestIcon();
+
+            Console.WriteLine(_failures == 0 ? "ALL PASS" : _failures + " FAILURE(S)");
+            return _failures == 0 ? 0 : 1;
+        }
+
+        private static void Check(string name, bool condition, string detail)
+        {
+            if (condition)
+            {
+                Console.WriteLine("PASS " + name);
+            }
+            else
+            {
+                _failures++;
+                Console.WriteLine("FAIL " + name + (detail == null ? "" : " :: " + detail));
+            }
+        }
+
+        private static void TestJson()
+        {
+            Dictionary<string, object> data = Json.ParseObject("{\"a\":\"x\",\"b\":true,\"c\":12.5}");
+            Check("json parse string", Json.GetString(data, "a", "") == "x", null);
+            Check("json parse bool", Json.GetBool(data, "b", false), null);
+            Check("json missing fallback", Json.GetString(data, "zzz", "def") == "def", null);
+
+            List<object> items = Json.ParseArray("[{\"type\":\"page\",\"url\":\"https://chat.deepseek.com/\"}]");
+            Check("json array length", items.Count == 1, "got " + items.Count);
+            Dictionary<string, object> first = items.Count > 0 ? items[0] as Dictionary<string, object> : null;
+            Check("json array item", first != null && Json.GetString(first, "type", "") == "page", null);
+        }
+
+        private static void TestPrompt()
+        {
+            Check("prompt default", PromptBuilder.Build("什么是%s", "闭包") == "什么是闭包", null);
+            Check("prompt middle", PromptBuilder.Build("请解释%s的含义", "熵") == "请解释熵的含义", null);
+            Check("prompt prefix only", PromptBuilder.Build("什么是", "熵") == "什么是熵", null);
+            Check("prompt empty", PromptBuilder.Build("什么是%s", "   ") == "", null);
+            Check("prompt null template", PromptBuilder.Build(null, "熵") == "什么是熵", null);
+
+            Check("prompt free", PromptBuilder.BuildFree("这张截图里是什么？") == "这张截图里是什么？", null);
+            Check("prompt free strips placeholder", PromptBuilder.BuildFree("%s 是什么") == "是什么", PromptBuilder.BuildFree("%s 是什么"));
+            Check("prompt free default", PromptBuilder.BuildFree("  ") == "这张截图里是什么？请解释一下。", PromptBuilder.BuildFree("  "));
+
+            string normalized = PromptBuilder.Normalize("  第一行\n\n  第二行\t  ", 100);
+            Check("normalize whitespace", normalized == "第一行 第二行", "got [" + normalized + "]");
+
+            string longText = new string('a', 1000);
+            string truncated = PromptBuilder.Normalize(longText, 100);
+            Check("normalize truncates", truncated.Length <= 110 && truncated.Length > 50, "len=" + truncated.Length);
+        }
+
+        private static void TestHotkeyParse()
+        {
+            uint modifiers;
+            uint key;
+            bool ok = HotkeyManager.TryParse("Ctrl+Alt+D", out modifiers, out key);
+            Check("hotkey parse ctrl+alt+d", ok && key == (uint)Keys.D && (modifiers & 0x0002) != 0 && (modifiers & 0x0001) != 0,
+                "ok=" + ok + " key=" + key + " mods=" + modifiers);
+
+            ok = HotkeyManager.TryParse("Ctrl+Shift+F1", out modifiers, out key);
+            Check("hotkey parse f1", ok && key == (uint)Keys.F1, "ok=" + ok + " key=" + key);
+
+            ok = HotkeyManager.TryParse("Alt+", out modifiers, out key);
+            Check("hotkey parse invalid", !ok, null);
+        }
+
+        private static void TestConfigRoundTrip()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "bubbleask-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "config.json");
+
+            AppConfig source = new AppConfig();
+            source.PromptTemplate = "请解释%s";
+            source.AutoSend = false;
+            source.MaxChars = 1234;
+            source.HotkeyAsk = "Ctrl+Alt+Q";
+            source.WindowWidth = 520;
+            source.CdpPort = 9444;
+            source.ApiKey = "sk-test";
+            source.Mode = "api";
+            source.ShotPrompt = "看图说话";
+            source.ApiProvider = "ollama";
+            source.ApiSystemPrompt = "你是测试助手";
+            source.BubbleWidth = 500;
+            source.BubbleMaxHeight = 480;
+            source.ShowBubble = false;
+            source.SaveTo(path);
+
+            AppConfig loaded = AppConfig.LoadFrom(path);
+            Check("config template", loaded.PromptTemplate == "请解释%s", loaded.PromptTemplate);
+            Check("config bool", loaded.AutoSend == false, null);
+            Check("config int", loaded.MaxChars == 1234 && loaded.CdpPort == 9444, loaded.MaxChars + "/" + loaded.CdpPort);
+            Check("config string", loaded.HotkeyAsk == "Ctrl+Alt+Q" && loaded.ApiKey == "sk-test", null);
+            Check("config mode", loaded.Mode == "api", loaded.Mode);
+            Check("config shot prompt", loaded.ShotPrompt == "看图说话", loaded.ShotPrompt);
+            Check("config provider", loaded.ApiProvider == "ollama", loaded.ApiProvider);
+            Check("config system prompt", loaded.ApiSystemPrompt == "你是测试助手", loaded.ApiSystemPrompt);
+            Check("config bubble", loaded.BubbleWidth == 500 && loaded.BubbleMaxHeight == 480 && !loaded.ShowBubble,
+                loaded.BubbleWidth + "/" + loaded.BubbleMaxHeight);
+            Check("config defaults kept", loaded.HotkeySummon == "Ctrl+Alt+D", loaded.HotkeySummon);
+
+            try
+            {
+                Directory.Delete(dir, true);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TestProviders()
+        {
+            ApiProvider deepseek = ApiProviders.Resolve("deepseek");
+            Check("provider deepseek", deepseek.BaseUrl == "https://api.deepseek.com" && deepseek.NeedsKey,
+                deepseek.BaseUrl);
+
+            Check("provider unknown -> custom", ApiProviders.Resolve("nope").Id == ApiProviders.CustomId,
+                ApiProviders.Resolve("nope").Id);
+            Check("provider empty -> deepseek", ApiProviders.Resolve("").Id == "deepseek", ApiProviders.Resolve("").Id);
+            Check("provider index", ApiProviders.IndexOf("openai") == 1, ApiProviders.IndexOf("openai").ToString());
+            Check("provider names", ApiProviders.DisplayNames().Length == ApiProviders.All.Count, null);
+        }
+
+        private static void TestEndpoints()
+        {
+            Check("endpoint base", ApiClient.ResolveEndpoint("https://api.deepseek.com") == "https://api.deepseek.com/v1/chat/completions",
+                ApiClient.ResolveEndpoint("https://api.deepseek.com"));
+            Check("endpoint v1", ApiClient.ResolveEndpoint("http://127.0.0.1:11434/v1/") == "http://127.0.0.1:11434/v1/chat/completions",
+                ApiClient.ResolveEndpoint("http://127.0.0.1:11434/v1/"));
+            Check("endpoint full", ApiClient.ResolveEndpoint("https://x.test/v1/chat/completions") == "https://x.test/v1/chat/completions",
+                ApiClient.ResolveEndpoint("https://x.test/v1/chat/completions"));
+            Check("endpoint empty", ApiClient.ResolveEndpoint("") == "https://api.deepseek.com/v1/chat/completions",
+                ApiClient.ResolveEndpoint(""));
+        }
+
+        private static void TestPayload(string outDir)
+        {
+            ApiRequest request = new ApiRequest();
+            request.Model = "stub-model";
+            request.SystemPrompt = "系统提示";
+            request.MaxTokens = 512;
+            request.Messages.Add(new ApiMessage("user", "你好"));
+            Dictionary<string, object> body = Json.ParseObject(ApiClient.BuildBody(request));
+
+            Check("payload model", Json.GetString(body, "model", "") == "stub-model", Json.GetString(body, "model", ""));
+            Check("payload stream", Json.GetBool(body, "stream", false), null);
+            Check("payload max tokens", Json.GetInt(body, "max_tokens", 0) == 512, null);
+            object[] messages = body.ContainsKey("messages") ? body["messages"] as object[] : null;
+            Check("payload messages", messages != null && messages.Length == 2, messages == null ? "null" : messages.Length.ToString());
+            Dictionary<string, object> system = messages != null && messages.Length > 0
+                ? messages[0] as Dictionary<string, object>
+                : null;
+            Check("payload system role", system != null && Json.GetString(system, "role", "") == "system", null);
+
+            string imagePath = Path.Combine(outDir, "payload.png");
+            using (Bitmap bitmap = new Bitmap(40, 30))
+            {
+                bitmap.Save(imagePath, ImageFormat.Png);
+            }
+            string dataUrl = ApiClient.EncodeImage(imagePath, 20);
+            Check("image data url", dataUrl.StartsWith("data:image/png;base64,"), dataUrl.Substring(0, Math.Min(30, dataUrl.Length)));
+
+            byte[] raw = Convert.FromBase64String(dataUrl.Substring("data:image/png;base64,".Length));
+            using (MemoryStream memory = new MemoryStream(raw))
+            {
+                using (Image decoded = Image.FromStream(memory))
+                {
+                    Check("image downscaled", decoded.Width == 20 && decoded.Height == 15,
+                        decoded.Width + "x" + decoded.Height);
+                }
+            }
+
+            ApiRequest withImage = new ApiRequest();
+            withImage.Model = "stub-model";
+            ApiMessage user = new ApiMessage("user", "看图");
+            user.ImagePaths.Add(imagePath);
+            withImage.Messages.Add(user);
+            Dictionary<string, object> imageBody = Json.ParseObject(ApiClient.BuildBody(withImage));
+            object[] imageMessages = imageBody["messages"] as object[];
+            Dictionary<string, object> first = imageMessages != null && imageMessages.Length > 0
+                ? imageMessages[0] as Dictionary<string, object>
+                : null;
+            object[] parts = first != null && first.ContainsKey("content") ? first["content"] as object[] : null;
+            Check("payload image parts", parts != null && parts.Length == 2, parts == null ? "null" : parts.Length.ToString());
+            Dictionary<string, object> imagePart = parts != null && parts.Length > 1
+                ? parts[1] as Dictionary<string, object>
+                : null;
+            Check("payload image type", imagePart != null && Json.GetString(imagePart, "type", "") == "image_url", null);
+        }
+
+        private static void TestDeltaParsing()
+        {
+            string content;
+            string reasoning;
+
+            bool ok = ApiClient.TryParseDelta("{\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}", out content, out reasoning);
+            Check("delta content", ok && content == "你好", content);
+
+            ok = ApiClient.TryParseDelta("{\"choices\":[{\"delta\":{\"reasoning_content\":\"先想想\"}}]}", out content, out reasoning);
+            Check("delta reasoning", ok && reasoning == "先想想" && content == "", reasoning);
+
+            ok = ApiClient.TryParseDelta("[DONE]", out content, out reasoning);
+            Check("delta done marker", !ok, null);
+
+            ok = ApiClient.TryParseDelta("{\"choices\":[]}", out content, out reasoning);
+            Check("delta empty choices", !ok, null);
+
+            Check("full content", ApiClient.ExtractFullContent("{\"choices\":[{\"message\":{\"content\":\"整段\"}}]}") == "整段",
+                ApiClient.ExtractFullContent("{\"choices\":[{\"message\":{\"content\":\"整段\"}}]}"));
+
+            string hint = ApiClient.DescribeHttpError(401, "unauthorized");
+            Check("http 401 hint", hint.IndexOf("API Key", StringComparison.Ordinal) >= 0, hint);
+            string hint404 = ApiClient.DescribeHttpError(404, "no model");
+            Check("http 404 hint", hint404.IndexOf("模型", StringComparison.Ordinal) >= 0, hint404);
+        }
+
+        private static void TestStreaming()
+        {
+            string sse =
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{\"content\":\"，世界\"}}]}\n\n" +
+                "data: [DONE]\n\n";
+
+            using (StubServer server = new StubServer(200, "text/event-stream", sse))
+            {
+                ApiRequest request = new ApiRequest();
+                request.BaseUrl = "http://127.0.0.1:" + server.Port;
+                request.ApiKey = "sk-stub";
+                request.Model = "stub-model";
+                request.Messages.Add(new ApiMessage("user", "hi"));
+
+                StringBuilder seen = new StringBuilder();
+                StringBuilder thoughts = new StringBuilder();
+                string full = ApiClient.StreamAsync(request,
+                    delegate(string delta) { seen.Append(delta); },
+                    delegate(string delta) { thoughts.Append(delta); },
+                    CancellationToken.None).GetAwaiter().GetResult();
+
+                Check("stream full text", full == "你好，世界", full);
+                Check("stream deltas", seen.ToString() == full, seen.ToString());
+                Check("stream reasoning", thoughts.ToString() == "想", thoughts.ToString());
+                Check("stream auth header", server.LastHeaders.IndexOf("Bearer sk-stub", StringComparison.Ordinal) >= 0,
+                    server.LastHeaders);
+                Check("stream body model", server.LastRequestBody.IndexOf("\"stream\":true", StringComparison.Ordinal) >= 0,
+                    server.LastRequestBody);
+            }
+        }
+
+        private static void TestStreamingError()
+        {
+            using (StubServer server = new StubServer(401, "application/json", "{\"error\":\"bad key\"}"))
+            {
+                ApiRequest request = new ApiRequest();
+                request.BaseUrl = "http://127.0.0.1:" + server.Port;
+                request.ApiKey = "sk-bad";
+                request.Model = "stub-model";
+                request.Messages.Add(new ApiMessage("user", "hi"));
+
+                bool threw = false;
+                int status = 0;
+                try
+                {
+                    ApiClient.StreamAsync(request, null, null, CancellationToken.None).GetAwaiter().GetResult();
+                }
+                catch (ApiException error)
+                {
+                    threw = true;
+                    status = error.Status;
+                }
+                catch (Exception)
+                {
+                }
+                Check("stream 401 throws", threw, null);
+                Check("stream 401 status", status == 401, status.ToString());
+            }
+        }
+
+        /// <summary>端到端：ApiChat → 气泡 → 本地桩服务 → SSE 解析 → 回到界面线程。</summary>
+        private static void TestApiChat()
+        {
+            string sse =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"闭包是\"}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{\"content\":\"函数加环境。\"}}]}\n\n" +
+                "data: [DONE]\n\n";
+
+            using (StubServer server = new StubServer(200, "text/event-stream", sse))
+            {
+                AppConfig config = new AppConfig();
+                config.Mode = "api";
+                config.ApiBaseUrl = "http://127.0.0.1:" + server.Port;
+                config.ApiKey = "sk-stub";
+                config.ApiModel = "stub-model";
+                config.ShowBubble = true;
+
+                using (ApiChat chat = new ApiChat(config))
+                {
+                    chat.Ask("什么是闭包", null);
+                    bool got = WaitUntil(delegate
+                    {
+                        return chat.Bubble != null && chat.Bubble.BodyText.IndexOf("闭包是函数加环境。", StringComparison.Ordinal) >= 0;
+                    }, 8000);
+                    Check("api chat streams into bubble", got,
+                        chat.Bubble == null ? "no bubble" : chat.Bubble.BodyText);
+                    Check("api chat finished", chat.Bubble != null && !chat.Bubble.IsStreaming, null);
+
+                    chat.Bubble.AskFollowUp("再举一个例子");
+                    bool second = WaitUntil(delegate
+                    {
+                        return chat.Bubble.BodyText.IndexOf("再举一个例子", StringComparison.Ordinal) >= 0
+                               && CountOccurrences(chat.Bubble.BodyText, "闭包是函数加环境。") >= 2;
+                    }, 8000);
+                    Check("api chat follow up", second,
+                        chat.Bubble == null ? "no bubble" : chat.Bubble.BodyText);
+                }
+            }
+
+            AppConfig noKey = new AppConfig();
+            noKey.Mode = "api";
+            noKey.ApiKey = "";
+            using (ApiChat chat = new ApiChat(noKey))
+            {
+                chat.Ask("没有 key 的时候", null);
+                Check("api chat requires key", chat.Bubble != null
+                                              && chat.Bubble.BodyText.IndexOf("API Key", StringComparison.Ordinal) >= 0,
+                    chat.Bubble == null ? "no bubble" : chat.Bubble.BodyText);
+            }
+        }
+
+        private static bool WaitUntil(Func<bool> condition, int timeoutMs)
+        {
+            int waited = 0;
+            while (waited < timeoutMs)
+            {
+                Application.DoEvents();
+                if (condition())
+                {
+                    return true;
+                }
+                Thread.Sleep(30);
+                waited += 30;
+            }
+            return condition();
+        }
+
+        private static int CountOccurrences(string text, string needle)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(needle))
+            {
+                return 0;
+            }
+            int count = 0;
+            int index = 0;
+            while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+            {
+                count++;
+                index += needle.Length;
+            }
+            return count;
+        }
+
+        private static void TestOffscreenForm(string outDir)
+        {
+            try
+            {
+                using (SettingsForm form = new SettingsForm(new AppConfig()))
+                {
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-3000, -3000);
+                    form.Show();
+                    Application.DoEvents();
+
+                    Check("settings has pages", form.PageCount == 4, form.PageCount.ToString());
+
+                    int rendered = 0;
+                    for (int i = 0; i < form.PageCount; i++)
+                    {
+                        form.ShowPage(i);
+                        Application.DoEvents();
+                        string pagePath = Path.Combine(outDir, "settings-" + i + ".png");
+                        RenderForm(form, pagePath);
+                        if (new FileInfo(pagePath).Length > 2000)
+                        {
+                            rendered++;
+                        }
+                    }
+                    Check("settings pages render", rendered == form.PageCount, rendered + "/" + form.PageCount);
+
+                    string first = Path.Combine(outDir, "settings-0.png");
+                    form.ShowPage(0);
+                    Application.DoEvents();
+                    RenderForm(form, Path.Combine(outDir, "settings.png"));
+                    Check("settings form renders", new FileInfo(first).Length > 2000, first);
+                    form.Close();
+                }
+            }
+            catch (Exception error)
+            {
+                Check("settings form renders", false, error.Message);
+            }
+        }
+
+        /// <summary>
+        /// 离屏出图。无边框窗口里的 RichTextBox 不响应 DrawToBitmap，
+        /// 正文改用 EM_FORMATRANGE 单独画上去，否则自测截图里永远是空白。
+        /// </summary>
+        private static void RenderForm(Form form, string path)
+        {
+            using (Bitmap bitmap = new Bitmap(form.Width, form.Height))
+            {
+                form.DrawToBitmap(bitmap, new Rectangle(0, 0, form.Width, form.Height));
+                using (Graphics graphics = Graphics.FromImage(bitmap))
+                {
+                    PaintRichText(form, form, graphics);
+                }
+                bitmap.Save(path, ImageFormat.Png);
+            }
+        }
+
+        private static void PaintRichText(Control root, Form form, Graphics target)
+        {
+            for (int i = 0; i < root.Controls.Count; i++)
+            {
+                Control child = root.Controls[i];
+                RichTextBox rich = child as RichTextBox;
+                if (rich != null && rich.Visible && rich.Width > 0 && rich.Height > 0)
+                {
+                    Point formOrigin = form.PointToScreen(Point.Empty);
+                    Point richOrigin = rich.PointToScreen(Point.Empty);
+                    Point local = new Point(richOrigin.X - formOrigin.X, richOrigin.Y - formOrigin.Y);
+
+                    using (Bitmap layer = new Bitmap(rich.Width, rich.Height))
+                    {
+                        using (Graphics layerGraphics = Graphics.FromImage(layer))
+                        {
+                            layerGraphics.Clear(Color.White);
+                            int twipsPerPixel = 1440 / Math.Max(96, (int)layerGraphics.DpiX);
+                            IntPtr hdc = layerGraphics.GetHdc();
+                            FormatRange range = new FormatRange();
+                            range.Hdc = hdc;
+                            range.HdcTarget = hdc;
+                            range.Rect = new NativeRect
+                            {
+                                Left = 0,
+                                Top = 0,
+                                Right = rich.Width * twipsPerPixel,
+                                Bottom = rich.Height * twipsPerPixel
+                            };
+                            range.PageRect = range.Rect;
+                            range.Range = new CharRange { Min = 0, Max = -1 };
+                            SendMessage(rich.Handle, EmFormatRange, new IntPtr(1), ref range);
+                            SendMessage(rich.Handle, EmFormatRange, IntPtr.Zero, IntPtr.Zero);
+                            layerGraphics.ReleaseHdc(hdc);
+                        }
+                        target.DrawImageUnscaled(layer, local);
+                    }
+                }
+                if (child.Controls.Count > 0)
+                {
+                    PaintRichText(child, form, target);
+                }
+            }
+        }
+
+        private static void TestBubble(string outDir)
+        {
+            try
+            {
+                AppConfig config = new AppConfig();
+
+                // 第一段：内容变长时气泡跟着长高，但不超过上限。
+                using (AnswerBubble longBubble = new AnswerBubble(config))
+                {
+                    longBubble.StartPosition = FormStartPosition.Manual;
+                    longBubble.Location = new Point(-3000, -3000);
+                    longBubble.ShowForAsk();
+                    Application.DoEvents();
+                    longBubble.BeginTurn("长内容");
+                    int before = longBubble.Height;
+                    for (int i = 0; i < 30; i++)
+                    {
+                        longBubble.AppendAnswer("第 " + (i + 1) + " 行补充说明：闭包让变量活得比函数调用更久。\n");
+                    }
+                    longBubble.EndTurn();
+                    Application.DoEvents();
+                    Check("bubble grows", longBubble.Height > before, before + " -> " + longBubble.Height);
+                    Check("bubble capped", longBubble.Height <= config.BubbleMaxHeight, longBubble.Height.ToString());
+                    longBubble.Close();
+                }
+
+                // 第二段：短内容 + 报错，出一张能看全的图。
+                using (AnswerBubble bubble = new AnswerBubble(config))
+                {
+                    bubble.StartPosition = FormStartPosition.Manual;
+                    bubble.Location = new Point(-3000, -3000);
+                    bubble.SetTitle("DeepSeek · deepseek-chat");
+                    bubble.ShowForAsk();
+                    Application.DoEvents();
+
+                    bubble.BeginTurn("什么是闭包");
+                    bubble.AppendReasoning("先想一下");
+                    Check("bubble streaming", bubble.IsStreaming, null);
+                    bubble.AppendAnswer("闭包是函数");
+                    bubble.AppendAnswer("加上它捕获的环境。");
+                    bubble.EndTurn();
+                    Application.DoEvents();
+
+                    Check("bubble not streaming", !bubble.IsStreaming, null);
+                    Check("bubble text", bubble.BodyText.IndexOf("闭包是函数", StringComparison.Ordinal) >= 0,
+                        bubble.BodyText.Length.ToString());
+
+                    bubble.FailTurn("测试错误提示");
+                    Check("bubble error shown", bubble.BodyText.IndexOf("测试错误提示", StringComparison.Ordinal) >= 0, null);
+
+                    string path = Path.Combine(outDir, "bubble.png");
+                    RenderForm(bubble, path);
+                    Check("bubble renders", new FileInfo(path).Length > 2000, path);
+                    bubble.Close();
+                }
+            }
+            catch (Exception error)
+            {
+                Console.WriteLine(error.ToString());
+                Check("bubble renders", false, error.Message);
+            }
+        }
+
+        private static void TestIcon()
+        {
+            try
+            {
+                using (Icon icon = IconFactory.Create(32))
+                {
+                    Check("icon created", icon.Width == 32, "w=" + icon.Width);
+                }
+            }
+            catch (Exception error)
+            {
+                Check("icon created", false, error.Message);
+            }
+        }
+    }
+
+    /// <summary>自测用的最小 HTTP 服务：收一次请求，回一段固定的响应。</summary>
+    internal class StubServer : IDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly Thread _thread;
+        private readonly int _status;
+        private readonly string _contentType;
+        private readonly string _body;
+        private volatile bool _stopping;
+        private volatile string _lastRequestBody = "";
+        private volatile string _lastHeaders = "";
+
+        public StubServer(int status, string contentType, string body)
+        {
+            _status = status;
+            _contentType = contentType;
+            _body = body;
+            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _listener.Start();
+            Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            _thread = new Thread(Run);
+            _thread.IsBackground = true;
+            _thread.Start();
+        }
+
+        public int Port { get; private set; }
+
+        public string LastRequestBody
+        {
+            get { return _lastRequestBody; }
+        }
+
+        public string LastHeaders
+        {
+            get { return _lastHeaders; }
+        }
+
+        public void Dispose()
+        {
+            _stopping = true;
+            try
+            {
+                _listener.Stop();
+            }
+            catch
+            {
+            }
+        }
+
+        private void Run()
+        {
+            while (!_stopping)
+            {
+                TcpClient client = null;
+                try
+                {
+                    client = _listener.AcceptTcpClient();
+                }
+                catch
+                {
+                    return;
+                }
+                try
+                {
+                    Handle(client);
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    try
+                    {
+                        client.Close();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
+        private void Handle(TcpClient client)
+        {
+            using (NetworkStream stream = client.GetStream())
+            {
+                MemoryStream received = new MemoryStream();
+                byte[] buffer = new byte[8192];
+                int headerEnd = -1;
+                while (headerEnd < 0)
+                {
+                    int read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0)
+                    {
+                        return;
+                    }
+                    received.Write(buffer, 0, read);
+                    headerEnd = FindHeaderEnd(received.ToArray());
+                }
+
+                byte[] all = received.ToArray();
+                string head = Encoding.ASCII.GetString(all, 0, headerEnd);
+                _lastHeaders = head;
+
+                if (head.IndexOf("100-continue", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    byte[] cont = Encoding.ASCII.GetBytes("HTTP/1.1 100 Continue\r\n\r\n");
+                    stream.Write(cont, 0, cont.Length);
+                    stream.Flush();
+                }
+
+                int length = ParseContentLength(head);
+                int bodyStart = headerEnd + 4;
+                while (all.Length - bodyStart < length)
+                {
+                    int read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+                    received.Write(buffer, 0, read);
+                    all = received.ToArray();
+                }
+                int available = all.Length - bodyStart;
+                _lastRequestBody = length > 0 && available > 0
+                    ? Encoding.UTF8.GetString(all, bodyStart, Math.Min(length, available))
+                    : "";
+
+                byte[] payload = Encoding.UTF8.GetBytes(_body);
+                string statusText = _status == 200 ? "OK" : "Error";
+                string responseHead = "HTTP/1.1 " + _status + " " + statusText + "\r\n" +
+                                      "Content-Type: " + _contentType + "\r\n" +
+                                      "Content-Length: " + payload.Length + "\r\n" +
+                                      "Connection: close\r\n\r\n";
+                byte[] headBytes = Encoding.ASCII.GetBytes(responseHead);
+                stream.Write(headBytes, 0, headBytes.Length);
+                stream.Write(payload, 0, payload.Length);
+                stream.Flush();
+            }
+        }
+
+        private static int FindHeaderEnd(byte[] data)
+        {
+            for (int i = 0; i + 3 < data.Length; i++)
+            {
+                if (data[i] == 13 && data[i + 1] == 10 && data[i + 2] == 13 && data[i + 3] == 10)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private static int ParseContentLength(string head)
+        {
+            string[] lines = head.Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    int value;
+                    if (int.TryParse(line.Substring("Content-Length:".Length).Trim(), out value))
+                    {
+                        return value;
+                    }
+                }
+            }
+            return 0;
+        }
+    }
+}

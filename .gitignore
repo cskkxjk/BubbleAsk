@@ -1,0 +1,19 @@
+# 编译产物
+dist/
+*.exe
+*.pdb
+*.rsp
+
+# 临时/实验文件
+.tmp-*/
+*.tmp
+*.log
+
+# IDE
+.vs/
+*.user
+*.suo
+.idea/
+
+# Node（如果以后加脚本）
+node_modules/
