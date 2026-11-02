@@ -10,7 +10,11 @@ using System.Windows.Forms;
 
 namespace BubbleAsk
 {
-    /// <summary>管理一个独立的 Edge 应用窗口：启动、定位、置顶、找句柄。</summary>
+    /// <summary>
+    /// 管理一个独立的浏览器应用窗口（Edge / Chrome / Brave / Vivaldi / Opera / Chromium）：
+    /// 启动、定位、置顶、找句柄。这些都走 Chromium 通用的 --app / --user-data-dir / --remote-debugging-port，
+    /// 所以同一套逻辑对它们都成立，区别只在 exe 名字和 profile 目录。
+    /// </summary>
     public class EdgeHost
     {
         private const int SwRestore = 9;
@@ -23,32 +27,44 @@ namespace BubbleAsk
 
         private readonly AppConfig _config;
         private IntPtr _hwnd = IntPtr.Zero;
+        private BrowserInfo _browser;
 
         public EdgeHost(AppConfig config)
         {
             _config = config;
         }
 
+        /// <summary>这次实际使用的浏览器（解析结果带缓存，找不到时为 null）。</summary>
+        public BrowserInfo Browser
+        {
+            get { return ResolveBrowser(); }
+        }
+
+        /// <summary>兼容旧调用：返回自动检测/配置解析出的浏览器 exe 路径。</summary>
         public static string FindEdgePath(string configured)
         {
-            if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
+            BrowserInfo info = BrowserLocator.Resolve(configured);
+            return info == null ? null : info.ExePath;
+        }
+
+        private BrowserInfo ResolveBrowser()
+        {
+            if (_browser != null && File.Exists(_browser.ExePath))
             {
-                return configured;
+                return _browser;
             }
-            string[] candidates = new string[]
+            _browser = BrowserLocator.Resolve(_config.BrowserPath);
+            return _browser;
+        }
+
+        /// <summary>这个浏览器专属的 profile 目录（换浏览器不会互相污染登录态）。</summary>
+        public string EffectiveProfileDir
+        {
+            get
             {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Microsoft\Edge\Application\msedge.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Microsoft\Edge\Application\msedge.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\Edge\Application\msedge.exe")
-            };
-            for (int i = 0; i < candidates.Length; i++)
-            {
-                if (File.Exists(candidates[i]))
-                {
-                    return candidates[i];
-                }
+                BrowserInfo info = ResolveBrowser();
+                return _config.EffectiveProfileDirFor(info == null ? "edge" : info.Id);
             }
-            return null;
         }
 
         public bool IsRunning
@@ -61,51 +77,61 @@ namespace BubbleAsk
             get { return FindWindowHandle(); }
         }
 
-        /// <summary>没有窗口就启动一个；已有则直接返回。</summary>
+        /// <summary>没有窗口就启动一个；已有则直接返回。失败会抛异常。</summary>
         public void EnsureStarted()
         {
             if (FindWindowHandle() != IntPtr.Zero)
             {
                 return;
             }
-            string edge = FindEdgePath(_config.EdgePath);
-            if (string.IsNullOrEmpty(edge))
+            BrowserInfo browser = ResolveBrowser();
+            if (browser == null)
             {
-                throw new InvalidOperationException("找不到 Microsoft Edge，请在设置里指定 msedge.exe 路径。");
+                throw new InvalidOperationException(
+                    "没有找到可用的浏览器。请安装 Edge / Chrome（或其它 Chromium 内核浏览器），" +
+                    "或者在设置里手动指定浏览器 exe 路径。");
             }
-            string profile = _config.EffectiveProfileDir;
+
+            string profile = EffectiveProfileDir;
             Directory.CreateDirectory(profile);
 
             Point position = ComputePosition();
             // --disable-sync / --disable-extensions：应用窗口是"只用来跑 DeepSeek 的独立 profile"，
             // 不能被账号同步拉进来的第三方扩展（比如各种搜索小助手）注入，否则会干扰页面注入。
-            string arguments = string.Format(
-                "--app=\"{0}\" --user-data-dir=\"{1}\" --remote-debugging-port={2} --remote-allow-origins=* " +
-                "--no-first-run --no-default-browser-check --disable-features=msEdgeFirstRunExperience " +
-                "--disable-sync --disable-extensions --disable-component-extensions-with-background-pages " +
-                "--window-size={3},{4} --window-position={5},{6}",
-                _config.ChatUrl,
-                profile,
-                _config.CdpPort,
-                _config.WindowWidth,
-                _config.WindowHeight,
-                position.X,
-                position.Y);
+            StringBuilder arguments = new StringBuilder();
+            arguments.Append("--app=\"" + _config.ChatUrl + "\"");
+            arguments.Append(" --user-data-dir=\"" + profile + "\"");
+            arguments.Append(" --remote-debugging-port=" + _config.CdpPort);
+            arguments.Append(" --remote-allow-origins=*");
+            arguments.Append(" --no-first-run --no-default-browser-check");
+            arguments.Append(" --disable-sync --disable-extensions");
+            arguments.Append(" --disable-component-extensions-with-background-pages");
+            arguments.Append(" --window-size=" + _config.WindowWidth + "," + _config.WindowHeight);
+            arguments.Append(" --window-position=" + position.X + "," + position.Y);
+            if (string.Equals(browser.Id, "edge", StringComparison.OrdinalIgnoreCase))
+            {
+                // Edge 专有的首次运行引导，别的浏览器不认识这个 feature 名，别传。
+                arguments.Append(" --disable-features=msEdgeFirstRunExperience");
+            }
 
-            ProcessStartInfo info = new ProcessStartInfo(edge, arguments);
+            ProcessStartInfo info = new ProcessStartInfo(browser.ExePath, arguments.ToString());
             info.UseShellExecute = false;
             Process.Start(info);
-            Log.Info("已启动 Edge 应用窗口: " + arguments);
+            Log.Info("已启动 " + browser.DisplayName + " 应用窗口 (" + browser.ExePath + "): " + arguments);
 
-            // 等窗口出现，最多 15 秒。
+            // 等窗口出现，最多 15 秒。等不到就明确报错，不要让它一路飘到"找不到调试端口"那种误导性提示。
             for (int i = 0; i < 60; i++)
             {
                 System.Threading.Thread.Sleep(250);
                 if (FindWindowHandle() != IntPtr.Zero)
                 {
-                    break;
+                    Log.Info("浏览器窗口已就绪");
+                    return;
                 }
             }
+            throw new TimeoutException(
+                browser.DisplayName + " 窗口在 15 秒内没有出现。可能是 profile 被占用、" +
+                "浏览器正在更新，或者被安全软件拦住了。");
         }
 
         public void ShowAndFocus()
@@ -136,7 +162,11 @@ namespace BubbleAsk
         /// <summary>窗口在不在（可见才算）。</summary>
         public bool IsVisible
         {
-            get { return FindWindowHandle() != IntPtr.Zero; }
+            get
+            {
+                IntPtr handle = FindWindowHandle();
+                return handle != IntPtr.Zero && IsWindowVisible(handle);
+            }
         }
 
         /// <summary>窗口是不是当前前台窗口——用来做“再按一次收起”。</summary>
@@ -149,7 +179,7 @@ namespace BubbleAsk
             }
         }
 
-        /// <summary>关掉这个应用窗口（Edge 进程可能继续驻留，下次提问会重新挂上来）。</summary>
+        /// <summary>关掉这个应用窗口（浏览器进程可能继续驻留，下次提问会重新挂上来）。</summary>
         public bool CloseWindow()
         {
             IntPtr handle = FindWindowHandle();
@@ -160,19 +190,6 @@ namespace BubbleAsk
             PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
             _hwnd = IntPtr.Zero;
             return true;
-        }
-
-        public void MoveNearCursor()
-        {
-            IntPtr handle = FindWindowHandle();
-            if (handle == IntPtr.Zero)
-            {
-                return;
-            }
-            Point position = ComputePosition();
-            SetWindowPos(handle, _config.TopMost ? HwndTopmost : IntPtr.Zero,
-                position.X, position.Y, _config.WindowWidth, _config.WindowHeight,
-                SwpNoActivate | 0x0004 /* SWP_NOZORDER when not topmost */);
         }
 
         public void ApplyTopMost()
@@ -186,7 +203,7 @@ namespace BubbleAsk
                 SwpNoMove | SwpNoSize | SwpNoActivate);
         }
 
-        /// <summary>结束这个 profile 对应的 Edge 进程树。</summary>
+        /// <summary>结束这个 profile 对应的浏览器进程。</summary>
         public void Stop()
         {
             List<int> pids = FindProfilePids();
@@ -194,10 +211,15 @@ namespace BubbleAsk
             {
                 try
                 {
-                    Process.GetProcessById(pid).Kill();
+                    using (Process process = Process.GetProcessById(pid))
+                    {
+                        process.Kill();
+                    }
+                    Log.Info("已结束浏览器进程 " + pid);
                 }
-                catch
+                catch (Exception error)
                 {
+                    Log.Warn("结束浏览器进程 " + pid + " 失败: " + error.Message);
                 }
             }
             _hwnd = IntPtr.Zero;
@@ -258,7 +280,9 @@ namespace BubbleAsk
                 }
                 StringBuilder cls = new StringBuilder(256);
                 GetClassName(handle, cls, cls.Capacity);
-                if (cls.ToString() != "Chrome_WidgetWin_1")
+                // Chromium 系浏览器的应用窗口都叫 Chrome_WidgetWin_1（少数版本是 _0）。
+                string className = cls.ToString();
+                if (className.IndexOf("Chrome_WidgetWin", StringComparison.OrdinalIgnoreCase) != 0)
                 {
                     return true;
                 }
@@ -278,29 +302,45 @@ namespace BubbleAsk
         private List<int> FindProfilePids()
         {
             List<int> result = new List<int>();
-            string needle = _config.EffectiveProfileDir;
+            string needle = EffectiveProfileDir;
+            BrowserInfo browser = ResolveBrowser();
+            string exeName = browser == null ? "msedge.exe" : browser.ExeName;
+            if (string.IsNullOrEmpty(exeName))
+            {
+                exeName = "msedge.exe";
+            }
             try
             {
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                    "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name = 'msedge.exe'"))
+                    "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name = '" + exeName + "'"))
                 {
-                    foreach (ManagementBaseObject item in searcher.Get())
+                    using (ManagementObjectCollection items = searcher.Get())
                     {
-                        object commandLine = item["CommandLine"];
-                        if (commandLine == null)
+                        foreach (ManagementBaseObject item in items)
                         {
-                            continue;
-                        }
-                        if (commandLine.ToString().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            result.Add(Convert.ToInt32(item["ProcessId"]));
+                            try
+                            {
+                                object commandLine = item["CommandLine"];
+                                if (commandLine == null)
+                                {
+                                    continue;
+                                }
+                                if (commandLine.ToString().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    result.Add(Convert.ToInt32(item["ProcessId"]));
+                                }
+                            }
+                            finally
+                            {
+                                item.Dispose();
+                            }
                         }
                     }
                 }
             }
             catch (Exception error)
             {
-                Log.Warn("WMI 查询 Edge 进程失败: " + error.Message);
+                Log.Warn("WMI 查询浏览器进程失败: " + error.Message);
             }
             return result;
         }

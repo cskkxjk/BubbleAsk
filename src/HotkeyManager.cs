@@ -125,7 +125,22 @@ namespace BubbleAsk
                     key = (uint)parsed;
                 }
             }
-            return key != 0;
+            if (key == 0)
+            {
+                return false;
+            }
+            // 不带修饰键的普通按键会被 RegisterHotKey 全局抢走——选了 "A" 之后，
+            // 在任何程序里打 a 都会触发提问。这种坑必须挡在注册之前，只放行 F1-F24。
+            if (modifiers == 0 && !IsFunctionKey(key))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private static bool IsFunctionKey(uint key)
+        {
+            return key >= (uint)Keys.F1 && key <= (uint)Keys.F24;
         }
 
         public void Dispose()

@@ -19,6 +19,10 @@ namespace BubbleAsk
         private readonly Icon _icon;
         private SettingsForm _settingsForm;
         private bool _busy;
+        private DateTime _busySince;
+
+        /// <summary>一次操作最多占用这么久；超时强制解除，避免热键永久失效。</summary>
+        private const int BusyTimeoutSeconds = 90;
 
         public TrayContext(AppConfig config)
         {
@@ -35,6 +39,7 @@ namespace BubbleAsk
             _tray.ContextMenuStrip = BuildMenu();
 
             RebindHotkeys();
+            LogBrowser();
             _tray.ShowBalloonTip(2500, "Bubble Ask 已启动",
                 _config.HotkeyAsk + " 抓词提问；" + _config.HotkeyShot + " 截图提问；" + _config.HotkeySummon + " 唤起/收起。",
                 ToolTipIcon.Info);
@@ -93,14 +98,28 @@ namespace BubbleAsk
             }
         }
 
+        private void LogBrowser()
+        {
+            try
+            {
+                BrowserInfo browser = _driver.Edge.Browser;
+                if (browser == null)
+                {
+                    Log.Warn("没有检测到可用的浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），网页版会启动失败");
+                    Balloon("找不到浏览器", "没有检测到 Edge / Chrome 等 Chromium 内核浏览器，请在设置里指定浏览器路径。");
+                    return;
+                }
+                Log.Info("使用的浏览器: " + browser.DisplayName + " " + browser.Version + " (" + browser.ExePath
+                         + ")，profile: " + _driver.Edge.EffectiveProfileDir);
+            }
+            catch (Exception error)
+            {
+                Log.Warn("检测浏览器失败: " + error.Message);
+            }
+        }
+
         private void OnHotkey(string name)
         {
-            // 截图遮罩是模态的，这期间再按热键会叠一层，直接忽略。
-            if (_busy)
-            {
-                Log.Info("上一个操作还没结束，忽略热键: " + name);
-                return;
-            }
             Log.Info("热键触发: " + name);
             if (name == "summon")
             {
@@ -116,35 +135,76 @@ namespace BubbleAsk
             }
         }
 
+        /// <summary>
+        /// 抢占用。托盘菜单项也走这里，否则提问进行中再点菜单会并发进同一套 CDP 连接。
+        /// 另外带一个看门狗：万一某次操作真的卡死（网络/浏览器没响应），
+        /// 超过 BusyTimeoutSeconds 就强制解除，别让三个热键一起哑掉。
+        /// </summary>
+        private bool TryBeginOperation(string what)
+        {
+            if (_busy)
+            {
+                double elapsed = (DateTime.UtcNow - _busySince).TotalSeconds;
+                if (elapsed < BusyTimeoutSeconds)
+                {
+                    Log.Info("上一个操作还没结束（" + (int)elapsed + " 秒），忽略: " + what);
+                    return false;
+                }
+                Log.Warn("上一个操作卡了 " + (int)elapsed + " 秒，强制解除占用后继续: " + what);
+            }
+            _busy = true;
+            _busySince = DateTime.UtcNow;
+            return true;
+        }
+
+        private void EndOperation()
+        {
+            _busy = false;
+        }
+
         private async void OpenChat()
         {
-            if (IsApiMode())
+            if (!TryBeginOperation("唤起/收起窗口"))
             {
-                bool closed = _api.ToggleBubble();
-                if (closed)
-                {
-                    Log.Info("气泡已收起");
-                }
                 return;
             }
             try
             {
-                bool closed = await _driver.ToggleAsync();
-                if (closed)
+                if (IsApiMode())
                 {
-                    Log.Info("网页版窗口已收起");
+                    bool closed = _api.ToggleBubble();
+                    if (closed)
+                    {
+                        Log.Info("气泡已收起");
+                    }
+                    return;
+                }
+                try
+                {
+                    bool closed = await _driver.ToggleAsync();
+                    if (closed)
+                    {
+                        Log.Info("网页版窗口已收起");
+                    }
+                }
+                catch (Exception error)
+                {
+                    Log.Error("打开窗口异常", error);
+                    Balloon("打开失败", error.Message);
                 }
             }
-            catch (Exception error)
+            finally
             {
-                Log.Error("打开窗口异常", error);
-                Balloon("打开失败", error.Message);
+                EndOperation();
             }
         }
 
         private async void AskSelection()
         {
-            _busy = true;
+            if (!TryBeginOperation("抓词提问"))
+            {
+                return;
+            }
             try
             {
                 string selected;
@@ -180,7 +240,8 @@ namespace BubbleAsk
                     bool ok = await _driver.AskAsync(prompt);
                     if (!ok)
                     {
-                        Balloon("发送失败", "窗口已打开，但没有自动发送；日志里有原因。");
+                        Balloon("没能自动发送",
+                            "窗口已打开：问题可能已填进输入框（也可能没有），请看一眼并手动按回车；详细原因在日志里。");
                     }
                 }
                 catch (Exception error)
@@ -191,13 +252,16 @@ namespace BubbleAsk
             }
             finally
             {
-                _busy = false;
+                EndOperation();
             }
         }
 
         private async void AskScreenshot()
         {
-            _busy = true;
+            if (!TryBeginOperation("截图提问"))
+            {
+                return;
+            }
             try
             {
                 string path;
@@ -233,7 +297,8 @@ namespace BubbleAsk
                     bool ok = await _driver.AskWithImageAsync(path, prompt);
                     if (!ok)
                     {
-                        Balloon("截图发送失败", "窗口已打开，但图文没有发出去；日志里有原因。");
+                        Balloon("截图没能自动发出",
+                            "窗口已打开：图片可能已贴上（也可能没有），请看一眼并手动按回车；详细原因在日志里。");
                     }
                 }
                 catch (Exception error)
@@ -248,7 +313,7 @@ namespace BubbleAsk
             }
             finally
             {
-                _busy = false;
+                EndOperation();
             }
         }
 
@@ -278,14 +343,18 @@ namespace BubbleAsk
                 _settingsForm.Activate();
                 return;
             }
-            _settingsForm = new SettingsForm(_config);
-            DialogResult result = _settingsForm.ShowDialog();
-            if (result == DialogResult.OK)
+            using (SettingsForm form = new SettingsForm(_config))
             {
-                _config.Save();
-                RebindHotkeys();
-                _driver.Edge.ApplyTopMost();
-                Balloon("设置已保存", "新的热键和配置已经生效。");
+                _settingsForm = form;
+                DialogResult result = form.ShowDialog();
+                if (result == DialogResult.OK)
+                {
+                    _config.Save();
+                    RebindHotkeys();
+                    _driver.Edge.ApplyTopMost();
+                    // 窗口尺寸/调试端口/浏览器 这些要等下次拉起浏览器才生效，别一律说"已生效"。
+                    Balloon("设置已保存", "热键立即生效；窗口尺寸、调试端口、浏览器改动会在下次打开网页窗口时生效。");
+                }
             }
             _settingsForm = null;
         }

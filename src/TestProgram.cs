@@ -70,6 +70,7 @@ namespace BubbleAsk
             TestJson();
             TestPrompt();
             TestHotkeyParse();
+            TestBrowsers();
             TestConfigRoundTrip();
             TestProviders();
             TestEndpoints();
@@ -77,6 +78,10 @@ namespace BubbleAsk
             TestDeltaParsing();
             TestStreaming();
             TestStreamingError();
+            TestStreamErrorFrame();
+            TestTruncationNotice();
+            TestEmptyAnswer();
+            TestTimeoutRecovery();
             TestApiChat();
             TestOffscreenForm(outDir);
             TestBubble(outDir);
@@ -145,6 +150,73 @@ namespace BubbleAsk
 
             ok = HotkeyManager.TryParse("Alt+", out modifiers, out key);
             Check("hotkey parse invalid", !ok, null);
+
+            // 不带修饰键的普通按键会全局抢键（打 a 就触发提问），必须拒绝；F1-F24 放行。
+            ok = HotkeyManager.TryParse("A", out modifiers, out key);
+            Check("hotkey bare letter rejected", !ok, "ok=" + ok);
+            ok = HotkeyManager.TryParse("5", out modifiers, out key);
+            Check("hotkey bare digit rejected", !ok, "ok=" + ok);
+            ok = HotkeyManager.TryParse("F5", out modifiers, out key);
+            Check("hotkey bare f5 allowed", ok && key == (uint)Keys.F5, "ok=" + ok + " key=" + key);
+        }
+
+        private static void TestBrowsers()
+        {
+            List<BrowserInfo> all = BrowserLocator.DetectAll();
+            Check("browser detect returns list", all != null, null);
+
+            bool valid = true;
+            string detail = "";
+            List<string> names = new List<string>();
+            for (int i = 0; i < all.Count; i++)
+            {
+                BrowserInfo item = all[i];
+                names.Add(item.DisplayName);
+                if (string.IsNullOrEmpty(item.ExePath) || !File.Exists(item.ExePath)
+                    || string.IsNullOrEmpty(item.ExeName) || string.IsNullOrEmpty(item.DisplayName)
+                    || string.IsNullOrEmpty(item.Id))
+                {
+                    valid = false;
+                    detail = detail + item.Id + " ";
+                }
+            }
+            Check("browser entries valid", valid, detail);
+            Console.WriteLine("检测到浏览器 " + all.Count + " 个: " +
+                              (names.Count == 0 ? "（无）" : string.Join("、", names.ToArray())));
+
+            // 反查：exe 名字要能映射回稳定 id（设置页和 profile 目录都靠它）。
+            Check("browser describe msedge", BrowserLocator.Describe(@"C:\x\msedge.exe").Id == "edge",
+                BrowserLocator.Describe(@"C:\x\msedge.exe").Id);
+            Check("browser describe chrome", BrowserLocator.Describe(@"C:\x\chrome.exe").Id == "chrome",
+                BrowserLocator.Describe(@"C:\x\chrome.exe").Id);
+            Check("browser describe brave", BrowserLocator.Describe(@"C:\x\brave.exe").Id == "brave",
+                BrowserLocator.Describe(@"C:\x\brave.exe").Id);
+            Check("browser describe unknown", BrowserLocator.Describe(@"C:\x\weird.exe").Id == "custom",
+                BrowserLocator.Describe(@"C:\x\weird.exe").Id);
+
+            if (all.Count > 0)
+            {
+                string explicitPath = BrowserLocator.Resolve(all[0].ExePath).ExePath;
+                Check("browser resolve explicit", string.Equals(explicitPath, all[0].ExePath, StringComparison.OrdinalIgnoreCase),
+                    explicitPath);
+                string autoPath = BrowserLocator.Resolve("").ExePath;
+                Check("browser resolve auto", string.Equals(autoPath, all[0].ExePath, StringComparison.OrdinalIgnoreCase),
+                    autoPath);
+            }
+            else
+            {
+                Check("browser resolve missing", BrowserLocator.Resolve("") == null, null);
+            }
+
+            // 不同浏览器必须用不同 profile 目录，否则登录态/内核数据会互相踩。
+            AppConfig config = new AppConfig();
+            string edgeDir = config.EffectiveProfileDirFor("edge");
+            string chromeDir = config.EffectiveProfileDirFor("chrome");
+            Check("profile edge keeps legacy dir", edgeDir.EndsWith("edge-profile", StringComparison.OrdinalIgnoreCase), edgeDir);
+            Check("profile per browser", !string.Equals(edgeDir, chromeDir, StringComparison.OrdinalIgnoreCase), chromeDir);
+            config.ProfileDir = @"D:\custom-profile";
+            Check("profile override wins",
+                config.EffectiveProfileDirFor("chrome") == @"D:\custom-profile", config.EffectiveProfileDirFor("chrome"));
         }
 
         private static void TestConfigRoundTrip()
@@ -168,6 +240,7 @@ namespace BubbleAsk
             source.BubbleWidth = 500;
             source.BubbleMaxHeight = 480;
             source.ShowBubble = false;
+            source.BrowserPath = @"C:\Browsers\chrome.exe";
             source.SaveTo(path);
 
             AppConfig loaded = AppConfig.LoadFrom(path);
@@ -182,6 +255,13 @@ namespace BubbleAsk
             Check("config bubble", loaded.BubbleWidth == 500 && loaded.BubbleMaxHeight == 480 && !loaded.ShowBubble,
                 loaded.BubbleWidth + "/" + loaded.BubbleMaxHeight);
             Check("config defaults kept", loaded.HotkeySummon == "Ctrl+Alt+D", loaded.HotkeySummon);
+            Check("config browser path", loaded.BrowserPath == @"C:\Browsers\chrome.exe", loaded.BrowserPath);
+
+            // 老配置里只有 EdgePath，读的时候要能迁移到 BrowserPath。
+            string legacy = Path.Combine(dir, "legacy.json");
+            File.WriteAllText(legacy, "{\"EdgePath\":\"C:\\\\Old\\\\msedge.exe\"}");
+            Check("config legacy edge path migrates", AppConfig.LoadFrom(legacy).BrowserPath == @"C:\Old\msedge.exe",
+                AppConfig.LoadFrom(legacy).BrowserPath);
 
             try
             {
@@ -358,6 +438,152 @@ namespace BubbleAsk
                 Check("stream 401 throws", threw, null);
                 Check("stream 401 status", status == 401, status.ToString());
             }
+        }
+
+        /// <summary>流中途的服务端错误帧（上下文超长、内容过滤）必须让用户看到原因，而不是静默半截。</summary>
+        private static void TestStreamErrorFrame()
+        {
+            string sse =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"前半段\"}}]}\n\n" +
+                "data: {\"error\":{\"message\":\"context length exceeded\",\"code\":400}}\n\n" +
+                "data: [DONE]\n\n";
+
+            using (StubServer server = new StubServer(200, "text/event-stream", sse))
+            {
+                ApiRequest request = new ApiRequest();
+                request.BaseUrl = "http://127.0.0.1:" + server.Port;
+                request.ApiKey = "sk-stub";
+                request.Model = "stub-model";
+                request.Messages.Add(new ApiMessage("user", "hi"));
+
+                bool threw = false;
+                string message = "";
+                try
+                {
+                    ApiClient.StreamAsync(request, null, null, CancellationToken.None).GetAwaiter().GetResult();
+                }
+                catch (ApiException error)
+                {
+                    threw = true;
+                    message = error.Message;
+                }
+                Check("stream error frame throws", threw, message);
+                Check("stream error frame message", message.IndexOf("服务端返回错误", StringComparison.Ordinal) >= 0,
+                    message);
+                Check("stream error frame detail", message.IndexOf("context length exceeded", StringComparison.Ordinal) >= 0,
+                    message);
+            }
+        }
+
+        /// <summary>撞到 max_tokens 上限时内容照常返回，但必须给一条非致命提示。</summary>
+        private static void TestTruncationNotice()
+        {
+            string sse =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"被截断的回答\"}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n" +
+                "data: [DONE]\n\n";
+
+            using (StubServer server = new StubServer(200, "text/event-stream", sse))
+            {
+                ApiRequest request = new ApiRequest();
+                request.BaseUrl = "http://127.0.0.1:" + server.Port;
+                request.ApiKey = "sk-stub";
+                request.Model = "stub-model";
+                request.Messages.Add(new ApiMessage("user", "hi"));
+
+                List<string> notices = new List<string>();
+                string full = ApiClient.StreamAsync(request,
+                    null, null,
+                    delegate(string notice) { notices.Add(notice); },
+                    CancellationToken.None).GetAwaiter().GetResult();
+
+                Check("truncation keeps content", full == "被截断的回答", full);
+                Check("truncation notice fired", notices.Count == 1, "count=" + notices.Count);
+                Check("truncation notice text",
+                    notices.Count == 1 && notices[0] == "（回答被 max_tokens 截断）",
+                    notices.Count == 1 ? notices[0] : "");
+            }
+        }
+
+        /// <summary>HTTP 200 但一个正文都没有：不能当成功，要明确报错。</summary>
+        private static void TestEmptyAnswer()
+        {
+            using (StubServer server = new StubServer(200, "text/event-stream", "data: [DONE]\n\n"))
+            {
+                ApiRequest request = new ApiRequest();
+                request.BaseUrl = "http://127.0.0.1:" + server.Port;
+                request.ApiKey = "sk-stub";
+                request.Model = "stub-model";
+                request.Messages.Add(new ApiMessage("user", "hi"));
+
+                bool threw = false;
+                string message = "";
+                try
+                {
+                    ApiClient.StreamAsync(request, null, null, CancellationToken.None).GetAwaiter().GetResult();
+                }
+                catch (ApiException error)
+                {
+                    threw = true;
+                    message = error.Message;
+                }
+                Check("empty answer throws", threw, message);
+                Check("empty answer message", message.IndexOf("空内容", StringComparison.Ordinal) >= 0, message);
+            }
+        }
+
+        /// <summary>
+        /// 超时不能和"用户主动取消"混为一谈：必须显示超时提示，并且气泡要退出流式态。
+        /// 用 dt 把超时压到 1 秒，桩服务收下请求、发完响应头之后就不说话了。
+        /// </summary>
+        private static void TestTimeoutRecovery()
+        {
+            try
+            {
+                ApiClient.ConfigureTimeout(TimeSpan.FromSeconds(1));
+                Check("timeout text seconds", ApiClient.TimeoutText.IndexOf("秒", StringComparison.Ordinal) >= 0,
+                    ApiClient.TimeoutText);
+
+                using (StubServer server = new StubServer(200, "text/event-stream", "data: [DONE]\n\n", 6000))
+                {
+                    AppConfig config = new AppConfig();
+                    config.Mode = "api";
+                    config.ApiBaseUrl = "http://127.0.0.1:" + server.Port;
+                    config.ApiKey = "sk-stub";
+                    config.ApiModel = "stub-model";
+                    config.ShowBubble = true;
+
+                    using (ApiChat chat = new ApiChat(config))
+                    {
+                        // 注意：气泡会回显提问内容，所以提问里不能出现断言要匹配的文案。
+                        chat.Ask("网络很慢的情况", null);
+                        bool shown = WaitUntil(delegate
+                        {
+                            return chat.Bubble != null
+                                   && chat.Bubble.BodyText.IndexOf("⚠", StringComparison.Ordinal) >= 0
+                                   && chat.Bubble.BodyText.IndexOf("读取响应超时", StringComparison.Ordinal) >= 0;
+                        }, 20000);
+                        Check("stalled body reports failure", shown,
+                            chat.Bubble == null
+                                ? "no bubble"
+                                : "len=" + chat.Bubble.BodyText.Length
+                                  + " streaming=" + chat.Bubble.IsStreaming
+                                  + " body=[" + chat.Bubble.BodyText + "]");
+                        // 关键：超时之后必须不再是流式态，否则输入框和发送键会一直灰着。
+                        bool recovered = WaitUntil(delegate
+                        {
+                            return chat.Bubble != null && !chat.Bubble.IsStreaming;
+                        }, 5000);
+                        Check("stalled body leaves streaming state", recovered,
+                            chat.Bubble == null ? "no bubble" : "streaming=" + chat.Bubble.IsStreaming);
+                    }
+                }
+            }
+            finally
+            {
+                ApiClient.ConfigureTimeout(ApiClient.DefaultTimeout);
+            }
+            Check("timeout restored", ApiClient.RequestTimeout == ApiClient.DefaultTimeout, ApiClient.TimeoutText);
         }
 
         /// <summary>端到端：ApiChat → 气泡 → 本地桩服务 → SSE 解析 → 回到界面线程。</summary>
@@ -636,12 +862,20 @@ namespace BubbleAsk
         private volatile bool _stopping;
         private volatile string _lastRequestBody = "";
         private volatile string _lastHeaders = "";
+        private readonly int _stallMs;
 
         public StubServer(int status, string contentType, string body)
+            : this(status, contentType, body, 0)
+        {
+        }
+
+        /// <summary>stallMs &gt; 0 时：先回响应头，再干等这么久才写正文，用来制造"超时"。</summary>
+        public StubServer(int status, string contentType, string body, int stallMs)
         {
             _status = status;
             _contentType = contentType;
             _body = body;
+            _stallMs = stallMs;
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -761,6 +995,12 @@ namespace BubbleAsk
                                       "Connection: close\r\n\r\n";
                 byte[] headBytes = Encoding.ASCII.GetBytes(responseHead);
                 stream.Write(headBytes, 0, headBytes.Length);
+                stream.Flush();
+                if (_stallMs > 0)
+                {
+                    // 响应头已经发出去了，正文故意拖住——客户端此时只能靠超时脱身。
+                    Thread.Sleep(_stallMs);
+                }
                 stream.Write(payload, 0, payload.Length);
                 stream.Flush();
             }

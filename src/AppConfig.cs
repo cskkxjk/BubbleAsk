@@ -19,7 +19,10 @@ namespace BubbleAsk
         public int WindowWidth = 480;
         public int WindowHeight = 720;
         public int CdpPort = 9333;
-        public string EdgePath = "";
+
+        /// <summary>浏览器 exe 路径。空着就自动检测（Edge → Chrome → 其它 Chromium 内核）。</summary>
+        public string BrowserPath = "";
+
         public string ProfileDir = "";
         public bool TopMost = true;
 
@@ -63,9 +66,26 @@ namespace BubbleAsk
             get { return Path.Combine(DataDir, "edge-profile"); }
         }
 
+        /// <summary>
+        /// 每个浏览器用各自的 profile 目录：不同内核的 profile 布局不通用，混用会打不开。
+        /// Edge 保持老目录名 edge-profile，这样老用户的登录态不用重新登。
+        /// </summary>
+        public string EffectiveProfileDirFor(string browserId)
+        {
+            if (!string.IsNullOrEmpty(ProfileDir))
+            {
+                return ProfileDir;
+            }
+            if (string.IsNullOrEmpty(browserId) || string.Equals(browserId, "edge", StringComparison.OrdinalIgnoreCase))
+            {
+                return DefaultProfileDir;
+            }
+            return Path.Combine(DataDir, "profile-" + browserId);
+        }
+
         public string EffectiveProfileDir
         {
-            get { return string.IsNullOrEmpty(ProfileDir) ? DefaultProfileDir : ProfileDir; }
+            get { return EffectiveProfileDirFor("edge"); }
         }
 
         public static AppConfig Load()
@@ -98,7 +118,12 @@ namespace BubbleAsk
                 config.WindowWidth = Json.GetInt(data, "WindowWidth", config.WindowWidth);
                 config.WindowHeight = Json.GetInt(data, "WindowHeight", config.WindowHeight);
                 config.CdpPort = Json.GetInt(data, "CdpPort", config.CdpPort);
-                config.EdgePath = Json.GetString(data, "EdgePath", config.EdgePath);
+                // 老配置里这个字段叫 EdgePath，读一次做兼容；新写入一律用 BrowserPath。
+                config.BrowserPath = Json.GetString(data, "BrowserPath", config.BrowserPath);
+                if (string.IsNullOrEmpty(config.BrowserPath))
+                {
+                    config.BrowserPath = Json.GetString(data, "EdgePath", "");
+                }
                 config.ProfileDir = Json.GetString(data, "ProfileDir", config.ProfileDir);
                 config.TopMost = Json.GetBool(data, "TopMost", config.TopMost);
                 config.Mode = Json.GetString(data, "Mode", config.Mode);
@@ -142,7 +167,7 @@ namespace BubbleAsk
                 data["WindowWidth"] = WindowWidth;
                 data["WindowHeight"] = WindowHeight;
                 data["CdpPort"] = CdpPort;
-                data["EdgePath"] = EdgePath;
+                data["BrowserPath"] = BrowserPath;
                 data["ProfileDir"] = ProfileDir;
                 data["TopMost"] = TopMost;
                 data["Mode"] = Mode;

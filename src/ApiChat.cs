@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -151,11 +152,18 @@ namespace BubbleAsk
             CancellationToken token = cts.Token;
             Task.Run(new Func<Task>(async delegate
             {
+                // 已经流到气泡里的正文；失败时要用它补历史，所以在这一层攒。
+                StringBuilder partial = new StringBuilder();
                 try
                 {
                     string full = await ApiClient.StreamAsync(request,
-                        delegate(string delta) { PostAppend(delta, false, generation); },
+                        delegate(string delta)
+                        {
+                            partial.Append(delta);
+                            PostAppend(delta, false, generation);
+                        },
                         delegate(string reasoning) { PostAppend(reasoning, true, generation); },
+                        delegate(string notice) { PostNotice(notice, generation); },
                         token);
 
                     bubble.Post(delegate
@@ -164,24 +172,40 @@ namespace BubbleAsk
                         {
                             return;
                         }
-                        _history.Add(new ApiMessage("assistant", full));
+                        if (full.Length > 0)
+                        {
+                            _history.Add(new ApiMessage("assistant", full));
+                        }
                         bubble.EndTurn();
                         Log.Info("API 回答完成，长度 " + full.Length);
                     });
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException error)
                 {
-                    Log.Info("API 请求已取消");
+                    if (token.IsCancellationRequested)
+                    {
+                        // 用户主动取消：保持静默，但气泡必须退出流式态。
+                        Log.Info("API 请求已取消");
+                        PostCancel(bubble, generation, partial.ToString());
+                    }
+                    else
+                    {
+                        // 没人取消却抛了 OperationCanceledException —— 这是 HttpClient.Timeout 的超时。
+                        Log.Error("API 请求超时: " + error.Message);
+                        PostFail(bubble, generation,
+                            "请求超时（" + ApiClient.TimeoutText + "未响应）：网络太慢或中转没回话，稍后重试，或检查接口地址。",
+                            partial.ToString());
+                    }
                 }
                 catch (ApiException error)
                 {
                     Log.Error("API 请求失败: " + error.Message);
-                    PostFail(bubble, generation, error.Message);
+                    PostFail(bubble, generation, error.Message, partial.ToString());
                 }
                 catch (Exception error)
                 {
                     Log.Error("API 请求异常", error);
-                    PostFail(bubble, generation, "请求出错：" + error.Message);
+                    PostFail(bubble, generation, "请求出错：" + error.Message, partial.ToString());
                 }
             }));
         }
@@ -210,15 +234,74 @@ namespace BubbleAsk
             });
         }
 
-        private void PostFail(AnswerBubble bubble, int generation, string message)
+        /// <summary>灰字提示（例如被 max_tokens 截断）：用气泡已有的 Note，不动正文。</summary>
+        private void PostNotice(string notice, int generation)
+        {
+            if (string.IsNullOrEmpty(notice))
+            {
+                return;
+            }
+            AnswerBubble bubble = _bubble;
+            if (bubble == null)
+            {
+                return;
+            }
+            bubble.Post(delegate
+            {
+                if (!IsCurrent(generation) || bubble.IsDisposed)
+                {
+                    return;
+                }
+                // 提示单独占一行，别跟刚流出来的正文黏在一起。
+                bubble.AppendAnswer("\n");
+                bubble.Note(notice);
+            });
+        }
+
+        /// <summary>用户主动取消：不报错，但确保气泡不再停在流式态。</summary>
+        private void PostCancel(AnswerBubble bubble, int generation, string partial)
         {
             bubble.Post(delegate
             {
-                if (IsCurrent(generation))
+                if (!IsCurrent(generation) || bubble.IsDisposed)
                 {
-                    bubble.FailTurn(message);
+                    return;
+                }
+                RememberPartial(partial);
+                if (bubble.IsStreaming)
+                {
+                    bubble.EndTurn();
                 }
             });
+        }
+
+        private void PostFail(AnswerBubble bubble, int generation, string message, string partial)
+        {
+            bubble.Post(delegate
+            {
+                if (!IsCurrent(generation))
+                {
+                    return;
+                }
+                // 半截答案已经显示在气泡里了，历史里也得有：否则下一轮追问变成两条连续 user，
+                // 模型看不到用户实际读到的那段。
+                RememberPartial(partial);
+                if (!string.IsNullOrEmpty(partial))
+                {
+                    // ⚠ 另起一行，别和半截正文黏在一起。
+                    bubble.AppendAnswer("\n");
+                }
+                bubble.FailTurn(message);
+            });
+        }
+
+        /// <summary>把已经显示出来的半截回答补进历史（只补非空的）。</summary>
+        private void RememberPartial(string partial)
+        {
+            if (!string.IsNullOrEmpty(partial))
+            {
+                _history.Add(new ApiMessage("assistant", partial));
+            }
         }
 
         private bool IsCurrent(int generation)

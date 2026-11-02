@@ -23,6 +23,8 @@ namespace BubbleAsk
         private Icon _windowIcon;
         private Panel _navPanel;
         private int _selectedPage = -1;
+        private bool _syncingBrowser;
+        private readonly Dictionary<NumericUpDown, int> _numbers = new Dictionary<NumericUpDown, int>();
 
         private TextBox _template;
         private TextBox _shotPrompt;
@@ -36,6 +38,7 @@ namespace BubbleAsk
         private NumericUpDown _width;
         private NumericUpDown _height;
         private CheckBox _topMost;
+        private ComboBox _browser;
         private TextBox _edgePath;
         private TextBox _profileDir;
         private NumericUpDown _cdpPort;
@@ -399,11 +402,17 @@ namespace BubbleAsk
             _showBubble.ForeColor = Ink;
             AddRow(table, "气泡位置", _showBubble, null);
 
+            _browser = new ComboBox();
+            _browser.DropDownStyle = ComboBoxStyle.DropDownList;
+            _browser.SelectedIndexChanged += delegate { BrowserSelected(); };
+            AddRow(table, "浏览器", _browser, "网页版用哪个浏览器打开 DeepSeek；这些都支持，装哪个用哪个");
+
             _edgePath = new TextBox();
-            AddRow(table, "Edge 路径", _edgePath, "留空自动查找 msedge.exe");
+            _edgePath.TextChanged += delegate { SyncBrowserCombo(); };
+            AddRow(table, "浏览器路径", _edgePath, "留空自动检测（Edge → Chrome → Brave → Vivaldi → Opera）");
 
             _profileDir = new TextBox();
-            AddRow(table, "登录数据目录", _profileDir, "留空则为 %AppData%\\BubbleAsk\\edge-profile");
+            AddRow(table, "登录数据目录", _profileDir, "留空则按浏览器分开存，各浏览器登录态互不影响");
 
             _cdpPort = new NumericUpDown();
             _cdpPort.Minimum = 1024;
@@ -556,17 +565,24 @@ namespace BubbleAsk
             _autoSend.Checked = _config.AutoSend;
             _autoStart.Checked = AutoStart.IsEnabled();
             _maxChars.Value = Clamp(_config.MaxChars, _maxChars);
+            SetNumber(_maxChars, _config.MaxChars);
 
             _chatUrl.Text = _config.ChatUrl;
             _width.Value = Clamp(_config.WindowWidth, _width);
+            SetNumber(_width, _config.WindowWidth);
             _height.Value = Clamp(_config.WindowHeight, _height);
+            SetNumber(_height, _config.WindowHeight);
             _topMost.Checked = _config.TopMost;
             _bubbleWidth.Value = Clamp(_config.BubbleWidth, _bubbleWidth);
+            SetNumber(_bubbleWidth, _config.BubbleWidth);
             _bubbleHeight.Value = Clamp(_config.BubbleMaxHeight, _bubbleHeight);
+            SetNumber(_bubbleHeight, _config.BubbleMaxHeight);
             _showBubble.Checked = _config.ShowBubble;
-            _edgePath.Text = _config.EdgePath;
+            _edgePath.Text = _config.BrowserPath;
+            RefreshBrowsers();
             _profileDir.Text = _config.ProfileDir;
             _cdpPort.Value = Clamp(_config.CdpPort, _cdpPort);
+            SetNumber(_cdpPort, _config.CdpPort);
 
             _hotkeySummon.Text = _config.HotkeySummon;
             _hotkeyAsk.Text = _config.HotkeyAsk;
@@ -577,6 +593,7 @@ namespace BubbleAsk
             _apiKey.Text = _config.ApiKey;
             _apiModel.Text = _config.ApiModel;
             _apiMaxTokens.Value = Clamp(_config.ApiMaxTokens, _apiMaxTokens);
+            SetNumber(_apiMaxTokens, _config.ApiMaxTokens);
             _systemPrompt.Text = _config.ApiSystemPrompt;
         }
 
@@ -609,6 +626,27 @@ namespace BubbleAsk
             return value;
         }
 
+        /// <summary>载入数值：超出控件范围的会被夹住显示，但原始值记下来。</summary>
+        private void SetNumber(NumericUpDown box, int value)
+        {
+            box.Value = Clamp(value, box);
+            _numbers[box] = value;
+        }
+
+        /// <summary>
+        /// 读回数值：用户没动过的控件直接返回配置里的原值。
+        /// 否则手工写进 config.json 的 12000 会被控件上限 8000 悄悄改掉。
+        /// </summary>
+        private int ReadNumber(NumericUpDown box)
+        {
+            int original;
+            if (_numbers.TryGetValue(box, out original) && box.Value == Clamp(original, box))
+            {
+                return original;
+            }
+            return (int)box.Value;
+        }
+
         private void SaveAndClose()
         {
             uint modifiers;
@@ -631,6 +669,14 @@ namespace BubbleAsk
                 ShowPage(2);
                 return;
             }
+            if (SameHotkey(_hotkeySummon.Text, _hotkeyAsk.Text)
+                || SameHotkey(_hotkeySummon.Text, _hotkeyShot.Text)
+                || SameHotkey(_hotkeyAsk.Text, _hotkeyShot.Text))
+            {
+                _status.Text = "三个热键不能重复，请换一个";
+                ShowPage(2);
+                return;
+            }
 
             _config.PromptTemplate = _template.Text.Trim();
             if (_config.PromptTemplate.Length == 0)
@@ -638,7 +684,7 @@ namespace BubbleAsk
                 _config.PromptTemplate = PromptBuilder.DefaultTemplate;
             }
             _config.AutoSend = _autoSend.Checked;
-            _config.MaxChars = (int)_maxChars.Value;
+            _config.MaxChars = ReadNumber(_maxChars);
             _config.Mode = ComboId(_mode, "web");
             _config.ShotPrompt = _shotPrompt.Text.Trim();
             if (_config.ShotPrompt.Length == 0)
@@ -649,15 +695,15 @@ namespace BubbleAsk
             AutoStart.SetEnabled(_config.StartWithWindows);
 
             _config.ChatUrl = _chatUrl.Text.Trim();
-            _config.WindowWidth = (int)_width.Value;
-            _config.WindowHeight = (int)_height.Value;
+            _config.WindowWidth = ReadNumber(_width);
+            _config.WindowHeight = ReadNumber(_height);
             _config.TopMost = _topMost.Checked;
-            _config.BubbleWidth = (int)_bubbleWidth.Value;
-            _config.BubbleMaxHeight = (int)_bubbleHeight.Value;
+            _config.BubbleWidth = ReadNumber(_bubbleWidth);
+            _config.BubbleMaxHeight = ReadNumber(_bubbleHeight);
             _config.ShowBubble = _showBubble.Checked;
-            _config.EdgePath = _edgePath.Text.Trim();
+            _config.BrowserPath = _edgePath.Text.Trim();
             _config.ProfileDir = _profileDir.Text.Trim();
-            _config.CdpPort = (int)_cdpPort.Value;
+            _config.CdpPort = ReadNumber(_cdpPort);
 
             _config.HotkeySummon = _hotkeySummon.Text.Trim();
             _config.HotkeyAsk = _hotkeyAsk.Text.Trim();
@@ -671,7 +717,7 @@ namespace BubbleAsk
             _config.ApiBaseUrl = _apiBase.Text.Trim();
             _config.ApiKey = _apiKey.Text.Trim();
             _config.ApiModel = _apiModel.Text.Trim();
-            _config.ApiMaxTokens = (int)_apiMaxTokens.Value;
+            _config.ApiMaxTokens = ReadNumber(_apiMaxTokens);
             _config.ApiSystemPrompt = _systemPrompt.Text.Trim();
 
             DialogResult = DialogResult.OK;
@@ -682,6 +728,161 @@ namespace BubbleAsk
         {
             ComboItem item = box.SelectedItem as ComboItem;
             return item == null ? fallback : item.Id;
+        }
+
+        /// <summary>两个热键写法不同但其实是同一个组合（大小写/空格/顺序不同也算）。</summary>
+        private static bool SameHotkey(string first, string second)
+        {
+            string a = NormalizeHotkey(first);
+            string b = NormalizeHotkey(second);
+            return a.Length > 0 && a == b;
+        }
+
+        private static string NormalizeHotkey(string spec)
+        {
+            if (string.IsNullOrEmpty(spec))
+            {
+                return "";
+            }
+            string[] parts = spec.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
+            List<string> mods = new List<string>();
+            string key = "";
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string part = parts[i].Trim().ToUpperInvariant();
+                if (part.Length == 0)
+                {
+                    continue;
+                }
+                if (i == parts.Length - 1)
+                {
+                    key = part;
+                }
+                else if (part == "CONTROL")
+                {
+                    mods.Add("CTRL");
+                }
+                else if (part == "WINDOWS")
+                {
+                    mods.Add("WIN");
+                }
+                else
+                {
+                    mods.Add(part);
+                }
+            }
+            mods.Sort(StringComparer.Ordinal);
+            return string.Join("+", mods.ToArray()) + "+" + key;
+        }
+
+        /// <summary>
+        /// 把检测到的浏览器填进下拉框：第一项是"自动检测"（路径留空），
+        /// 之后每个检测到的浏览器各一项，最后一项是"自定义"。
+        /// </summary>
+        private void RefreshBrowsers()
+        {
+            _syncingBrowser = true;
+            try
+            {
+                _browser.Items.Clear();
+                _browser.Items.Add(new BrowserItem(BrowserLocator.AutoId, BrowserLocator.AutoName, ""));
+                List<BrowserInfo> found = BrowserLocator.DetectAll();
+                for (int i = 0; i < found.Count; i++)
+                {
+                    _browser.Items.Add(new BrowserItem(found[i].Id, found[i].ToString(), found[i].ExePath));
+                }
+                _browser.Items.Add(new BrowserItem("custom", "自定义路径…（在下面填）", ""));
+                if (found.Count == 0)
+                {
+                    _browser.Items.Add(new BrowserItem("missing", "没有检测到浏览器", ""));
+                }
+            }
+            catch (Exception error)
+            {
+                Log.Warn("检测浏览器失败: " + error.Message);
+            }
+            finally
+            {
+                _syncingBrowser = false;
+            }
+            SyncBrowserCombo();
+        }
+
+        /// <summary>路径文本变了，反选下拉框：空=自动检测，命中=那个浏览器，否则=自定义。</summary>
+        private void SyncBrowserCombo()
+        {
+            if (_syncingBrowser)
+            {
+                return;
+            }
+            _syncingBrowser = true;
+            try
+            {
+                string path = _edgePath.Text.Trim();
+                int target = -1;
+                if (path.Length == 0)
+                {
+                    target = 0;
+                }
+                else
+                {
+                    for (int i = 0; i < _browser.Items.Count; i++)
+                    {
+                        BrowserItem item = _browser.Items[i] as BrowserItem;
+                        if (item != null && item.Path.Length > 0 &&
+                            string.Equals(item.Path, path, StringComparison.OrdinalIgnoreCase))
+                        {
+                            target = i;
+                            break;
+                        }
+                    }
+                    if (target < 0)
+                    {
+                        target = _browser.Items.Count - 1;
+                    }
+                }
+                if (target >= 0 && target < _browser.Items.Count && _browser.SelectedIndex != target)
+                {
+                    _browser.SelectedIndex = target;
+                }
+            }
+            finally
+            {
+                _syncingBrowser = false;
+            }
+        }
+
+        /// <summary>下拉框选了某项：自动检测就清空路径，具体浏览器就填它的路径。</summary>
+        private void BrowserSelected()
+        {
+            if (_syncingBrowser)
+            {
+                return;
+            }
+            BrowserItem item = _browser.SelectedItem as BrowserItem;
+            if (item == null)
+            {
+                return;
+            }
+            if (item.Id == "custom")
+            {
+                // 自定义：保持用户已经填的内容，把焦点交给路径框。
+                _edgePath.Focus();
+                if (_edgePath.TextLength > 0)
+                {
+                    _edgePath.SelectAll();
+                }
+                return;
+            }
+            _syncingBrowser = true;
+            try
+            {
+                _edgePath.Text = item.Path;
+            }
+            finally
+            {
+                _syncingBrowser = false;
+            }
         }
 
         protected override void OnShown(EventArgs e)
@@ -723,6 +924,26 @@ namespace BubbleAsk
         {
             Id = id;
             Label = label;
+        }
+
+        public override string ToString()
+        {
+            return Label;
+        }
+    }
+
+    /// <summary>浏览器下拉框的选项：自动检测 / 某个检测到的浏览器 / 自定义。</summary>
+    internal class BrowserItem
+    {
+        public readonly string Id;
+        public readonly string Label;
+        public readonly string Path;
+
+        public BrowserItem(string id, string label, string path)
+        {
+            Id = id;
+            Label = label;
+            Path = path ?? "";
         }
 
         public override string ToString()
