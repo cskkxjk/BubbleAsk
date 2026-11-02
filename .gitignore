@@ -9,6 +9,9 @@ dist/
 *.tmp
 *.log
 
+# DSH 本地工作目录（运行时解包产物，非项目内容）
+.dsh/
+
 # IDE
 .vs/
 *.user

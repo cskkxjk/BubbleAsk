@@ -2,173 +2,294 @@
 
 <img src="assets/brand-256.png" width="96" align="right" alt="Bubble Ask">
 
-Windows 桌面上的划词问答助手：**在任何程序里选中文字（或框选一块屏幕），按一个热键，就在鼠标旁弹出一个小窗口，把问题直接问给 DeepSeek。**
+Windows 平台的划词问答工具。在任意程序中选中文本（或框选屏幕区域）并触发全局热键，程序在鼠标位置显示问答窗口，将内容直接提交给 DeepSeek。
 
-两种模式，装好就能在设置里切换：
+支持两种运行模式，安装后可在设置中切换：
 
-| 模式 | 怎么回答 | 适合 |
+| 模式 | 实现方式 | 适用场景 |
 | --- | --- | --- |
-| **网页版**（默认） | 驱动系统里的浏览器（Edge / Chrome / Brave…）打开 chat.deepseek.com，用你的登录态 | 不想花 API 额度；要网页版的能力 |
-| **API** | 直连 OpenAI 兼容接口，回答流式显示在自绘气泡里 | 非浏览器场景；想用别的模型；要追问 |
+| **网页版**（默认） | 驱动本机 Chromium 内核浏览器打开 chat.deepseek.com，复用已有登录状态 | 不希望消耗 API 额度；需要网页版能力 |
+| **API** | 直连 OpenAI 兼容接口，回答以流式方式显示在自绘窗口 | 非浏览器场景；需要更换模型；需要多轮追问 |
 
-## 现在能做什么
+## 项目组成
 
-> **DSH 插件版**：`dsh-plugin/` 是把它搬进 DeepSeek Harness 的插件形态 —— 在会话里选中文字，
-> 把「精简会话轨迹 + 选中文字」注入 DeepSeek 网页版，解释这段文字在当前上下文中的含义。
-> 见 [dsh-plugin/README.md](dsh-plugin/README.md)。
+本仓库包含两个相互独立的交付物。
 
-- 托盘常驻（右下角通知区域，新图标可能被收进「^」里，拖出来固定即可），**双击托盘图标打开设置**，右键菜单里也有设置 / 提问 / 日志 / 退出。
-- 三个全局热键（都能改）：
-  - `Ctrl+Alt+D` 唤起/收起：窗口在前台时再按一次就关掉（微信、QQ 那种手感）；否则拉到前台或启动
-  - `Ctrl+Alt+Q` 抓词提问：模拟 `Ctrl+C` 取当前选区 → 套模板 → 发送
-  - `Ctrl+Alt+A` 截图提问：全屏拖框选区 → 连图带问题一起发
-- **抓词**：备份剪贴板里的内容，取完自动还原，不会弄丢你复制的东西；超长文本中间省略。
-- **截图**：全屏遮罩拖框，松开即截；`Esc`、右键或单击都能取消（Esc 是全局注册的，遮罩没抢到焦点也能关）。
-- **网页版链路**：浏览器 `--app` 无地址栏小窗 + 独立 profile（登录一次长期有效）；走 CDP 注入输入框、派发事件、点发送，不依赖网页 CSP，也不装任何扩展。
-  - 截图走 **文件上传通道**：用 CDP 把 PNG 直接塞进页面的 `input[type=file]`，**不用剪贴板、不要求窗口有焦点**；找不到上传入口才退回剪贴板粘贴。
-- **API 链路**：气泡窗口贴在鼠标旁，回答逐字流式出现；可以继续追问，整段对话都带给模型；支持推理模型（先灰字显示思考，正文到了再切换）。
-- **多 provider**：内置 DeepSeek 官方 / OpenAI / 硅基流动 / 本地 Ollama / 自定义，选预设自动填地址和模型。
-- **开机自启**（可选）：只写当前用户的 `Run` 键，不需要管理员权限。
-- 设置窗口：左侧导航 + 右侧表单，含模板、运行模式、截图提示词、自动发送、字数上限、窗口/气泡尺寸、置顶、热键、浏览器与 profile、调试端口、API 全套参数。
+| | 桌面端 | DSH 插件 |
+| --- | --- | --- |
+| 产物 | `dist\BubbleAsk.exe`（主体实现，C# 5 / WinForms / .NET Framework） | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） |
+| 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 |
+| 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 |
+| 上下文 | 仅模板中的问题文本 | 每次自动附带精简会话轨迹 |
+| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH；仅「自动发送」路径需要浏览器 |
 
-## 运行
+两者互不依赖：仅使用桌面端时无需安装插件；仅使用插件时无需构建可执行文件。插件的 CDP 驱动为独立移植实现（`dsh-plugin/lib/deepseek-web.mjs`），不引用 `dist\` 下的产物。
+
+## 功能
+
+桌面端能力按通用、网页版、API 与设置四部分说明；插件形态见后文安装章节与 [dsh-plugin/README.md](dsh-plugin/README.md)。
+
+### 通用
+
+- 托盘常驻；双击托盘图标打开设置，右键菜单提供设置、提问、日志与退出。图标可能被折叠到通知区域的「^」中，拖出后固定即可。
+- 三个可配置的全局热键：
+  - `Ctrl+Alt+D` 唤起/收起：窗口位于前台时再次触发将其关闭，否则前置或启动。
+  - `Ctrl+Alt+Q` 取词提问：模拟 `Ctrl+C` 获取当前选区，套用模板后发送。
+  - `Ctrl+Alt+A` 截图提问：全屏拖框选区，将截图与问题一并发送。
+- 取词前备份剪贴板内容，取词后还原；超长文本从中部省略。
+- 截图：全屏遮罩拖框，松开即截；`Esc`、右键或单击均可取消（`Esc` 为全局注册，遮罩未获得焦点时同样有效）。
+- 开机自启（可选）：仅写入当前用户的 `Run` 键，无需管理员权限。
+
+### 网页版
+
+- 以 `--app` 模式启动无地址栏窗口，使用独立 profile，登录状态长期有效。
+- 通过 CDP 写入输入框、派发事件并点击发送，不依赖页面 CSP，也无需安装扩展。
+- 截图通过文件上传通道处理：使用 CDP 将 PNG 直接写入页面的 `input[type=file]`，不经过剪贴板，且不要求窗口具有焦点；未找到上传入口时回退为剪贴板粘贴。
+- 浏览器按 Edge → Chrome → Brave → Vivaldi → Opera → Chromium 的顺序自动检测，也可在设置中指定。
+
+### API
+
+- 回答以流式方式逐字显示在鼠标附近的气泡中，支持多轮追问，历史按 `user/assistant` 顺序提交。
+- 支持推理模型：先以灰色文本显示思考内容，正文到达后切换。
+- 内置 DeepSeek 官方、OpenAI、硅基流动、本地 Ollama 与自定义五类服务方预设，选择预设后自动填充地址与模型名。
+
+### 设置
+
+- 设置窗口由左侧导航与右侧表单组成，覆盖模板、运行模式、截图提示词、自动发送、字数上限、窗口与气泡尺寸、置顶、热键、浏览器与 profile、调试端口及 API 参数。
+
+## 构建与运行
+
+构建不依赖 .NET SDK，使用系统自带的 .NET Framework 编译器：
 
 ```powershell
-# 编译（不需要装 .NET SDK，用的是系统自带的 .NET Framework 编译器）
+# 构建
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
-# 编译并跑自测（会生成 dist\selftest\*.png 截图）
+# 构建并运行自测（生成 dist\selftest\*.png 截图）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
 # 启动
 .\dist\BubbleAsk.exe
 ```
 
-第一次启动后：
+首次启动后的配置步骤：
 
-1. 托盘出现蓝色「问」图标。
-2. **网页版**：按 `Ctrl+Alt+D`，会拉起一个浏览器窗口打开 chat.deepseek.com，在里面**登录一次**，之后一直有效。自动检测顺序是 Edge → Chrome → Brave → Vivaldi → Opera → Chromium，装哪个用哪个；也可以在设置里指定。
-3. **API**：托盘菜单 →「设置…」→ API 标签，选服务方、填 Key、确认模型名。
-4. 随便打开一个网页或 Word，选中一段文字，按 `Ctrl+Alt+Q`；或者按 `Ctrl+Alt+A` 框一块屏幕。
+1. 托盘区域出现「问」图标。
+2. **网页版**：按 `Ctrl+Alt+D` 启动浏览器窗口并打开 chat.deepseek.com，在其中完成一次登录，此后长期有效。
+3. **API**：托盘菜单 →「设置…」→ API 页签，选择服务方、填写 Key 并确认模型名。
+4. 在任意程序中选中文本后按 `Ctrl+Alt+Q`，或按 `Ctrl+Alt+A` 框选屏幕区域。
+
+## DSH 插件：安装与验证
+
+插件将划词提问能力引入 DeepSeek Harness：在会话中选中文本并点击「💬 问这段」后，插件将「精简会话轨迹 + 选中文本 + 问题」注入 DeepSeek 网页版。注入内容、与桌面端的差异及限制见 [dsh-plugin/README.md](dsh-plugin/README.md)。
+
+`dsh-plugin/` 为标准 DSH 组合包，`package.json` 同时声明：
+
+- `dsh.bundle.patch`：自带 `cordis.patch.yml`，安装后增加 `bubble-ask` 条目；
+- `dsh.client`：浏览器侧实现，平台为 `web`。
+
+因此安装过程无需修改源码，也无需构建。
+
+### 前置条件
+
+- 已安装 DSH，且其 Web 界面可正常打开（侧栏存在「插件」入口）。
+- 「自动发送」路径额外要求：本机已安装 Chromium 内核浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），并已登录 chat.deepseek.com。仅使用「在侧边栏打开」时无此要求。
+
+### 方式一：界面安装（推荐；桌面版唯一可行方式）
+
+1. 在侧栏选择「插件」。
+2. 点击右上角「添加插件」，或展开箭头菜单选择「安装第三方插件」。两个入口打开同一对话框。
+3. 在输入框中填写安装来源（spec），支持以下形式：
+   - **本地目录（推荐）**：填写本仓库中 `dsh-plugin` 目录的绝对路径，例如 `<仓库路径>\dsh-plugin`。
+   - **压缩包**：执行 `Compress-Archive -Path .\dsh-plugin -DestinationPath .\dsh-plugin.zip`，填写生成的 zip 文件绝对路径。
+   - **包名**：仅在发布至 npm 后可用。当前 `package.json` 标记为 `private: true`，尚未发布，填写包名会失败。
+4. 点击「安装」，等待 pnpm 执行结束。安装完成后按提示重启 DSH。
+5. 按下方「验证」一节确认结果。
+
+### 方式二：命令行安装（非 desktop profile）
+
+```powershell
+dsh plugin --profile <profile 名> add "<仓库路径>\dsh-plugin"
+```
+
+`dsh plugin` 将参数原样转发给 profile 目录中的 pnpm。`desktop` profile 由桌面应用独占，命令行操作会被拒绝：
+
+```text
+error: profile "desktop" is managed exclusively by the Electron application
+```
+
+桌面版应使用方式一。
+
+### 验证
+
+**插件页**：「已安装」列表中应出现「划词提问（Bubble Ask）」。
+
+**服务端自检**，将 `<DSH 端口>` 替换为界面地址栏中的实际端口：
+
+```powershell
+curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
+```
+
+安装成功时返回 `{"ok":true,"cdpReady":true,"browsers":["..."]}`；未安装时该路径返回 404（本机实测）。
+
+**功能验证**：在会话中选中一段回答，选区下方出现「💬 问这段」气泡；点击后选择「在侧边栏打开」，完整提问应已写入输入框。
+
+### 安装排查
+
+- 插件页存在条目但未生效：检查 profile 的 `cordis.patch.yml`，该条目的启用状态记录于此（插件页开关写入该文件）。
+- `health` 返回 `cdpReady:false`：CDP 模块未加载，通常为 `lib/deepseek-web.mjs` 未包含在安装目录中。
+
+### 卸载与更新
+
+- 卸载：插件页 → 对应组合包 → 卸载（需确认）。
+- 更新：第三方插件不提供版本选择器，采用卸载后重新安装的方式；以本地目录安装时，修改代码后重新安装即可生效。
+
+### 使用 agent 安装（prompt 示例）
+
+以下文本可整体提交给 agent，提交前把两处尖括号占位符替换为本机的实际路径：
+
+```text
+将 BubbleAsk 的 DSH 插件安装到本机的 DeepSeek Harness，并验证安装结果。
+
+仓库：<本仓库在本地的工作目录>
+插件目录：<该仓库中 dsh-plugin 目录的绝对路径>
+该目录是标准 DSH 组合包（package.json 中声明了 dsh.bundle.patch 与 dsh.client），无需构建。
+若仓库尚未克隆，先按项目主页给出的仓库地址克隆到本地。
+
+步骤：
+1. 定位 DSH：$env:DSH_HOME（默认 %USERPROFILE%\.dsh）、$env:DSH_PROFILE_DIR，
+   以及 dsh CLI（通常位于 <DSH 安装目录>\resources\runtime\cli\bin\dsh.cmd）。
+2. 首先尝试命令行安装：dsh plugin --profile <profile 名> add "<插件目录绝对路径>"
+   若报错 "profile ... is managed exclusively by the Electron application"，说明是桌面版 profile：
+   不要绕过该限制，也不要通过手改 profile 的 cordis.patch.yml 伪造安装；
+   改为告知我界面操作步骤（侧栏「插件」→「添加插件」→ 填写插件目录绝对路径 → 安装 → 重启 DSH），
+   待我确认后继续验证。
+3. 验证：
+   - curl.exe -s http://127.0.0.1:<DSH 界面端口>/bubble-ask/health 返回 {"ok":true,...}（未安装时 404）；
+   - 插件页「已安装」中出现「划词提问（Bubble Ask）」；
+   - 说明验证方式：会话中选中一段文本，点击「💬 问这段」。
+4. 任一步骤失败：回退所执行的改动（卸载该插件、恢复 package.json 与 cordis.patch.yml），
+   并原样给出报错信息，不要推测原因。
+5. 不要修改仓库源码，不要改动 dist\ 下的桌面端产物，不要修改 DSH 中与本插件无关的配置。
+```
 
 ## 配置
 
-`%AppData%\BubbleAsk\config.json`，也可以在托盘菜单 →「设置…」里改。常用项：
+配置文件位于 `%AppData%\BubbleAsk\config.json`，也可在托盘菜单 →「设置…」中修改。常用项：
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `Mode` | `web` | `web` 网页版 / `api` 直连接口 |
-| `PromptTemplate` | `什么是%s` | `%s` 是选中的文字 |
-| `ShotPrompt` | 这张截图里是什么？请解释一下。 | 截图提问时带的问句，不需要 `%s` |
-| `AutoSend` | `true` | 关掉后只填入不发送（网页版）/ 只贴图不发送 |
-| `MaxChars` | `2000` | 超长内容中间省略 |
+| `PromptTemplate` | `什么是%s` | `%s` 为选中的文本 |
+| `ShotPrompt` | 这张截图里是什么？请解释一下。 | 截图提问时附带的问题，不使用 `%s` |
+| `AutoSend` | `true` | 关闭后仅填入不发送（网页版）/ 仅粘贴截图不发送 |
+| `MaxChars` | `2000` | 超长内容从中部省略 |
 | `HotkeySummon` / `HotkeyAsk` / `HotkeyShot` | Ctrl+Alt+D / Q / A | 格式如 `Ctrl+Shift+F2` |
 | `ChatUrl` | chat.deepseek.com | 网页版打开的地址 |
-| `WindowWidth` / `WindowHeight` | 480×720 | 网页版小窗尺寸 |
+| `WindowWidth` / `WindowHeight` | 480×720 | 网页版窗口尺寸 |
 | `TopMost` | `true` | 网页版窗口置顶 |
-| `BrowserPath` | 空 | 浏览器 exe 路径；留空自动检测（Edge → Chrome → Brave → Vivaldi → Opera） |
-| `ProfileDir` | 空 | 登录数据目录；留空则按浏览器分开（Edge 用 `edge-profile`，其它用 `profile-<名字>`） |
-| `CdpPort` | `9333` | 本机调试端口，冲突就换 |
+| `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera） |
+| `ProfileDir` | 空 | 登录数据目录；留空则按浏览器分别存储（Edge 使用 `edge-profile`，其余使用 `profile-<名称>`） |
+| `CdpPort` | `9333` | 本机调试端口；冲突时可修改 |
 | `ApiProvider` | `deepseek` | `deepseek` / `openai` / `siliconflow` / `ollama` / `custom` |
-| `ApiBaseUrl` | `https://api.deepseek.com` | OpenAI 兼容地址，自动补 `/v1/chat/completions` |
-| `ApiKey` | 空 | 只保存在本机这个文件里 |
+| `ApiBaseUrl` | `https://api.deepseek.com` | OpenAI 兼容地址，自动补全 `/v1/chat/completions` |
+| `ApiKey` | 空 | 仅保存在本机该文件中 |
 | `ApiModel` | `deepseek-chat` | 模型名 |
 | `ApiMaxTokens` | `2048` | 单次回答上限 |
 | `ApiSystemPrompt` | 见默认值 | 每轮对话开头的系统提示词 |
-| `BubbleWidth` / `BubbleMaxHeight` | 460 / 560 | 气泡宽度与最大高度（内容变长会自己长高） |
-| `ShowBubble` | `true` | 气泡贴鼠标出现；不勾选则屏幕居中 |
-| `StartWithWindows` | `false` | 开机自启（写当前用户 Run 键，设置页可勾选） |
+| `BubbleWidth` / `BubbleMaxHeight` | 460 / 560 | 气泡宽度与最大高度，内容增多时自动增高 |
+| `ShowBubble` | `true` | 气泡跟随鼠标出现；取消勾选则屏幕居中 |
+| `StartWithWindows` | `false` | 开机自启（写入当前用户 `Run` 键，设置页可勾选） |
 
-## 原理
+## 实现原理
 
-```
-                      ┌─ 网页版 ─────────────────────────────┐
-热键 → 抓词 / 截图 ───┤                                      │
-                      │ 浏览器 --app（独立 profile，已登录）  │
-                      │   └ CDP：填输入框 → 点发送           │
-                      │      截图：剪贴板放图 → Ctrl+V        │
-                      │      失败退回 ?q= 链接                │
-                      └──────────────────────────────────────┘
-                      ┌─ API ────────────────────────────────┐
-                      │ POST {base}/v1/chat/completions      │
-                      │   stream=true → 逐段 SSE             │
-                      │   └ 自绘气泡：流式显示 + 多轮追问     │
-                      │      截图：转 data URL 一起发         │
-                      └──────────────────────────────────────┘
+```text
+热键 → 取词 / 截图
+  ├─ 网页版
+  │    浏览器 --app（独立 profile，已登录）
+  │    └ CDP：写入输入框 → 点击发送
+  │          截图：setFileInputFiles 写入 file input（无上传入口时回退剪贴板粘贴）
+  │          发送未获确认 → 回退为 ?q= 预填链接（仅填入不发送）
+  └─ API
+       POST {base}/v1/chat/completions，stream=true → 逐段 SSE
+       └ 自绘气泡：流式显示 + 多轮追问
+             截图：转为 data URL 一并提交
 ```
 
-几个刻意的选择：
+主要设计取舍：
 
-- **不内嵌 Chromium**：Electron 的二进制在这台机器上下不下来，直接驱动系统里已有的浏览器更省事，登录态也复用得上。Edge 和 Chrome 等 Chromium 内核浏览器共用同一套 `--app` / CDP 逻辑，所以都能用。
-- **用 CDP 而不是页面脚本**：不受页面 CSP / Trusted Types 影响，不依赖油猴脚本，也不用装扩展。
-- **应用窗口是隔离的**：独立 profile，并且启动时带 `--disable-sync --disable-extensions`。否则浏览器账号会自动同步，把你日常装的扩展（比如各种“搜索小助手”）一起灌进这个窗口，还会在页面上注入脚本干扰输入框注入。
-- **截图不经过剪贴板**：直接 `DOM.setFileInputFiles` 把文件交给页面的 file input，既不需要窗口焦点，也不会覆盖你剪贴板里的东西。
-- **两种模式各走各的**：网页版不吃额度但只能在浏览器里；API 模式跨应用可用、能追问，代价是要有自己的 key。
-- **追问复用同一条对话**：气泡里追加的每句话都按 `user/assistant` 顺序带给模型，不会每次从零开始。
+- **不内嵌 Chromium**：直接驱动本机已有的浏览器，避免分发浏览器运行时，并复用现有登录状态。Edge、Chrome 等 Chromium 内核浏览器共用同一套 `--app` 与 CDP 逻辑，因此均可支持。
+- **使用 CDP 而非页面脚本**：不受页面 CSP 与 Trusted Types 限制，无需注入用户脚本或安装扩展。
+- **应用窗口隔离**：使用独立 profile，并在启动参数中加入 `--disable-sync --disable-extensions`，避免浏览器账号同步日常扩展、或在页面中注入脚本干扰输入框写入。
+- **截图不经过剪贴板**：通过 `DOM.setFileInputFiles` 直接提交文件，既不需要窗口焦点，也不会覆盖剪贴板内容。
+- **两种模式独立实现**：网页版不消耗 API 额度但受限于浏览器；API 模式跨应用可用并支持追问，但需要自有 Key。
+- **追问复用同一会话**：气泡中追加的每条消息按 `user/assistant` 顺序提交，保持上下文连续。
 
-## 排错
+## 故障排查
 
-- 日志：`%AppData%\BubbleAsk\app.log`，托盘菜单可直达。
-- **热键没反应**：多半被别的程序占用，日志里有「热键被占用」，去设置换一个组合。
-- **网页版窗口起来但没自动发**：看日志里的「注入输入框结果」「发送按钮回读」「发送校验结果」。现在**只有回读确认输入框真的被清空才算发送成功**，否则会明确报「没能自动发送」并让你手动回车——不会再出现"说发了其实没发"。`none`/`failed` 表示页面结构变了，会退回 `?q=` 预填（只填不发）。
-- **抓不到选中文字**：目标程序不支持 `Ctrl+C`（某些 PDF 阅读器、部分游戏），改用 `Ctrl+Alt+A` 截图。
-- **截图没发出去**：网页版先看日志里的「打开上传入口」「截图已交进文件输入框」，`none` 表示页面结构变了或该页面不支持上传；这时会退回剪贴板粘贴，需要窗口在前台。
-- **托盘图标找不到**：点通知区域的「^」展开，把图标拖到常显位置；确认进程在跑（任务管理器看 BubbleAsk）。
-- **API 报 401**：key 不对或没权限，见气泡里的红字提示。
-- **API 报 404**：地址或模型名不对；预设之外自己填的地址要确认是不是 OpenAI 兼容。
-- **连不上**：气泡会写 `连不上 http://...`，先确认地址能从这台机器直连（公司网络可能挡）。
-- **端口冲突**：设置里改 `CdpPort`，菜单「重启浏览器会话」。
-- **气泡太长**：拖标题栏挪走，或调小 `BubbleMaxHeight`。
-- **气泡显示「读取响应超时」**：服务器接了请求但一直不发正文。这个看门狗是我们自己加的（.NET Framework 的 `HttpClient.Timeout` 在响应头到达之后就不再生效了），超时后气泡会恢复可用，不会再永久卡在"回答中"。
-- **找不到浏览器 / 换浏览器**：设置 →「窗口与网页」→ 浏览器下拉框。自动检测顺序 Edge → Chrome → Brave → Vivaldi → Opera → Chromium；登录数据按浏览器分开存，换浏览器要各自登录一次。
+- 日志位于 `%AppData%\BubbleAsk\app.log`，可从托盘菜单直接打开。
+- **热键无响应**：通常为其他程序占用，日志中记录「热键被占用」，可在设置中更换组合。
+- **网页版窗口已启动但未自动发送**：检查日志中的「注入输入框结果」「发送按钮回读」「发送校验结果」。仅当回读确认输入框被清空时判定发送成功，否则记录「没能自动发送」并提示手动回车。`none` / `failed` 表示页面结构已变更，此时回退为 `?q=` 预填（仅填入不发送）。
+- **无法获取选中文本**：目标程序不支持 `Ctrl+C`（部分 PDF 阅读器与游戏），改用 `Ctrl+Alt+A` 截图。
+- **截图未发送**：检查日志中的「打开上传入口」「截图已交进文件输入框」。`none` 表示页面结构变更或该页面不支持上传，此时回退为剪贴板粘贴，并要求窗口位于前台。
+- **托盘图标不可见**：展开通知区域的「^」，将图标拖至常显位置；并确认进程正在运行（任务管理器中查看 BubbleAsk）。
+- **API 返回 401**：Key 无效或缺少权限，气泡中以红色文本提示。
+- **API 返回 404**：地址或模型名错误；预设之外自行填写的地址需确认兼容 OpenAI 协议。
+- **无法连接**：气泡显示 `连不上 http://...`，先确认该地址可从本机直连（企业网络可能拦截）。
+- **端口冲突**：在设置中修改 `CdpPort`，并使用菜单「重启浏览器会话」。
+- **气泡过长**：拖动标题栏移动，或调小 `BubbleMaxHeight`。
+- **气泡显示「读取响应超时」**：服务端已接收请求但未发送正文。该超时由本项目实现（.NET Framework 的 `HttpClient.Timeout` 在响应头到达后失效），超时后气泡恢复可用，不会滞留在「回答中」状态。
+- **未检测到浏览器或需更换浏览器**：设置 →「窗口与网页」→ 浏览器下拉框。自动检测顺序为 Edge → Chrome → Brave → Vivaldi → Opera → Chromium；登录数据按浏览器分别存储，更换后需各自登录一次。
 
-## 开发
+## 项目结构
 
-```
+```text
 src/
   Program.cs          入口、单实例、异常兜底、启动清理
   TrayContext.cs      托盘、菜单、热键分发、模式路由
   SettingsForm.cs     设置窗口
-  AppConfig.cs        配置读写（容错缺字段）
+  AppConfig.cs        配置读写（容忍缺失字段）
   HotkeyManager.cs    RegisterHotKey 封装
-  ClipboardCapture.cs 抓词、剪贴板、Ctrl+C/V
+  ClipboardCapture.cs 取词、剪贴板、Ctrl+C/V
   ScreenCapture.cs    全屏遮罩拖框截图、临时文件清理
-  BrowserLocator.cs   检测本机装了哪些 Chromium 内核浏览器
-  EdgeHost.cs         启动/定位/置顶浏览器应用窗口（Edge/Chrome/Brave/…）
-  CdpClient.cs        WebSocket + CDP
-  ChatDriver.cs       网页版：注入、发送、图文、退路
-  ApiClient.cs        API：请求体拼装、SSE 流式、错误翻译
+  BrowserLocator.cs   检测本机已安装的 Chromium 内核浏览器
+  EdgeHost.cs         启动、定位与置顶浏览器窗口（Edge / Chrome / Brave 等）
+  CdpClient.cs        WebSocket 与 CDP
+  ChatDriver.cs       网页版：注入、发送、图文、回退路径
+  ApiClient.cs        API：请求体拼装、SSE 流式解析、错误翻译
   ApiProviders.cs     服务方预设
-  ApiChat.cs          API 会话：气泡生命周期 + 多轮对话
+  ApiChat.cs          API 会话：气泡生命周期与多轮对话
   AnswerBubble.cs     自绘气泡窗口（圆角、流式显示、追问、复制）
   AutoStart.cs        开机自启（当前用户 Run 键）
   PromptBuilder.cs    模板拼装（纯函数）
-  Json.cs / Logger.cs / IconFactory.cs
+  Json.cs / Logger.cs / IconFactory.cs / MenuStyle.cs
   TestProgram.cs      无界面自测（含本地 HTTP 桩服务）
-build.ps1             编译脚本（csc，无需 SDK）
+build.ps1             构建脚本（csc，无需 SDK）
 ```
 
-自测覆盖（`build.ps1 -Test`，全绿才返回 0）：
+## 测试
 
-- JSON 解析、模板拼装（含截图模板）、热键解析（含"无修饰键必须拒绝"）、配置往返（含 `BrowserPath` 与老 `EdgePath` 迁移）
-- 浏览器自动检测：本机识别、exe 名反查 id、显式路径 / 空路径 / 不存在的路径的解析、按浏览器隔离 profile 目录
-- provider 预设解析、接口地址补全、请求体结构（文本 / 图片 data URL）、图片等比缩小
-- SSE 增量解析、推理字段、`[DONE]`、非流式兜底、HTTP 错误翻译、400/403/404/413/422 提示
-- 流中 `error` 帧抛异常、`finish_reason=length` 的截断提示、空回答报错、非流式兜底被截断报错
-- 对着本地桩服务跑真实流式请求（含 401 分支）
-- **端到端**：`ApiChat` → 气泡 → 桩服务 → 流式落字 → 追问第二轮；服务端卡住不发正文时气泡显示超时并恢复可用
+`build.ps1 -Test` 返回 0 表示全部通过。覆盖范围：
+
+- JSON 解析、模板拼装（含截图模板）、热键解析（含「无修饰键必须拒绝」）、配置往返（含 `BrowserPath` 与旧 `EdgePath` 迁移）
+- 浏览器自动检测：本机识别、可执行文件名反查 id、显式路径 / 空路径 / 不存在路径的解析、按浏览器隔离 profile 目录
+- 服务方预设解析、接口地址补全、请求体结构（文本 / 图片 data URL）、图片等比缩小
+- SSE 增量解析、推理字段、`[DONE]`、非流式回退、HTTP 错误翻译、400/403/404/413/422 提示
+- 流中 `error` 帧抛异常、`finish_reason=length` 的截断提示、空回答报错、非流式回退被截断报错
+- 针对本地桩服务执行真实流式请求（含 401 分支）
+- **端到端**：`ApiChat` → 气泡 → 桩服务 → 流式落字 → 追问第二轮；服务端不发送正文时气泡显示超时并恢复可用
 - 设置窗口四个页面离屏渲染、气泡流式渲染与自适应高度、托盘图标
 
-另外有一个开发用的截图自检模式，不碰剪贴板也不发请求，只跑「遮罩 → 拖框 → 出图」：
+另有面向开发的截图自检模式，不访问剪贴板也不发送请求，仅执行「遮罩 → 拖框 → 出图」：
 
 ```powershell
-.\dist\BubbleAsk.Tests.exe --capture   # 框选后输出 SAVED <png>，Esc/单击取消输出 CANCELLED
+.\dist\BubbleAsk.Tests.exe --capture   # 框选后输出 SAVED <png>；Esc 或单击取消输出 CANCELLED
 ```
 
 ## 已知限制
 
-- 仅 Windows（依赖 Win32 热键、剪贴板、Chromium 内核浏览器）。
-- 网页版依赖 Chromium 的 `--app` 与 CDP，浏览器大版本更新或 chat.deepseek.com 改版后可能需要微调选择器。
-- 网页版抓词依赖目标程序支持 `Ctrl+C`；截图上传依赖页面有 `input[type=file]` 或可识别的上传按钮。
-- API 模式的图片按 PNG 重编码、长边压到 1400px，超长截图会损失一些细节。
-- 沙箱/远程桌面里可能拦住浏览器的调试端口；纯 API 模式不受影响。
+- 仅支持 Windows，依赖 Win32 热键、剪贴板与 Chromium 内核浏览器。
+- 网页版依赖 Chromium 的 `--app` 与 CDP；浏览器大版本更新或 chat.deepseek.com 改版后可能需要调整选择器。
+- 网页版取词依赖目标程序支持 `Ctrl+C`；截图上传依赖页面存在 `input[type=file]` 或可识别的上传按钮。
+- API 模式将图片重新编码为 PNG 并将长边压缩至 1400px，超长截图会损失细节。
+- 沙箱或远程桌面环境可能拦截浏览器调试端口；纯 API 模式不受影响。
