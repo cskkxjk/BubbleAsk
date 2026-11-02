@@ -14,9 +14,19 @@
 
 界面安装最为直接：DSH 侧栏「插件」→「添加插件」→ 填写本目录的绝对路径 → 安装 → 重启。
 
-命令行 profile 可使用 `dsh plugin --profile <profile 名> add "<本目录绝对路径>"`。`desktop` profile 由桌面应用独占，命令行操作会被拒绝（`profile "desktop" is managed exclusively by the Electron application`），桌面版仅支持界面安装。
+本机尚无仓库副本时，使用 Git 子目录形式。插件不在仓库根目录，必须带 `#path:/dsh-plugin`：
 
-完整的安装方式（本地目录、压缩包、包名）、验证命令、卸载与更新，以及可直接提交给 agent 的安装 prompt，见根目录 [README 的「DSH 插件：安装与验证」](../README.md#dsh-插件安装与验证)。
+```text
+github:<owner>/<repo>#path:/dsh-plugin
+```
+
+直接填仓库根地址会被 pnpm 当成一个包，装出 `<repo>.git@0.0.0` 的空壳，插件页无法识别。
+
+命令行 profile 使用 `dsh plugin --profile <profile 名> add "<spec>"`，spec 可以是本地目录绝对路径，也可以是上面的 Git 子目录形式。`desktop` profile 的启动类命令由桌面应用独占（`profile "desktop" is managed exclusively by the Electron application`），但 `plugin` 子命令不受此限制。
+
+安装来源决定更新语义：本地目录记为 `link:<本机路径>`，`git pull` 后即生效；Git 子目录记为 `github:…#path:/dsh-plugin` 并锁定 commit，更新需卸载后重装。
+
+完整的安装方式、验证命令、卸载与更新，以及可直接提交给 agent 的安装 prompt，见根目录 [README 的「DSH 插件：安装与验证」](../README.md#dsh-插件安装与验证)。
 
 安装后的服务端自检（将 `<DSH 端口>` 替换为界面地址栏中的实际端口）：
 

@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 - 已安装 DSH，且其 Web 界面可正常打开（侧栏存在「插件」入口）。
 - 「自动发送」路径额外要求：本机已安装 Chromium 内核浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），并已登录 chat.deepseek.com。仅使用「在侧边栏打开」时无此要求。
 
-### 方式一：界面安装（推荐；桌面版唯一可行方式）
+### 方式一：界面安装（桌面版推荐）
 
 1. 在侧栏选择「插件」。
 2. 点击右上角「添加插件」，或展开箭头菜单选择「安装第三方插件」。两个入口打开同一对话框。
@@ -103,22 +103,45 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
    - **本地目录（推荐）**：填写本仓库中 `dsh-plugin` 目录的绝对路径，例如 `<仓库路径>\dsh-plugin`。
    - **压缩包**：执行 `Compress-Archive -Path .\dsh-plugin -DestinationPath .\dsh-plugin.zip`，填写生成的 zip 文件绝对路径。
    - **包名**：仅在发布至 npm 后可用。当前 `package.json` 标记为 `private: true`，尚未发布，填写包名会失败。
+   - **Git 子目录**：见方式二。
 4. 点击「安装」，等待 pnpm 执行结束。安装完成后按提示重启 DSH。
 5. 按下方「验证」一节确认结果。
 
-### 方式二：命令行安装（非 desktop profile）
+### 方式二：从远程仓库安装（本机尚无仓库副本）
+
+插件位于仓库的 `dsh-plugin/` 子目录，因此 Git 安装必须带上子目录片段 `#path:/dsh-plugin`：
+
+```text
+github:<owner>/<repo>#path:/dsh-plugin
+```
+
+把它填进「添加插件」对话框即可（完整的 `git+https://…` 形式同样接受）。pnpm 会下载整个仓库、只安装该子目录，并在 profile 的 `package.json` 中记为 `github:<owner>/<repo>#path:/dsh-plugin`，`pnpm-lock.yaml` 里锁到当时的 commit。
+
+> **不要直接填仓库根地址**（例如 `https://github.com/<owner>/<repo>.git`）。插件不在仓库根目录，pnpm 会把根目录当成一个包，装出名为 `<repo>.git@0.0.0` 的空壳，插件页无法识别。
+
+两种来源的差异：
+
+| 来源 | profile 中的记录 | 更新方式 | 仓库目录可否移动 |
+| --- | --- | --- | --- |
+| 本地目录（方式一） | `link:<本机路径>` | `git pull` 后立即生效 | 移动即失效，需重新安装 |
+| Git 子目录（本节） | `github:<owner>/<repo>#path:/dsh-plugin` | 卸载后重新安装（已锁定 commit） | 与本机目录无关 |
+
+若希望保留「改代码即生效」的语义，先 `git clone` 仓库，再按方式一填写本地目录。
+
+### 方式三：命令行安装（非 desktop profile）
 
 ```powershell
 dsh plugin --profile <profile 名> add "<仓库路径>\dsh-plugin"
+dsh plugin --profile <profile 名> add "github:<owner>/<repo>#path:/dsh-plugin"
 ```
 
-`dsh plugin` 将参数原样转发给 profile 目录中的 pnpm。`desktop` profile 由桌面应用独占，命令行操作会被拒绝：
+`dsh plugin` 将参数原样转发给 profile 目录中的 pnpm，因此两种来源都可用。`desktop` profile 的启动类命令（如 `--dump-config`）由桌面应用独占：
 
 ```text
 error: profile "desktop" is managed exclusively by the Electron application
 ```
 
-桌面版应使用方式一。
+但 `plugin` 子命令不受此限制，可直接写入 `desktop` profile；安装后由桌面应用热加载。
 
 ### 验证
 
@@ -141,12 +164,15 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 ### 卸载与更新
 
-- 卸载：插件页 → 对应组合包 → 卸载（需确认）。
-- 更新：第三方插件不提供版本选择器，采用卸载后重新安装的方式；以本地目录安装时，修改代码后重新安装即可生效。
+- 卸载：插件页 → 对应组合包 → 卸载（需确认）；或 `dsh plugin --profile <profile 名> remove dsh-plugin-bubble-ask`。
+- 更新：
+  - 本地目录（`link:`）安装：`git pull` 后即生效，无需重装。
+  - Git 子目录安装：已锁定 commit，需卸载后按方式二重新安装。
+  - 第三方插件不提供版本选择器，插件页的「更新」只对官方按需插件提供。
 
 ### 使用 agent 安装（prompt 示例）
 
-以下文本可整体提交给 agent，提交前把两处尖括号占位符替换为本机的实际路径：
+以下文本可整体提交给 agent，提交前把尖括号占位符替换为本机的实际路径：
 
 ```text
 将 BubbleAsk 的 DSH 插件安装到本机的 DeepSeek Harness，并验证安装结果。
@@ -154,15 +180,16 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 仓库：<本仓库在本地的工作目录>
 插件目录：<该仓库中 dsh-plugin 目录的绝对路径>
 该目录是标准 DSH 组合包（package.json 中声明了 dsh.bundle.patch 与 dsh.client），无需构建。
-若仓库尚未克隆，先按项目主页给出的仓库地址克隆到本地。
 
 步骤：
 1. 定位 DSH：$env:DSH_HOME（默认 %USERPROFILE%\.dsh）、$env:DSH_PROFILE_DIR，
    以及 dsh CLI（通常位于 <DSH 安装目录>\resources\runtime\cli\bin\dsh.cmd）。
 2. 首先尝试命令行安装：dsh plugin --profile <profile 名> add "<插件目录绝对路径>"
-   若报错 "profile ... is managed exclusively by the Electron application"，说明是桌面版 profile：
+   仓库尚未克隆时改用 Git 子目录形式：add "github:<owner>/<repo>#path:/dsh-plugin"
+   —— 必须带 #path:/dsh-plugin；直接用仓库根地址会装出 <repo>.git@0.0.0 的空壳，插件页识别不了。
+   若两条命令都报 "profile ... is managed exclusively by the Electron application"：
    不要绕过该限制，也不要通过手改 profile 的 cordis.patch.yml 伪造安装；
-   改为告知我界面操作步骤（侧栏「插件」→「添加插件」→ 填写插件目录绝对路径 → 安装 → 重启 DSH），
+   改为告知我界面操作步骤（侧栏「插件」→「添加插件」→ 填上面的 spec → 安装 → 重启 DSH），
    待我确认后继续验证。
 3. 验证：
    - curl.exe -s http://127.0.0.1:<DSH 界面端口>/bubble-ask/health 返回 {"ok":true,...}（未安装时 404）；
@@ -170,7 +197,8 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
    - 说明验证方式：会话中选中一段文本，点击「💬 问这段」。
 4. 任一步骤失败：回退所执行的改动（卸载该插件、恢复 package.json 与 cordis.patch.yml），
    并原样给出报错信息，不要推测原因。
-5. 不要修改仓库源码，不要改动 dist\ 下的桌面端产物，不要修改 DSH 中与本插件无关的配置。
+5. 安装来源是本地目录时，报告最终写入 profile 的 dependency spec（link: 或 github:）及其更新语义。
+6. 不要修改仓库源码，不要改动 dist\ 下的桌面端产物，不要修改 DSH 中与本插件无关的配置。
 ```
 
 ## 配置
