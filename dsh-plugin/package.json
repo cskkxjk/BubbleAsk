@@ -1,0 +1,34 @@
+{
+  "name": "dsh-plugin-bubble-ask",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "划词提问：把精简会话轨迹作为上下文注入 DeepSeek 网页版，解释选中文字在当前会话中的含义",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/deepseek-web.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-browser"
+      ]
+    }
+  },
+  "license": "MIT"
+}
