@@ -5,12 +5,16 @@
  * 再交给 DeepSeek 网页版。Client 半只负责选词和气泡，通过本进程的 HTTP 路由拿结果。
  *
  * 两条链路：
- *   sidebar —— 返回带 ?q= 的 URL，由 Client 用侧边栏内嵌浏览器打开（预填，不发送）
- *   cdp     —— 直接驱动本机 Chromium（--app + CDP）注入并发送，且回读校验
+ *   panel —— 组好的提问交给右侧栏的 Bubble Ask 专属面板（可见、可复制、可再发送）
+ *   cdp   —— 直接驱动本机 Chromium（--app + CDP）注入并发送，且回读校验
+ *
+ * 不再使用右侧栏的内嵌浏览器（ctrl+T Browser）：那套 Electron guest 环境的存储分区
+ * 由主进程按进程生命周期生成（无 persist: 前缀），每次重启都要重新登录，
+ * 且网页版会把 guest 环境判定为「使用环境异常」。
  */
 /**
- * CDP 模块（lib/deepseek-web.mjs）按需加载：缺文件时侧边栏链路照样能用，
- * 只是「自动发送」这条路会明确报未就绪，而不是整个插件挂掉。
+ * CDP 模块（lib/deepseek-web.mjs）按需加载：缺文件时面板与「复制全文」照样能用，
+ * 只是「发送到 DeepSeek」这条自动路径会明确报未就绪，而不是整个插件挂掉。
  */
 let cdpModule
 async function loadCdp() {
@@ -72,6 +76,8 @@ const DEFAULTS = {
 
 const ROUTE_PROMPT = '/bubble-ask/prompt'
 const ROUTE_SEND = '/bubble-ask/send'
+const ROUTE_OPEN = '/bubble-ask/open'
+const ROUTE_STATE = '/bubble-ask/state'
 const ROUTE_HEALTH = '/bubble-ask/health'
 const ROUTE_DIAG = '/bubble-ask/diag'
 const MAX_BODY_BYTES = 128 * 1024
@@ -79,6 +85,15 @@ const MAX_BODY_BYTES = 128 * 1024
 /** Client 半上报的记录（最近若干条，用于无人值守自检）。 */
 const diagLog = []
 const DIAG_LIMIT = 40
+
+/**
+ * 上一次「组好的提问」和「发送结果」。
+ *
+ * 侧边栏面板是独立的一棵子树，页面重载后模块内存会清空；面板挂载时读这两个字段
+ * 就能把上一次的上下文找回来，不必让用户重新划词。
+ */
+let lastAsk = null
+let lastSend = null
 
 export const name = 'bubble-ask'
 export const inject = ['webServer']
@@ -642,12 +657,65 @@ export function apply(ctx, config = {}) {
       try {
         const input = await readJsonBody(req)
         const result = prepareAsk(sessions(), settings, input)
+        if (result.ok) {
+          lastAsk = {
+            at: Date.now(),
+            sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
+            question: typeof input.question === 'string' ? input.question : '',
+            selection: typeof input.selection === 'string' ? input.selection.trim() : '',
+            mode: result.mode,
+            prompt: result.prompt,
+            url: result.url,
+            stats: result.stats,
+          }
+        }
         sendJson(res, result.ok ? 200 : 400, result)
       } catch (error) {
         sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
       }
     },
   }), 'bubble-ask: prompt route')
+
+  /**
+   * 只把原生浏览器窗口拉起来 / 复用，不注入、不发送。
+   *
+   * 侧边栏面板的「打开窗口」用它：用户想先看看网页版、或者手动粘贴。
+   */
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_OPEN,
+    async handler(req, res) {
+      try {
+        const cdp = await loadCdp()
+        if (!cdp || typeof cdp.ensureBrowser !== 'function') {
+          return sendJson(res, 503, { ok: false, stage: 'cdp', detail: 'CDP 模块未就绪' })
+        }
+        const opened = await cdp.ensureBrowser({
+          config: {
+            browserPath: settings.browserPath || undefined,
+            cdpPort: settings.cdpPort,
+            profileDir: settings.profileDir || undefined,
+            chatUrl: settings.chatUrl,
+            autoSend: false,
+            readyTimeoutMs: settings.readyTimeoutMs,
+          },
+          log: (line) => log(line),
+        })
+        sendJson(res, 200, opened)
+      } catch (error) {
+        sendJson(res, 500, { ok: false, stage: 'error', detail: String(error?.message ?? error) })
+      }
+    },
+  }), 'bubble-ask: open route')
+
+  /** 面板重载后用来恢复上一次的提问与发送结果。 */
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_STATE,
+    async handler(_req, res) {
+      sendJson(res, 200, { ok: true, lastAsk, lastSend })
+    },
+  }), 'bubble-ask: state route')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -666,7 +734,7 @@ export function apply(ctx, config = {}) {
           return sendJson(res, 503, {
             ok: false,
             stage: 'cdp',
-            detail: 'CDP 模块未就绪，先用「在侧边栏打开」',
+            detail: 'CDP 模块未就绪，可先用面板里的「复制全文」手动粘贴',
             prompt: fullPrompt,
             url: prepared.url,
             stats: prepared.stats,
@@ -687,6 +755,23 @@ export function apply(ctx, config = {}) {
         const body = { ...sent, prompt: fullPrompt, stats: prepared.stats, prefillUrl: prepared.url }
         // sent.url 是发送后真实的页面地址（会话页更好），没有才退回预填地址。
         if (!body.url) body.url = prepared.url
+        lastAsk = {
+          at: Date.now(),
+          sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
+          question: typeof input.question === 'string' ? input.question : '',
+          selection: typeof input.selection === 'string' ? input.selection.trim() : '',
+          mode: 'cdp',
+          prompt: fullPrompt,
+          url: body.url,
+          stats: prepared.stats,
+        }
+        lastSend = {
+          at: Date.now(),
+          ok: Boolean(sent.ok),
+          stage: sent.stage,
+          detail: sent.detail ?? '',
+          url: body.url,
+        }
         sendJson(res, 200, body)
       } catch (error) {
         sendJson(res, 500, { ok: false, stage: 'error', detail: String(error?.message ?? error) })

@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 使用范围 | 任意程序、任意时刻 | 仅限会话过程中，且上下文即当前会话 |
 | 提问内容 | 模板中的问题文本（默认「什么是 %s」） | 每次附带精简会话轨迹，因此始终具备上下文 |
-| 窗口 | 自行启动 `--app` 浏览器窗口 | 优先使用 DSH 右侧栏内嵌浏览器（`Ctrl+T`），不额外开窗 |
+| 窗口 | 自行启动 `--app` 浏览器窗口 | 同一个原生 `--app` 窗口（持久登录）；DSH 右侧栏放一个专属控制面板，不再占用 `Ctrl+T` 浏览器 |
 
 ## 安装
 
@@ -39,10 +39,12 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 1. 在会话中选中任意一段文本（回答、工具输出或自行输入的内容均可）。
 2. 选区下方出现「💬 问这段」气泡。
-3. 点击气泡后选择一种处理方式：
-   - **在侧边栏打开**（默认）：在右侧栏浏览器中打开 DeepSeek，并将完整提问写入输入框，确认或修改后按回车提交。写入通过 `<webview>.executeJavaScript()` 完成（原生 setter + `input` 事件），不依赖 URL 传参。
-   - **自动发送**：由 Host 启动独立 Chromium 实例（`--app` + CDP），注入提问并点击发送；仅当回读确认输入框被清空时判定发送成功。
-4. 气泡内可填写自定义问题；留空时注入的默认问题为「请解释这段文字在当前会话上下文中的含义。」（输入框占位符的措辞为「解释它在当前上下文中是什么意思」，与注入内容含义一致）。
+3. 气泡内可填写自定义问题；留空时注入的默认问题为「请解释这段文字在当前会话上下文中的含义。」（输入框占位符的措辞为「解释它在当前上下文中是什么意思」，与注入内容含义一致）。
+4. 点击气泡中的按钮，并在右侧栏的 **Bubble Ask 专属面板** 中查看结果：
+   - **发送到 DeepSeek**（默认，回车同效）：Host 启动或复用原生 Chromium 实例（`--app` + CDP），注入完整提问并点击发送；仅当回读确认输入框被清空时判定发送成功。发送后面板会显示轨迹条数、字数和发送阶段。
+   - **只准备**：只整理上下文并在面板里打开，不发送。面板中可「发送到 DeepSeek」「只打开窗口」「复制全文」「重新整理」。
+
+专属面板同时出现在右侧栏的引导页（指南针图标 → Bubble Ask 卡片），也可以从中直接打开。面板显示的是**上一次**组好的提问：页面重载后由 Host 的 `GET /bubble-ask/state` 恢复，不必重新划词。
 
 ## 注入内容
 
@@ -80,10 +82,17 @@ Host 端从会话日志（`session.deriveMessages()`）读取最近的 user/assi
 
 ```text
 index.js              Host 端：HTTP 路由、轨迹精简、prompt 拼装
-client.js             Client 端：选区气泡（shell.overlay）、会话 id 探针（conversation.input.dock）
+client.js             Client 端：选区气泡（shell.overlay）、会话 id 探针（conversation.input.dock）、
+                      专属 tab 类型注册（ctx.sidebarRightTabs）与面板正文（sidebar.right.pane.tab）
 lib/deepseek-web.mjs  CDP 驱动（移植自桌面端 ChatDriver / CdpClient，惰性加载）
 cordis.patch.yml      插入 bubble-ask 条目
 ```
+
+专属 tab 走的是右侧栏的公开扩展点，与内置 Document Preview 用的是同一条路径：
+
+1. `ctx.sidebarRightTabs.register({ id, kind, title, guide })` 声明类型（`kind: 'bubble-ask'`）；
+2. `ctx.slots.register({ name: 'sidebar.right.pane.tab', key: id }, Body)` 提供正文；
+3. `ctx.sidebarRight.openTab('bubble-ask')` 打开它。
 
 ## HTTP 路由
 
@@ -93,6 +102,8 @@ cordis.patch.yml      插入 bubble-ask 条目
 | --- | --- |
 | `POST /bubble-ask/prompt` | `{sessionId, selection, question}` → `{prompt, url, stats}` |
 | `POST /bubble-ask/send` | 同上，但会实际注入网页版并发送 |
+| `POST /bubble-ask/open` | 只启动或复用原生窗口，不注入、不发送 |
+| `GET /bubble-ask/state` | 面板重载后恢复上一次的提问与发送结果 |
 | `GET /bubble-ask/health` | 自检：CDP 模块是否就绪、检测到的浏览器、最近的自检记录 |
 | `POST /bubble-ask/diag` | Client 端上报自检记录（最多保留 40 条），可通过 `/health` 的 `diag` 字段读取 |
 
@@ -119,9 +130,26 @@ cordis.patch.yml      插入 bubble-ask 条目
 
 ## 已知限制
 
-- 侧边栏写入依赖 Electron `<webview>` 元素的 `executeJavaScript()`，要求该元素与本插件位于同一渲染进程。浏览器侧（Web 版 DSH）不具备该能力：侧边栏退化为 iframe，只能通过剪贴板回退。
-- `chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，任何 iframe 均无法嵌入。侧边栏之所以可以显示，是因为 Electron 使用独立的 guest 进程而非 iframe。
-- `?q=` 传参不可靠（实测）：请求行超过 8KB 时返回 `414`（纯 ASCII 8029 字节通过，8329 字节失败）；更重要的是，长 prompt 生成的约 7K URL 会稳定返回 `429`，等待 3 分钟、单次请求、去除换行均无改善，而 `?q=test` 始终返回 200。因此 `?q=` 仅在 prompt 编码后不超过 3000 字符时使用，更长的提问改为「打开网页并直接写入输入框」。
-- 网页版 `?q=` 仅预填，不自动发送（`autosend=1` 不受支持）。
-- 选区取自 DSH 页面；插件无法读取侧边栏 webview 内部的选区（跨进程）。
-- 自动写入后若页面尚未渲染完成，插件最多轮询 40 秒；仍失败时回退为「完整提问写入剪贴板并显示全文」。
+### 为什么不用右侧栏的内嵌浏览器
+
+DSH 桌面端右侧栏的 Browser（`Ctrl+T`）看起来是更省事的位置，但它有两处由宿主决定、插件无法绕开的限制：
+
+- **登录不跨重启**。WebView 的存储分区由主进程生成：`dsh-sidebar-browser-${randomUUID()}`，没有 `persist:` 前缀，因此只存在于进程内存。应用重启后 Cookie 与 Web Storage 一并消失，需要重新登录；同时同一工作目录的多个标签页共享该分区。
+- **网页版会判定环境异常**。该 guest 运行在 Electron 内核中，`chat.deepseek.com` 会弹出「使用环境异常 / 可能存在数据和隐私泄露风险」的横幅。
+
+插件的原生窗口链路用独立持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效，也没有上述横幅。
+
+### 无法把原生窗口"嵌"进 GUI
+
+以下三条是本版 DSH 桌面壳的硬约束，决定了原生窗口只能作为独立窗口存在：
+
+- 自建 `<webview>` 会被拒绝：主进程在 `will-attach-webview` 中校验 `src` 必须为 `about:blank#<lease>`、且 `partition` 与签发时一致，否则 `preventDefault()`。lease 只能由主进程的 `dsh-desktop:browser-acquire` 签发。
+- Host 插件拿不到 Electron API：DSH Host 是独立 node 子进程（`spawn(node, dsh-desktop-host/lib/index.js)`），不是 Electron 主进程，因此无法使用 `WebContentsView` 之类的主进程嵌入能力。
+- `chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，任何 iframe 都无法嵌入。
+
+### 其他
+
+- 原生窗口是独立 OS 窗口，不会嵌入 DSH 窗口内部；它需要与 DSH 并排摆放。
+- `?q=` 传参不可靠（实测）：请求行超过 8KB 时返回 `414`（纯 ASCII 8029 字节通过，8329 字节失败）；长 prompt 生成的约 7K URL 还会稳定返回 `429`。插件因此不依赖 URL 传参。
+- 选区取自 DSH 页面；插件无法读取外部窗口内的选区（跨进程）。
+- 若 `lib/deepseek-web.mjs` 缺失，「发送到 DeepSeek」会明确报 CDP 未就绪，面板与复制链路仍然可用。
