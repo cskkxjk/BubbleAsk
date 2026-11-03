@@ -1,5 +1,5 @@
 /**
- * 与本机 Bubble Ask 托盘应用的通信层。
+ * 与本机 Bubble Ask 的通信层。
  *
  * 为什么不再自己驱动 CDP：
  *   CDP 驱动原本在 `lib/deepseek-web.mjs` 里有一份 C# 的移植副本，与 `ChatDriver.cs` /
@@ -10,8 +10,11 @@
  * 协议：Windows 命名管道，一连接 = 一行 JSON 请求 → 一行 JSON 响应。
  * 发现：%APPDATA%\BubbleAsk\ipc.json 记录 { version, app, pipe, pid, exe }。
  *
+ * 一个 exe 两种身份：带 `--service` 启动的是无界面后台服务（插件要拉起的就是它），
+ * 不带参数启动的是托盘界面。插件只在服务没在跑时才拉起，且只拉起服务模式。
+ *
  * 这个文件不依赖任何第三方包，也不做平台判断以外的魔法；Linux/macOS 上会
- * 明确报告「未找到托盘应用」，而不是静默失败。
+ * 明确报告「未找到 Bubble Ask」，而不是静默失败。
  */
 import fs from 'node:fs'
 import net from 'node:net'
@@ -21,6 +24,9 @@ import { spawn } from 'node:child_process'
 
 /** 必须与 src/shared/IpcContract.cs 的 ProtocolVersion 一致。 */
 export const PROTOCOL_VERSION = 2
+
+/** 必须与 src/shared/IpcContract.cs 的 ServiceSwitch 一致。 */
+const SERVICE_SWITCH = '--service'
 
 /** 发送要等页面渲染 + 注入 + 校验，冷启动还会拉浏览器，给足预算。 */
 const SEND_TIMEOUT_MS = 180000
@@ -36,8 +42,7 @@ export function discoveryPath() {
 /** 读发现文件；不存在或损坏都返回 null。 */
 export function readDiscovery() {
   try {
-    const raw = fs.readFileSync(discoveryPath(), 'utf8')
-    const parsed = JSON.parse(raw)
+    const parsed = JSON.parse(fs.readFileSync(discoveryPath(), 'utf8'))
     if (!parsed || typeof parsed.pipe !== 'string' || !parsed.pipe) return null
     return parsed
   } catch {
@@ -61,56 +66,80 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** 发现文件里记的管道名，且持有它的进程还活着；否则 null。 */
+function livePipe() {
+  const discovery = readDiscovery()
+  if (!discovery || !processAlive(discovery.pid)) return null
+  return discovery.pipe
+}
+
 /**
- * 发一条请求并读回一条响应。
- * @param pipeName 管道名（不含 \\.\pipe\ 前缀）
+ * 连上管道、写一行、读回一行。读到的连接不主动关闭，交给调用方决定
+ * ——普通命令读完就 close，租约要一直攥着。
+ *
+ * @returns {Promise<{response: object, close: () => void}>}
  */
-function request(pipeName, payload, timeoutMs) {
+function exchange(pipeName, payload, timeoutMs) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(`\\\\.\\pipe\\${pipeName}`)
     let buffer = ''
     let settled = false
-    const finish = (fn, value) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
+    const close = () => {
       try {
         socket.destroy()
       } catch {
         /* 关闭失败无所谓 */
       }
-      fn(value)
     }
-    const timer = setTimeout(() => finish(reject, new Error('等待 Bubble Ask 响应超时')), timeoutMs)
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      close()
+      reject(error)
+    }
+    const timer = setTimeout(() => fail(new Error('等待 Bubble Ask 响应超时')), timeoutMs)
+
     socket.setEncoding('utf8')
     socket.on('connect', () => {
       try {
         socket.write(`${JSON.stringify(payload)}\n`)
       } catch (error) {
-        finish(reject, error)
+        fail(error)
       }
     })
     socket.on('data', (chunk) => {
       buffer += chunk
       const index = buffer.indexOf('\n')
-      if (index < 0) return
+      if (index < 0 || settled) return
+      settled = true
+      clearTimeout(timer)
       const line = buffer.slice(0, index)
+      let parsed
       try {
-        finish(resolve, JSON.parse(line))
+        parsed = JSON.parse(line)
       } catch {
-        finish(reject, new Error(`Bubble Ask 返回了无法解析的内容：${line.slice(0, 120)}`))
+        close()
+        reject(new Error(`Bubble Ask 返回了无法解析的内容：${line.slice(0, 120)}`))
+        return
       }
+      resolve({ response: parsed, close })
     })
-    socket.on('error', (error) => finish(reject, error))
-    socket.on('close', () => {
-      // 没收到完整响应就断开：当成失败，别让调用方一直等。
-      finish(reject, new Error('Bubble Ask 提前关闭了连接'))
-    })
+    socket.on('error', fail)
+    // 没收到完整响应就断开：当成失败，别让调用方一直等。
+    socket.on('close', () => fail(new Error('Bubble Ask 提前关闭了连接')))
   })
 }
 
+/** 一条命令 = 一问一答，读完立刻断开。 */
+async function request(pipeName, payload, timeoutMs) {
+  const { response, close } = await exchange(pipeName, payload, timeoutMs)
+  close()
+  return response
+}
+
 /**
- * 确保托盘应用在线；不在线就尝试拉起它。
+ * 确保服务在线；不在线就拉起（`--service` 模式）。
  *
  * @param options.appPath 显式指定的 exe 路径（插件配置），优先级最高
  * @param options.log 记录日志的回调
@@ -144,16 +173,17 @@ export async function ensureApp(options = {}) {
     return {
       ok: false,
       error: 'missing-app',
-      detail: '未找到 Bubble Ask 托盘应用。请先安装并启动它（托盘出现图标即可），或在本插件配置里填写 appPath。',
+      detail: '未找到 Bubble Ask。请先安装并启动它（托盘出现图标即可），或在本插件配置里填写 appPath。',
     }
   }
   if (!fs.existsSync(candidate)) {
     return { ok: false, error: 'missing-exe', detail: `找不到 Bubble Ask 可执行文件：${candidate}` }
   }
 
-  log(`正在拉起 Bubble Ask：${candidate}`)
+  log(`正在拉起 Bubble Ask 服务：${candidate} ${SERVICE_SWITCH}`)
   try {
-    const child = spawn(candidate, [], { detached: true, stdio: 'ignore' })
+    // 只拉起服务模式：拉起托盘界面并不会带来可用的管道服务。
+    const child = spawn(candidate, [SERVICE_SWITCH], { detached: true, stdio: 'ignore' })
     child.unref()
   } catch (error) {
     return { ok: false, error: 'spawn-failed', detail: `拉起 Bubble Ask 失败：${String(error?.message ?? error)}` }
@@ -175,36 +205,51 @@ export async function ensureApp(options = {}) {
   return { ok: false, error: 'start-timeout', detail: '已拉起 Bubble Ask，但它在 25 秒内没有就绪' }
 }
 
-/** 发一条命令，自动处理「应用没在跑」的情况。 */
+/** 版本不匹配时补一句人话。 */
+function normalize(response) {
+  if (response && response.stage === 'version') {
+    return { ...response, detail: response.detail || 'Bubble Ask 版本过旧，请升级后重试' }
+  }
+  return response
+}
+
+/**
+ * 发一条命令。
+ *
+ * 先按发现文件直接发（一次往返）；只有连不上时才走「探测 + 拉起 + 重试」，
+ * 而不是每次操作都先 ping 一遍——那条 ping 是最常见的无谓延迟。
+ */
 async function call(command, payload, options = {}) {
+  const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : HEALTH_TIMEOUT_MS
+  const body = { v: PROTOCOL_VERSION, cmd: command, ...(payload || {}) }
+
+  const cached = livePipe()
+  if (cached) {
+    try {
+      return normalize(await request(cached, body, timeoutMs))
+    } catch {
+      // 发现文件过期或服务刚好退出：落到下面的拉起流程。
+    }
+  }
+
   const ready = await ensureApp(options)
   if (!ready.ok) return { ok: false, stage: ready.error, detail: ready.detail }
-  const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : HEALTH_TIMEOUT_MS
   try {
-    const response = await request(
-      ready.discovery.pipe,
-      { v: PROTOCOL_VERSION, cmd: command, ...(payload || {}) },
-      timeoutMs,
-    )
-    if (response && response.stage === 'version') {
-      return { ...response, detail: response.detail || 'Bubble Ask 版本过旧，请升级后重试' }
-    }
-    return response
+    return normalize(await request(ready.discovery.pipe, body, timeoutMs))
   } catch (error) {
     return { ok: false, stage: 'ipc', detail: `与 Bubble Ask 通信失败：${String(error?.message ?? error)}` }
   }
 }
 
 /**
- * 健康检查：应用是否在线、协议版本、运行中的浏览器 profile 等。
+ * 健康检查：服务是否在线、协议版本、运行中的浏览器 profile 等。
  * 永不抛错——/health 与自检都靠它判断状态。
  */
 export async function health(options = {}) {
-  const result = await call('health', {}, { ...options, timeoutMs: HEALTH_TIMEOUT_MS })
-  return result
+  return call('health', {}, { ...options, timeoutMs: HEALTH_TIMEOUT_MS })
 }
 
-/** 注入完整提问并发送（是否自动点发送由托盘应用自己的配置决定）。 */
+/** 注入完整提问并发送（是否自动点发送由服务侧的配置决定）。 */
 export async function sendPrompt(options = {}) {
   const prompt = typeof options.prompt === 'string' ? options.prompt : ''
   if (!prompt.trim()) {
@@ -224,77 +269,25 @@ export async function sendPrompt(options = {}) {
  */
 export async function attachLease(options = {}) {
   const log = typeof options.log === 'function' ? options.log : () => {}
-  const ready = await ensureApp({ ...options, log })
-  if (!ready.ok) {
-    return { ok: false, close: () => {}, detail: ready.detail || '服务未就绪' }
+  const idle = () => ({ ok: false, close: () => {} })
+
+  // 服务在跑就直接登记，省掉一次 ping 往返。
+  let pipe = livePipe()
+  if (!pipe) {
+    const ready = await ensureApp({ ...options, log })
+    if (!ready.ok) return { ...idle(), detail: ready.detail || '服务未就绪' }
+    pipe = ready.discovery.pipe
   }
-  return new Promise((resolve) => {
-    let settled = false
-    let buffer = ''
-    const socket = net.connect(`\\\\.\\pipe\\${ready.discovery.pipe}`)
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      try {
-        socket.destroy()
-      } catch {
-        /* 忽略 */
-      }
-      resolve({ ok: false, close: () => {}, detail: '租约握手超时' })
-    }, 8000)
 
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(result)
+  try {
+    const { response, close } = await exchange(pipe, { v: PROTOCOL_VERSION, cmd: 'attach' }, 8000)
+    if (response.ok !== true) {
+      close()
+      return { ...idle(), detail: response.detail || '服务拒绝租约' }
     }
-
-    socket.setEncoding('utf8')
-    socket.on('connect', () => {
-      try {
-        socket.write(`${JSON.stringify({ v: PROTOCOL_VERSION, cmd: 'attach' })}\n`)
-      } catch (error) {
-        finish({ ok: false, close: () => {}, detail: String(error?.message ?? error) })
-      }
-    })
-    socket.on('data', (chunk) => {
-      buffer += chunk
-      const index = buffer.indexOf('\n')
-      if (index < 0) return
-      let ack = {}
-      try {
-        ack = JSON.parse(buffer.slice(0, index))
-      } catch {
-        ack = {}
-      }
-      if (ack.ok !== true) {
-        try {
-          socket.destroy()
-        } catch {
-          /* 忽略 */
-        }
-        finish({ ok: false, close: () => {}, detail: ack.detail || '服务拒绝租约' })
-        return
-      }
-      log(`已向服务登记租约（当前 ${ack.leases ?? '?'} 条）`)
-      finish({
-        ok: true,
-        close: () => {
-          try {
-            socket.destroy()
-          } catch {
-            /* 忽略 */
-          }
-        },
-      })
-    })
-    socket.on('error', (error) => finish({ ok: false, close: () => {}, detail: String(error?.message ?? error) }))
-  })
+    log(`已向服务登记租约（当前 ${response.leases ?? '?'} 条）`)
+    return { ok: true, close }
+  } catch (error) {
+    return { ...idle(), detail: String(error?.message ?? error) }
+  }
 }
-
-/**
- * 释放本模块持有的常驻资源（目前只有租约）。
- * 由 Host 的卸载钩子调用。
- */
-export async function shutdown() {}

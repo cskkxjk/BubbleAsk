@@ -1,7 +1,7 @@
 # 接手说明（Handover）
 
 > 面向新维护者的交接文档：项目定位、构建与自测流程、编码约定、架构地图、已核实的实现事实、上一轮修复记录与遗留事项。
-> 更新：2026-11-02。基线：`main` 位于 `6e45d98`；桌面端自测 103 项通过（运行方式见 §2.1）；`build.ps1` 编译零警告。
+> 更新：2026-11-02。基线：`main` 位于 `6e45d98`；桌面端自测约 104 项通过（运行方式见 §2.1）；`build.ps1` 编译零警告。
 
 ---
 
@@ -30,14 +30,15 @@ Windows 平台的划词问答助手：选中文本（或框选屏幕区域）→
 ## 2. 构建与自测
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1          # 编译两个 exe
+powershell -ExecutionPolicy Bypass -File .\build.ps1          # 编译一个 exe + 一个自测程序
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test    # 编译并自测，全部通过返回 0
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Clean   # 先清理 dist
 ```
 
 - 编译器：`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`，选项为 `/langversion:5 /warn:4 /codepage:65001`。
-- 产物：`dist\BubbleAsk.exe`、`dist\BubbleAsk.Tests.exe`（同一份源码，以 `/main:` 区分入口）、`dist\selftest\*.png`。
-- 自测项数：103。
+- 产物：`dist\BubbleAsk.exe`（26 个源文件：shared + engine + service + ui 一起编译）、`dist\BubbleAsk.Tests.exe`（27 个源文件：再加 tests）、`dist\selftest\*.png`。
+- 一个 `BubbleAsk.exe` 承担两种身份：无参启动是托盘界面，`--service` 启动是无界面后台服务。单实例不靠文件名而靠互斥锁 `BubbleAsk.Service.SingleInstance.4C81`。
+- `build.ps1` 末尾有一道 Lint：若 `src/ui/*.cs` 出现 `ChatDriver` / `CdpClient` / `EdgeHost` 字样即失败。原因是一个 exe 之后编译器不再天然阻止 ui 直接 new 引擎对象，改用这条静态检查兜底。
 
 ### 2.1 环境注意事项：`%TEMP%` 不可写导致自测中断
 
@@ -53,7 +54,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Clean   # 先清理 dist
 $env:TEMP = Join-Path (Get-Location) '.tmp-selftest\temp'   # .tmp-*/ 已被 .gitignore 忽略
 $env:TMP  = $env:TEMP
 New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test    # 103 项通过，输出 ALL PASS
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test    # 全部通过，输出 ALL PASS
 ```
 
 该现象属于运行环境差异（同一可执行文件放在 `%TEMP%` 内运行时可正常创建目录），与源码无关；排查时优先区分这一点，避免误判为配置读写缺陷。
@@ -102,10 +103,10 @@ src/engine/    CDP 与浏览器窗口 —— 全仓库只有这一份实现
   EdgeHost.cs            启动、定位与置顶浏览器窗口（已通用化，类名沿用 EdgeHost）
   CdpClient.cs           WebSocket 与 CDP（超时、加锁、串行发送、整段解码）
 
-src/service/   后台服务（无界面，独占引擎）
-  Program.cs             ServiceProgram.Main：静默单实例、租约驱动退出、宽限期
+src/service/   后台服务身份（`--service`，无界面，独占引擎）
+  Program.cs             ServiceProgram.Run：静默单实例、租约驱动退出、宽限期
   PipeHost.cs            IIpcHost 实现：持有唯一一份 ChatDriver
-  PipeServer.cs          命名管道：ping / health / attach / open / toggle / send / send-image / topmost / restart
+  PipeServer.cs          命名管道：ping / health / attach / toggle / send / send-image / topmost / restart
 
 src/ui/        托盘界面，不直接碰 CDP
   Program.cs             入口、单实例、异常兜底、启动清理
@@ -125,30 +126,29 @@ src/tests/
   TestProgram.cs         无界面自测（含 StubServer 与 stall 模式）
 ```
 
-`build.ps1` 按分组取源文件，用 `/main:` 区分三个目标：
+`build.ps1` 按分组取源文件，把两种身份编进同一个 exe：
 
 | 目标 | 源文件 | 说明 |
 | --- | --- | --- |
-| `BubbleAsk.exe` | shared + ui | 纯 UI；网页版经管道调服务 |
-| `BubbleAsk.Service.exe` | shared + engine + service | 无界面，独占引擎 |
-| `BubbleAsk.Tests.exe` | 以上全部 + tests | 自测 |
+| `dist\BubbleAsk.exe` | shared + engine + service + ui（26 个） | 无参启动 = 托盘界面；`--service` 启动 = 无界面后台服务 |
+| `dist\BubbleAsk.Tests.exe` | 以上全部 + tests（27 个） | 自测 |
 
-**engine 只编进服务**，托盘里没有第二份 `ChatDriver` —— 两个所有者抢同一份 profile / CDP 端口的问题从结构上消除。
+**engine 只有一份实现、且只有服务身份会实例化它**。一个 exe 之后编译器不再天然拦住 ui 直接 new 引擎对象，因此 `build.ps1` 末尾加了一道 Lint：`src/ui/*.cs` 里出现 `ChatDriver` / `CdpClient` / `EdgeHost` 即构建失败。两个所有者抢同一份 profile / CDP 端口的问题因此仍从结构上消除。
 
 关键路径：配置 `%AppData%\BubbleAsk\config.json`；日志 `app.log`（超过 1MB 时删除重建）；profile 按浏览器分别存储；临时截图 `%TEMP%\BubbleAsk\shot-*.png`（启动时清理一天前的文件）；IPC 发现文件 `%AppData%\BubbleAsk\ipc.json`。
 
 ### 4.1 后台服务与管道协议（`src/service/` + `src/shared/IpcContract.cs`）
 
-网页版 CDP 驱动只有一份实现，在 `BubbleAsk.Service.exe` 里。托盘与 DSH 插件都是客户端。
+网页版 CDP 驱动只有一份实现，跑在 `BubbleAsk.exe --service` 里。托盘与 DSH 插件都是客户端。
 
 - **它为什么不是 Windows 服务（SCM）**：Session 0 隔离下无法创建/聚焦用户桌面上的浏览器窗口，而它的职责正是驱动那个窗口。所以它是每用户的后台进程（可由任意客户端按需拉起）。
 - 管道名：`BubbleAsk.Ipc.v2.<用户名清洗后>`；ACL 只允许当前登录用户，并显式拒绝 `NetworkSid`。
 - 发现文件：`{version, app, pipe, pid, exe}`。服务启动时写入；退出时只把 `pid` 置 0、**不删文件** —— 它同时是「服务装在哪」的记录，客户端靠 `exe` 字段在服务未运行时自动拉起。
 - 帧格式：默认一连接 = 一行 JSON 请求 → 一行 JSON 响应后关闭；发 `attach` 后该连接转为**长期租约**，服务一直挂着直到对端断开。
-- 命令：`ping` / `health` / `state` / `attach` / `open` / `toggle` / `send` / `send-image` / `topmost` / `restart`。
+- 命令：`ping` / `health` / `attach` / `toggle` / `send` / `send-image` / `topmost` / `restart`。
 - 版本：`IpcContract.ProtocolVersion = 2`。不一致直接返回 `stage:"version"`，不静默兼容。
-- 并发：`send`/`open`/`toggle`/`restart` 走 `PipeHost.TryBegin`（`_gate` 加锁 + 90 秒看门狗）；占用中返回 `stage:"busy"`。
-- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 每条返回路径赋值（`sent` / `filled` / `prefilled` / `cdp` / `launch` / `error`），`health` 与 `send` 都会带回。
+- 并发：`send` / `send-image` / `toggle` / `restart` 统一走 `PipeServer.RunExclusive`（`PipeHost.TryBegin` 的 `_gate` 加锁 + 90 秒看门狗）；占用中返回 `stage:"busy"`。
+- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 每条返回路径赋值（`idle` / `fill` / `filled` / `sent` / `error`，或页面回读的原始状态串），`health` 与 `send` 都会带回。
 
 **生命周期（引用计数式，已实测）**
 
@@ -204,7 +204,7 @@ src/tests/
 
 ## 6. 上一轮修复内容（已核实）
 
-> 指产出基线 `5147d99` 的那一轮改动。
+> 指产出基线 `5147d99` 的那一轮改动（上一轮；当前基线为 `6e45d98`）。
 
 ### 6.1 网页版（web）
 
@@ -213,7 +213,7 @@ src/tests/
 | 发送成功与否无法判定（点击后即视为成功） | `ChatDriver.SendAndVerifyAsync`：发送后每 120ms 回读输入框，**仅当确实被清空才判定 `sent`**；失败按 `nobox` / `filllost` / `noaction` / `pending-*` / `unverified` 分类，除「未触发」外**不再导航**，以免中断进行中的会话 |
 | `?q=` 回退路径错误地报告成功 | 改为返回 `false` 并记录明确日志；移除无效的 `autosend=1` |
 | Enter 使用合成事件（`isTrusted:false`） | 改用 CDP `Input.dispatchKeyEvent`（新增 `CdpClient.DispatchEnterAsync`） |
-| 选择器过窄 | composer 支持 7 类候选；发送按钮改为**结构化优先**（`role=button` 且 class 同时含 `ds-button--primary` 与 `ds-button--circle`，取最深节点），再依次回退 label → svg 语义 → class 语义 → 旧 `M8.3125` 图标 |
+| 选择器过窄 | composer 支持 12 个候选选择器；发送按钮改为**结构化优先**（`role=button` 且 class 同时含 `ds-button--primary` 与 `ds-button--circle`，取最深节点），再依次回退 label → svg 语义 → class 语义 → 旧 `M8.3125` 图标 |
 | 冷启动等不到输入框 | 等待时间 10s → **25s**；超时打印页面 `readyState` / `url` / `title` / 正文长度；注入失败后 1.5s 再重试一次 |
 | CDP 连接无超时导致热键全部失效 | `ConnectAsync` 增加总预算与握手 `Task.WhenAny` 硬超时 |
 | `_pending` 跨线程无锁、并发时 id 冲突 | 统一使用 `_pendingGate` 锁，id 递增在同一锁内 |
@@ -259,7 +259,7 @@ src/tests/
 4. **历史无限增长**：`_history` 从不裁剪，图片每轮重新编码并重传，长对话会逐渐变慢，最终触发 400。
 5. **多行 `data:` 未拼接**（SSE 规范允许），目前每条 data 行独立解析。
 6. **气泡高度按 100% DPI 估算**：manifest 声明 PerMonitorV2，高 DPI 下可能遮挡最后一行。本机 96 DPI 渲染正常。
-7. **`EdgeHost.Hide()`、`IsRunning`、`Handle` 无调用方**（保留作为 API，不影响功能）。
+7. **`EdgeHost.Hide()`、`Handle` 无调用方**（保留作为 API，不影响功能；`IsRunning` 有调用方，`PipeHost.Health` 用它回传 `running`）。
 8. **`ChatDriver` 中部分 JS 由字符串拼接生成**，修改时容易引入语法错误。建议修改后通过反射取出脚本，在真实页面执行一次（本轮验证即采用此方式，思路见 §5.1）。
 
 ---
@@ -275,6 +275,6 @@ src/tests/
 | csc.exe | 14.8.10001.0 |
 | 浏览器 | Edge 156.0.4314.58（`Program Files (x86)`）、Chrome 156.0.8078.48（`Program Files`） |
 | git | `main` 跟踪 `origin`（地址以 `git remote -v` 为准），基线 commit `6e45d98` |
-| 源码规模 | 桌面端 27 个 `.cs`（shared 8 / engine 3 / service 3 / ui 12 / tests 1），构建为 `BubbleAsk.exe` + `BubbleAsk.Service.exe` + `BubbleAsk.Tests.exe`；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`） |
+| 源码规模 | 桌面端 27 个 `.cs`（shared 8 / engine 3 / service 3 / ui 12 / tests 1），构建为 `BubbleAsk.exe`（托盘 / `--service` 两种身份）与 `BubbleAsk.Tests.exe`；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`） |
 
 **已验证的事实**：`BubbleAsk.exe` 可启动，三个热键注册成功，自动检测到 Edge；将 `BrowserPath` 指向 Chrome 会改用 Chrome 并使用 `profile-chrome`；指向不存在的路径会回退自动检测。（测试过程中产生的 `%AppData%\BubbleAsk` 已清空，首次运行是全新状态。）

@@ -4,7 +4,11 @@ using System.Threading;
 namespace BubbleAsk
 {
     /// <summary>
-    /// 无界面后台服务入口。
+    /// 无界面后台服务模式。
+    ///
+    /// 它不是第二个 exe，而是 `BubbleAsk.exe --service`：同一个文件，靠命令行开关
+    /// 切到无界面分支（分派见 <c>src/ui/Program.cs</c>）。这样部署只有一个可执行
+    /// 文件，不会出现「两个 exe 必须放同一目录」「版本错配」这类问题。
     ///
     /// 生命周期（与客户端约定）：
     ///   - 任意客户端（托盘应用、DSH 插件、将来的 CLI）发现它没在跑就拉起它。
@@ -26,8 +30,8 @@ namespace BubbleAsk
         /// <summary>最后一条租约断开后等这么久再退出，覆盖客户端重启/插件重载。</summary>
         private const int GraceMilliseconds = 8000;
 
-        [STAThread]
-        private static int Main(string[] args)
+        /// <summary>跑服务模式，返回进程退出码。由界面入口按 `--service` 分派进来。</summary>
+        public static int Run()
         {
             bool createdNew;
             using (Mutex mutex = new Mutex(true, MutexName, out createdNew))
@@ -92,8 +96,8 @@ namespace BubbleAsk
                     };
 
                     server.Start();
-                    PipeServer.WriteDiscovery(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName);
-                    Log.Info("服务就绪，管道: " + PipeServer.PipeName);
+                    IpcContract.WriteDiscovery(IpcContract.AppExePath);
+                    Log.Info("服务就绪，管道: " + IpcContract.PipeName);
 
                     // 没有 WinForms 消息循环，靠一个事件把主线程挂住。
                     shutdown.WaitOne();

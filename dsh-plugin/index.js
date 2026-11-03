@@ -486,46 +486,6 @@ function condenseMessages(messages, options, selection, pinnedWindow) {
 }
 
 /**
- * 把同一批条目渲染成「原生对话结构」的 JSON 文本。
- *
- * 动机：DeepSeek 网页版只接受一个输入框，所以只能把轨迹序列化成文本。但序列化成
- * 模型训练时见过的形状（role / content / tool_calls）比自定义的 `[mN] 我：…` 更易读。
- * 这里保留 `ref` 字段（对应 prose 里的 `[mN]`），让模型仍能按消息号引用。
- *
- * 代价：JSON 语法本身占字符，同样的字数预算装的内容更少。是否启用要按实测决定。
- */
-function renderNativeTrace(chosen, options) {
-  const transcript = []
-  for (const entry of chosen) {
-    const ref = `m${entry.index}`
-    if (entry.kind === 'user') {
-      transcript.push({
-        ref,
-        role: 'user',
-        content: salientExcerpt(entry.text, options.maxCharsPerMessage),
-      })
-      continue
-    }
-    if (entry.kind === 'assistant') {
-      const message = {
-        ref,
-        role: 'assistant',
-        content: salientExcerpt(entry.text, options.maxCharsPerMessage),
-      }
-      if (entry.tools && entry.tools.length > 0) message.tool_calls = entry.tools.slice()
-      transcript.push(message)
-      continue
-    }
-    transcript.push({
-      ref,
-      role: 'tool',
-      content: describeToolResult(clip(entry.text, options.maxCharsPerMessage * 3)),
-    })
-  }
-  return JSON.stringify(transcript)
-}
-
-/**
  * 匹配用的归一化：去掉所有空白与统一大小写。
  *
  * 选区是从**渲染后的 DOM** 里抄出来的，原文可能带 markdown 包裹、软换行、
@@ -827,14 +787,6 @@ function buildPrompt({ trace, hit, selection, question, cwd }) {
   return parts.join('\n')
 }
 
-/** 把 prompt 拼成 DeepSeek 网页版认的 ?q= 预填地址。 */
-function buildPrefillUrl(chatUrl, prompt) {
-  const base = chatUrl || DEFAULTS.chatUrl
-  const separator = base.includes('?') ? '&' : '?'
-  const encoded = encodeURIComponent(prompt)
-  return `${base}${separator}q=${encoded}`
-}
-
 /**
  * `?q=` 预填的可用上限（编码后总长度）。
  *
@@ -1036,10 +988,13 @@ export function apply(ctx, config = {}) {
         log(`注入网页版：${fullPrompt.length} 字（轨迹 ${prepared.stats.traceMessages} 条）`)
         const app = await loadApp()
         if (!app || typeof app.sendPrompt !== 'function') {
-          return sendJson(res, 503, {
+          // 用 200 + ok:false：Client 端对非 2xx 是抛错的，那样就看不到这里的 prompt，
+          // 气泡里的「复制全文」逃生口就废了。状态交给 body 表达，别用 HTTP 码。
+          return sendJson(res, 200, {
             ok: false,
             stage: 'module',
-            detail: '托盘通信模块未就绪，可改用气泡里的「复制提问」手动粘贴',
+            error: '托盘通信模块未就绪',
+            detail: '可改用气泡里的「复制提问」或「复制全文」手动粘贴',
             prompt: fullPrompt,
             url: prepared.url,
             stats: prepared.stats,
@@ -1091,9 +1046,9 @@ export function apply(ctx, config = {}) {
     })()
     return () => {
       disposed = true
+      // 断开租约就是全部清理动作：服务看到没有租约了自然会退出。
       if (lease && typeof lease.close === 'function') lease.close()
       lease = null
-      void appModule?.shutdown?.()
     }
   }, 'bubble-ask: service lease')
 
@@ -1111,7 +1066,6 @@ export {
   buildPrompt,
   collectTraceEntries,
   condenseMessages,
-  renderNativeTrace,
   salientExcerpt,
   describeToolResult,
   prepareAsk,

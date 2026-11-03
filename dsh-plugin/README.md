@@ -114,7 +114,7 @@ cordis.patch.yml       插入 bubble-ask 条目
 
 ## 与后台服务的协作
 
-CDP 驱动只有一份实现，在无界面的 `BubbleAsk.Service.exe` 里（`ChatDriver.cs` / `CdpClient.cs`）。托盘界面与 DSH 插件都是它的客户端：
+CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service` 里（`ChatDriver.cs` / `CdpClient.cs`）。托盘界面与 DSH 插件都是它的客户端：
 
 ```text
 插件 index.js                      BubbleAsk.exe（托盘 UI）
@@ -122,16 +122,16 @@ CDP 驱动只有一份实现，在无界面的 `BubbleAsk.Service.exe` 里（`Ch
         │                                    │
         └──────── 本地命名管道 ──────────────┘
                             │
-                    BubbleAsk.Service.exe
+                  BubbleAsk.exe --service
                       ├─ PipeServer（协议 + 租约）
                       └─ ChatDriver ──CDP──▶ Edge
 ```
 
-- 发现：服务启动时把 `{version, app, pipe, pid, exe}` 写入 `%APPDATA%\BubbleAsk\ipc.json`。插件读它得到管道名与服务 exe 路径；把它当作「装在哪」的长期记录，是否在跑由 pid 存活 + `ping` 探活判断。
-- 自动拉起：插件第一次需要时若发现服务不在跑，会用 `exe` 字段启动它并等待就绪（最多 25 秒）。
+- 发现：服务启动时把 `{version, app, pipe, pid, exe}` 写入 `%APPDATA%\BubbleAsk\ipc.json`。插件读它得到管道名与程序路径；把它当作「装在哪」的长期记录，是否在跑由 pid 存活 + `ping` 探活判断。
+- 自动拉起：插件第一次需要时若发现服务不在跑，会用 `exe` 字段加 `--service` 参数启动它并等待就绪（最多 25 秒）。
 - 租约：插件在 Host 加载时发 `attach` 持有一条长期连接，DSH 运行期间一直挂着。服务靠租约数量判断「还有没有入口」，最后一个断开后等 8 秒宽限期再退出。DSH 退出时进程消失，连接自动断开，无需任何注销。
-- 协议 `v2`：命令 `ping` / `health` / `state` / `attach` / `open` / `toggle` / `send` / `send-image` / `topmost` / `restart`。版本字段必须与 `IpcContract.ProtocolVersion` 一致，不一致直接报「版本过旧」而不是静默失败。
-  插件目前只用到 `health` / `send` / `attach`；其余命令保留在契约里供托盘与将来的客户端（CLI、其他 IDE 插件）使用。
+- 协议 `v2`：命令 `ping` / `health` / `attach` / `toggle` / `send` / `send-image` / `topmost` / `restart`。版本字段必须与 `IpcContract.ProtocolVersion` 一致，不一致直接报「版本过旧」而不是静默失败。
+  插件目前只用到 `ping` / `health` / `send` / `attach`；其余命令保留在契约里供托盘与将来的客户端（CLI、其他 IDE 插件）使用。
 - 登录态：所有客户端共用同一份持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效。
 
 ## HTTP 路由
@@ -142,7 +142,7 @@ CDP 驱动只有一份实现，在无界面的 `BubbleAsk.Service.exe` 里（`Ch
 | --- | --- |
 | `POST /bubble-ask/prompt` | `{sessionId, selection, question}` → `{prompt, url, stats}` |
 | `POST /bubble-ask/send` | 同上，但会经管道让托盘应用实际注入网页版并发送 |
-| `GET /bubble-ask/health` | 自检：托盘应用是否连通（`cdpReady`）、协议版本、profile 目录、最近的自检记录 |
+| 任意方法 `/bubble-ask/health` | 自检：托盘应用是否连通（`cdpReady`）、协议版本、profile 目录、最近的自检记录（该路由不校验方法） |
 | `POST /bubble-ask/diag` | Client 端上报自检记录（最多保留 40 条），可通过 `/health` 的 `diag` 字段读取 |
 
 ## 配置
@@ -158,9 +158,9 @@ CDP 驱动只有一份实现，在无界面的 `BubbleAsk.Service.exe` 里（`Ch
 | `traceMode` | `relevance` | 轨迹挑选策略：`relevance` 优先锚定选区出处，再按相关性补足；`recent` 仅取最后若干条 |
 | `recentTail` | `1` | `relevance` 模式下固定保留的末尾消息条数（有命中锚点后，最近几条未必相关，故降为 1） |
 | `hitNeighbors` | `1` | 命中选区的那条消息前后各带几条邻居进入轨迹 |
-| `maxHits` | `2` | 「围绕命中位置的上下文」最多取几处命中 |
+| `maxHits` | `3` | 「围绕命中位置的上下文」最多取几处命中 |
 | `hitWindowLines` | `14` | 每处命中窗口取多少行 |
-| `hitWindowChars` | `1400` | 每处命中窗口的字符上限；单行超长（被压平的工具输出）时自动退化为字符窗口 |
+| `hitWindowChars` | `1200` | 每处命中窗口的字符上限；单行超长（被压平的工具输出）时自动退化为字符窗口 |
 | `maxToolEntries` | `2` | 进入轨迹的工具结果条数上限（作为证据，仅在其覆盖选区时纳入） |
 | `toolMinCoverage` | `0.12` | 工具结果覆盖选区的最低比例，达到该比例才进入轨迹 |
 | `minAssistantChars` | `60` | 助手正文短于该长度且不含路径、错误或决策时，视为过程性叙述，不进入轨迹 |

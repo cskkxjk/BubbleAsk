@@ -17,7 +17,7 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 
 | | 桌面端 | DSH 插件 |
 | --- | --- | --- |
-| 产物 | `dist\BubbleAsk.exe`（托盘界面）+ `dist\BubbleAsk.Service.exe`（无界面引擎服务），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） |
+| 产物 | `dist\BubbleAsk.exe`（一个可执行文件，托盘界面 + 可选的后台服务身份），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） |
 | 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 |
 | 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 |
 | 上下文 | 仅模板中的问题文本 | 每次自动附带精简会话轨迹 |
@@ -64,7 +64,7 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 构建不依赖 .NET SDK，使用系统自带的 .NET Framework 编译器：
 
 ```powershell
-# 构建（产出三个 exe）
+# 构建（产出一个可执行文件 + 一个自测程序）
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 # 构建并运行自测（生成 dist\selftest\*.png 截图）
@@ -78,11 +78,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
 | 文件 | 作用 |
 | --- | --- |
-| `dist\BubbleAsk.exe` | 托盘界面：热键、设置、气泡、截图。不含 CDP 驱动 |
-| `dist\BubbleAsk.Service.exe` | **无界面后台服务**：独占 CDP 引擎与浏览器窗口，被所有客户端共用 |
+| `dist\BubbleAsk.exe` | 无参运行 = 托盘界面（热键、设置、气泡、截图）；`--service` 运行 = 无界面后台服务（独占 CDP 引擎与浏览器窗口） |
 | `dist\BubbleAsk.Tests.exe` | 无界面自测 |
 
-> **部署要求：两个 exe 必须放在同一目录。** `BubbleAsk.exe` 依赖同目录的 `BubbleAsk.Service.exe` 来驱动网页版；缺了它托盘仍能启动，但网页版功能不可用。服务不需要手动启动 —— 托盘或 DSH 插件需要时会自动拉起它。
+> **一个文件，两种身份。** 后台服务不是第二个 exe，而是同一个 `BubbleAsk.exe` 带 `--service` 参数运行（单实例靠互斥锁，不是靠文件名）。服务不需要手动启动 —— 托盘或 DSH 插件需要时会自动拉起它；`--service` 进程会静默退出而不是弹窗，正常使用中你只需双击 `BubbleAsk.exe`。
 
 首次启动后的配置步骤：
 
@@ -240,7 +239,7 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 | `ChatUrl` | chat.deepseek.com | 网页版打开的地址 |
 | `WindowWidth` / `WindowHeight` | 480×720 | 网页版窗口尺寸 |
 | `TopMost` | `true` | 网页版窗口置顶 |
-| `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera） |
+| `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera → Chromium） |
 | `ProfileDir` | 空 | 登录数据目录；留空则按浏览器分别存储（Edge 使用 `edge-profile`，其余使用 `profile-<名称>`） |
 | `CdpPort` | `9333` | 本机调试端口；冲突时可修改 |
 | `ApiProvider` | `deepseek` | `deepseek` / `openai` / `siliconflow` / `ollama` / `custom` |
@@ -261,7 +260,7 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
   │    浏览器 --app（独立 profile，已登录）
   │    └ CDP：写入输入框 → 点击发送
   │          截图：setFileInputFiles 写入 file input（无上传入口时回退剪贴板粘贴）
-  │          发送未获确认 → 回退为 ?q= 预填链接（仅填入不发送）
+  │          发送未获确认 → 回退为 ?q= 预填链接（仅填入不发送；仅当填入/点击本身失败才回退）
   └─ API
        POST {base}/v1/chat/completions，stream=true → 逐段 SSE
        └ 自绘气泡：流式显示 + 多轮追问
@@ -281,7 +280,7 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 - 日志位于 `%AppData%\BubbleAsk\app.log`，可从托盘菜单直接打开。
 - **热键无响应**：通常为其他程序占用，日志中记录「热键被占用」，可在设置中更换组合。
-- **网页版窗口已启动但未自动发送**：检查日志中的「注入输入框结果」「发送按钮回读」「发送校验结果」。仅当回读确认输入框被清空时判定发送成功，否则记录「没能自动发送」并提示手动回车。`none` / `failed` 表示页面结构已变更，此时回退为 `?q=` 预填（仅填入不发送）。
+- **网页版窗口已启动但未自动发送**：检查日志中的「注入输入框结果」「发送按钮回读」「发送校验结果」。仅当回读确认输入框被清空时判定发送成功，否则记录「没能自动发送」并提示手动回车。回退为 `?q=` 预填只在**填入或点击本身失败**时发生（状态为 `null` / `noaction` / `filllost` / `nobox`）；`pending-*`、`unverified` 这类「已点击但未确认」不回退，以免把同一句话发两遍。
 - **无法获取选中文本**：目标程序不支持 `Ctrl+C`（部分 PDF 阅读器与游戏），改用 `Ctrl+Alt+A` 截图。
 - **截图未发送**：检查日志中的「打开上传入口」「截图已交进文件输入框」。`none` 表示页面结构变更或该页面不支持上传，此时回退为剪贴板粘贴，并要求窗口位于前台。
 - **托盘图标不可见**：展开通知区域的「^」，将图标拖至常显位置；并确认进程正在运行（任务管理器中查看 BubbleAsk）。
@@ -297,25 +296,36 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 ```text
 src/
-  Program.cs          入口、单实例、异常兜底、启动清理
-  TrayContext.cs      托盘、菜单、热键分发、模式路由
-  SettingsForm.cs     设置窗口
-  AppConfig.cs        配置读写（容忍缺失字段）
-  HotkeyManager.cs    RegisterHotKey 封装
-  ClipboardCapture.cs 取词、剪贴板、Ctrl+C/V
-  ScreenCapture.cs    全屏遮罩拖框截图、临时文件清理
-  BrowserLocator.cs   检测本机已安装的 Chromium 内核浏览器
-  EdgeHost.cs         启动、定位与置顶浏览器窗口（Edge / Chrome / Brave 等）
-  CdpClient.cs        WebSocket 与 CDP
-  ChatDriver.cs       网页版：注入、发送、图文、回退路径
-  ApiClient.cs        API：请求体拼装、SSE 流式解析、错误翻译
-  ApiProviders.cs     服务方预设
-  ApiChat.cs          API 会话：气泡生命周期与多轮对话
-  AnswerBubble.cs     自绘气泡窗口（圆角、流式显示、追问、复制）
-  AutoStart.cs        开机自启（当前用户 Run 键）
-  PromptBuilder.cs    模板拼装（纯函数）
-  Json.cs / Logger.cs / IconFactory.cs / MenuStyle.cs
-  TestProgram.cs      无界面自测（含本地 HTTP 桩服务）
+  shared/             两边共用的基础件（ui 与 service 都引用）
+    AppConfig.cs      配置读写（容忍缺失字段）
+    BrowserLocator.cs 检测本机已安装的 Chromium 内核浏览器
+    ClipboardCapture.cs 取词、剪贴板、Ctrl+C/V
+    PromptBuilder.cs  模板拼装（纯函数）
+    Logger.cs / Json.cs
+    IpcContract.cs    命名管道契约：协议版本、管道名、发现文件、连接与存活判断
+    EngineClient.cs   客户端侧：按需拉起服务、发命令、持有租约
+  engine/             网页版驱动（只编译进服务身份，ui 不得引用）
+    EdgeHost.cs       启动、定位与置顶浏览器窗口（Edge / Chrome / Brave 等）
+    CdpClient.cs      WebSocket 与 CDP
+    ChatDriver.cs     网页版：注入、发送、图文、回退路径
+  service/            --service 身份：唯一持有引擎的进程
+    Program.cs        静默单实例、租约驱动退出、宽限期
+    PipeServer.cs     管道协议：命令分发、并发闸门、进程内鉴权
+    PipeHost.cs       命令实现：把管道请求翻译成 ChatDriver 调用
+  ui/                 托盘身份
+    Program.cs        入口与模式分派（无参=托盘，--service=服务）、异常兜底
+    TrayContext.cs    托盘、菜单、热键分发、模式路由
+    SettingsForm.cs   设置窗口
+    HotkeyManager.cs  RegisterHotKey 封装
+    ScreenCapture.cs  全屏遮罩拖框截图、临时文件清理
+    ApiClient.cs      API：请求体拼装、SSE 流式解析、错误翻译
+    ApiProviders.cs   服务方预设
+    ApiChat.cs        API 会话：气泡生命周期与多轮对话
+    AnswerBubble.cs   自绘气泡窗口（圆角、流式显示、追问、复制）
+    AutoStart.cs      开机自启（当前用户 Run 键）
+    IconFactory.cs / MenuStyle.cs
+  tests/TestProgram.cs 无界面自测（含本地 HTTP 桩服务）
+  app.manifest        DPI 感知与管理员权限声明
 build.ps1             构建脚本（csc，无需 SDK）
 ```
 
@@ -324,9 +334,9 @@ build.ps1             构建脚本（csc，无需 SDK）
 `build.ps1 -Test` 返回 0 表示全部通过。覆盖范围：
 
 - JSON 解析、模板拼装（含截图模板）、热键解析（含「无修饰键必须拒绝」）、配置往返（含 `BrowserPath` 与旧 `EdgePath` 迁移）
-- 浏览器自动检测：本机识别、可执行文件名反查 id、显式路径 / 空路径 / 不存在路径的解析、按浏览器隔离 profile 目录
+- 浏览器自动检测：本机识别、可执行文件名反查 id、显式路径 / 空路径的解析、按浏览器隔离 profile 目录（「不存在的路径」断言仅在未检测到任何浏览器时执行）
 - 服务方预设解析、接口地址补全、请求体结构（文本 / 图片 data URL）、图片等比缩小
-- SSE 增量解析、推理字段、`[DONE]`、非流式回退、HTTP 错误翻译、400/403/404/413/422 提示
+- SSE 增量解析、推理字段、`[DONE]`、非流式回退、HTTP 错误翻译（401 / 404 有断言，400 / 402 / 403 / 413 / 422 / 429 的分支实现存在但未被测试覆盖）
 - 流中 `error` 帧抛异常、`finish_reason=length` 的截断提示、空回答报错、非流式回退被截断报错
 - 针对本地桩服务执行真实流式请求（含 401 分支）
 - **端到端**：`ApiChat` → 气泡 → 桩服务 → 流式落字 → 追问第二轮；服务端不发送正文时气泡显示超时并恢复可用

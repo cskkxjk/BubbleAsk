@@ -89,11 +89,6 @@ namespace BubbleAsk
             return await _driver.AskWithImageAsync(imagePath, prompt);
         }
 
-        public async Task<bool> OpenAsync()
-        {
-            return await _driver.OpenAsync();
-        }
-
         public async Task<bool> ToggleAsync()
         {
             return await _driver.ToggleAsync();

@@ -19,8 +19,8 @@ namespace BubbleAsk
         /// <summary>服务版本。</summary>
         public const string AppVersion = "2.0.0";
 
-        /// <summary>服务可执行文件名（与托盘应用放在同一目录）。</summary>
-        public const string ServiceExeName = "BubbleAsk.Service.exe";
+        /// <summary>服务模式的命令行开关：同一个 exe，带这个参数就不进界面。</summary>
+        public const string ServiceSwitch = "--service";
 
         /// <summary>管道名：前缀 + 当前用户名，避免不同登录会话之间串台。</summary>
         public static string PipeName
@@ -113,36 +113,23 @@ namespace BubbleAsk
             }
         }
 
-        /// <summary>服务 exe 路径：优先发现文件，其次与当前进程同目录。</summary>
-        public static string ResolveServiceExe(string configured)
+        /// <summary>
+        /// 本程序的路径。服务不是第二个文件，而是这个 exe 的 `--service` 模式，
+        /// 客户端拉起「服务」时执行的就是自己 —— 装到哪个目录都不会找错。
+        /// </summary>
+        public static string AppExePath
         {
-            if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
+            get
             {
-                return configured;
-            }
-            Dictionary<string, object> data = ReadDiscovery();
-            if (data != null)
-            {
-                string recorded = Json.GetString(data, "exe", "");
-                if (!string.IsNullOrEmpty(recorded) && File.Exists(recorded))
+                try
                 {
-                    return recorded;
+                    return System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+                }
+                catch
+                {
+                    return "";
                 }
             }
-            try
-            {
-                string dir = Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly().Location);
-                string sibling = Path.Combine(dir, ServiceExeName);
-                if (File.Exists(sibling))
-                {
-                    return sibling;
-                }
-            }
-            catch
-            {
-                // 拿不到入口程序集就放弃。
-            }
-            return "";
         }
 
         /// <summary>pid 是否还活着（权限不足也算活着）。</summary>

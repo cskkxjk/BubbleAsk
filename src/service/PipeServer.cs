@@ -11,9 +11,10 @@ using System.Threading.Tasks;
 namespace BubbleAsk
 {
     /// <summary>
-    /// 托盘应用提供给外部进程（例如 DSH 插件）的能力。
+    /// 管道服务需要宿主提供的能力。
     ///
-    /// 单独抽出来是为了让自测程序能塞一个假宿主，不必真的起一套浏览器与 CDP。
+    /// 目前唯一的实现是 <see cref="PipeHost"/>；接口留着是为了把「管道协议」与
+    /// 「浏览器驱动」分开写，两者改动节奏不同。
     /// </summary>
     public interface IIpcHost
     {
@@ -28,9 +29,6 @@ namespace BubbleAsk
 
         /// <summary>注入截图提问并发送。</summary>
         Task<bool> SendImageAsync(string imagePath, string prompt);
-
-        /// <summary>只打开 / 复用窗口，不注入。</summary>
-        Task<bool> OpenAsync();
 
         /// <summary>唤起 / 收起窗口；返回 true 表示这次是「收起」。</summary>
         Task<bool> ToggleAsync();
@@ -56,19 +54,13 @@ namespace BubbleAsk
     /// 服务靠租约数量判断「还有没有入口」—— 客户端崩溃时会话自然断开，
     /// 不需要任何注销逻辑。
     ///
-    /// 命令：ping / health / state / open / send / send-image / toggle / topmost / restart / attach。
+    /// 命令：ping / health / send / send-image / toggle / topmost / restart / attach。
     ///
-    /// 管道名与发现信息由 <see cref="WriteDiscovery"/> 写到 %APPDATA%\BubbleAsk\ipc.json，
+    /// 管道名与发现信息由 <see cref="IpcContract"/> 写到 %APPDATA%\BubbleAsk\ipc.json，
     /// 让对端不必猜测管道名，也能读到协议版本与本进程 pid。
     /// </summary>
     public class PipeServer : IDisposable
     {
-        /// <summary>协议版本（见 <see cref="IpcContract"/>）。</summary>
-        public const int ProtocolVersion = IpcContract.ProtocolVersion;
-
-        /// <summary>服务版本。</summary>
-        public const string AppVersion = IpcContract.AppVersion;
-
         private const int MaxConcurrentInstances = 8;
         private const int BufferSize = 64 * 1024;
 
@@ -151,24 +143,6 @@ namespace BubbleAsk
         public static string PipeName
         {
             get { return IpcContract.PipeName; }
-        }
-
-        /// <summary>发现文件路径（见 <see cref="IpcContract"/>）。</summary>
-        public static string DiscoveryPath
-        {
-            get { return IpcContract.DiscoveryPath; }
-        }
-
-        /// <summary>把发现信息写下来，供所有客户端读取（委托给共享契约）。</summary>
-        public static void WriteDiscovery(string exePath)
-        {
-            IpcContract.WriteDiscovery(exePath);
-        }
-
-        /// <summary>进程退出时把 pid 置 0，但保留 exe 路径（委托给共享契约）。</summary>
-        public static void MarkStopped()
-        {
-            IpcContract.MarkStopped();
         }
 
         public void Start()
@@ -308,7 +282,7 @@ namespace BubbleAsk
                             {
                                 leased = true;
                                 AddLease();
-                                Log.Info("客户端接入，当前搭配租约: " + LeaseCount);
+                                Log.Info("客户端接入，当前租约: " + LeaseCount);
                             }
                             continue;
                         }
@@ -339,6 +313,26 @@ namespace BubbleAsk
             return new DispatchResult { Response = response, KeepOpen = false };
         }
 
+        /// <summary>
+        /// 独占执行一段宿主操作：抢不到占位就回 busy，抢到就一定在 finally 里释放。
+        /// 四个带副作用的命令共用，避免每个分支重复一遍 try/finally。
+        /// </summary>
+        private async Task<DispatchResult> RunExclusive(string what, Func<Task<Dictionary<string, object>>> body)
+        {
+            if (!_host.TryBegin(what))
+            {
+                return Reply(Fail("busy", "上一个操作还没结束，请稍候重试"));
+            }
+            try
+            {
+                return Reply(await body().ConfigureAwait(false));
+            }
+            finally
+            {
+                _host.End();
+            }
+        }
+
         private async Task<DispatchResult> DispatchAsync(string line, CancellationToken token)
         {
             Dictionary<string, object> request = Json.ParseObject(line);
@@ -350,12 +344,12 @@ namespace BubbleAsk
 
             // 版本不一致就别硬撑：调用方按这个字段提示"请升级 Bubble Ask"。
             int version = Json.GetInt(request, "v", 0);
-            if (version != ProtocolVersion)
+            if (version != IpcContract.ProtocolVersion)
             {
                 Dictionary<string, object> mismatch = Fail("version",
-                    "协议版本不匹配（对端 " + version + "，本端 " + ProtocolVersion + "）");
-                mismatch["version"] = ProtocolVersion;
-                mismatch["app"] = AppVersion;
+                    "协议版本不匹配（对端 " + version + "，本端 " + IpcContract.ProtocolVersion + "）");
+                mismatch["version"] = IpcContract.ProtocolVersion;
+                mismatch["app"] = IpcContract.AppVersion;
                 return Reply(mismatch);
             }
 
@@ -363,75 +357,46 @@ namespace BubbleAsk
             if (command == "attach")
             {
                 Dictionary<string, object> attached = Ok();
-                attached["version"] = ProtocolVersion;
-                attached["app"] = AppVersion;
-                attached["leases"] = LeaseCount;
+                attached["version"] = IpcContract.ProtocolVersion;
+                attached["app"] = IpcContract.AppVersion;
+                // 计数要 +1：这条连接在响应写回之后才真正登记为租约。
+                attached["leases"] = LeaseCount + 1;
                 return new DispatchResult { Response = attached, KeepOpen = true };
             }
 
             if (command == "ping")
             {
                 Dictionary<string, object> pong = Ok();
-                pong["version"] = ProtocolVersion;
-                pong["app"] = AppVersion;
+                pong["version"] = IpcContract.ProtocolVersion;
+                pong["app"] = IpcContract.AppVersion;
                 pong["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id;
                 pong["leases"] = LeaseCount;
                 return Reply(pong);
             }
 
-            if (command == "health" || command == "state")
+            if (command == "health")
             {
                 Dictionary<string, object> health = Ok();
                 foreach (KeyValuePair<string, object> pair in _host.Health())
                 {
                     health[pair.Key] = pair.Value;
                 }
-                health["version"] = ProtocolVersion;
-                health["app"] = AppVersion;
+                health["version"] = IpcContract.ProtocolVersion;
+                health["app"] = IpcContract.AppVersion;
                 health["leases"] = LeaseCount;
                 return Reply(health);
             }
 
-            if (command == "open")
-            {
-                if (!_host.TryBegin("管道打开窗口"))
-                {
-                    return Reply(Fail("busy", "上一个操作还没结束，请稍候重试"));
-                }
-                try
-                {
-                    bool opened = await _host.OpenAsync().ConfigureAwait(false);
-                    Dictionary<string, object> result = Ok();
-                    result["ok"] = opened;
-                    result["stage"] = opened ? "opened" : "launch";
-                    result["detail"] = opened ? "窗口已就绪" : "窗口没能打开";
-                    return Reply(result);
-                }
-                finally
-                {
-                    _host.End();
-                }
-            }
-
             if (command == "toggle")
             {
-                if (!_host.TryBegin("管道唤起/收起"))
-                {
-                    return Reply(Fail("busy", "上一个操作还没结束，请稍候重试"));
-                }
-                try
+                return await RunExclusive("管道唤起/收起", async delegate
                 {
                     bool closed = await _host.ToggleAsync().ConfigureAwait(false);
                     Dictionary<string, object> result = Ok();
-                    result["ok"] = true;
                     result["closed"] = closed;
                     result["detail"] = closed ? "已收起窗口" : "窗口已在前台";
-                    return Reply(result);
-                }
-                finally
-                {
-                    _host.End();
-                }
+                    return result;
+                }).ConfigureAwait(false);
             }
 
             if (command == "topmost")
@@ -442,21 +407,13 @@ namespace BubbleAsk
 
             if (command == "restart")
             {
-                if (!_host.TryBegin("管道重启会话"))
-                {
-                    return Reply(Fail("busy", "上一个操作还没结束，请稍候重试"));
-                }
-                try
+                return await RunExclusive("管道重启会话", delegate
                 {
                     _host.Restart();
                     Dictionary<string, object> result = Ok();
                     result["detail"] = "会话已重启，下次操作会重新拉起浏览器";
-                    return Reply(result);
-                }
-                finally
-                {
-                    _host.End();
-                }
+                    return Task.FromResult(result);
+                }).ConfigureAwait(false);
             }
 
             if (command == "send" || command == "send-image")
@@ -471,11 +428,7 @@ namespace BubbleAsk
                 {
                     return Reply(Fail("fill", "imagePath 为空"));
                 }
-                if (!_host.TryBegin("管道发送"))
-                {
-                    return Reply(Fail("busy", "上一个操作还没结束，请稍候重试"));
-                }
-                try
+                return await RunExclusive("管道发送", async delegate
                 {
                     bool sent = command == "send-image"
                         ? await _host.SendImageAsync(imagePath, prompt).ConfigureAwait(false)
@@ -484,12 +437,8 @@ namespace BubbleAsk
                     result["ok"] = sent;
                     result["stage"] = _host.LastStatus;
                     result["detail"] = sent ? "已发送到网页版" : "未能确认发送，请在窗口里手动回车";
-                    return Reply(result);
-                }
-                finally
-                {
-                    _host.End();
-                }
+                    return result;
+                }).ConfigureAwait(false);
             }
 
             return Reply(Fail("unknown-cmd", "不认识的命令: " + command));
@@ -551,7 +500,7 @@ namespace BubbleAsk
             {
                 // 忽略。
             }
-            MarkStopped();
+            IpcContract.MarkStopped();
             Log.Info("管道服务已停止");
         }
     }
