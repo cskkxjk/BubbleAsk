@@ -87,27 +87,43 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test    # 103 项通过，
 
 ## 4. 架构地图
 
+源码按职责分组在 `src/<group>/`，分组只影响构建与阅读，不影响运行期行为：
+
 ```text
-Program.cs            入口、单实例、异常兜底、启动清理
-TrayContext.cs        托盘、菜单、热键分发、模式路由（_busy 看门狗）
- ├─ web  → ChatDriver.cs      连接 → 等待输入框 → 注入 → 点击 / Enter → 回读校验
- │          ├─ BrowserLocator.cs 检测本机已安装的 Chromium 内核浏览器（注册表与常见路径）
- │          ├─ EdgeHost.cs     启动、定位与置顶浏览器窗口（已通用化，类名沿用 EdgeHost）
- │          ├─ CdpClient.cs    WebSocket 与 CDP（超时、加锁、串行发送、整段解码）
- │          └─ ClipboardCapture.cs  Ctrl+C 取词、Ctrl+V 粘贴
- └─ api  → ApiChat.cs         气泡生命周期、多轮对话、取消与超时
-            ├─ ApiClient.cs     请求体、SSE 解析、读超时看门狗、错误翻译、图片 data URL
-            ├─ AnswerBubble.cs  自绘气泡（流式、追问、复制、跟随鼠标）
-            └─ ApiProviders.cs  服务方预设
-SettingsForm.cs       设置窗口（纯代码布局，4 页，含浏览器下拉框）
-PipeServer.cs         本地命名管道服务（IIpcHost）：供 DSH 插件复用本应用的 CDP 驱动
-AppConfig.cs          配置读写（%AppData%\BubbleAsk\config.json）
-HotkeyManager.cs      RegisterHotKey 与隐藏窗口接收 WM_HOTKEY
-ScreenCapture.cs      全屏遮罩拖框截图（单窗口覆盖多显示器的虚拟屏）
-PromptBuilder.cs      模板拼装（纯函数）
-Json.cs / Logger.cs / IconFactory.cs / MenuStyle.cs / AutoStart.cs
-TestProgram.cs        无界面自测（含 StubServer 与 stall 模式）
+src/shared/    纯工具，界面与引擎都要
+  Json.cs                JavaScriptSerializer 薄封装
+  Logger.cs              日志（%AppData%\BubbleAsk\app.log）
+  AppConfig.cs           配置读写（%AppData%\BubbleAsk\config.json）
+  BrowserLocator.cs      检测本机已安装的 Chromium 内核浏览器（注册表与常见路径）
+  PromptBuilder.cs       模板拼装（纯函数）
+
+src/engine/    CDP 与浏览器窗口 —— 全仓库只有这一份实现
+  ChatDriver.cs          连接 → 等待输入框 → 注入 → 点击 / Enter → 回读校验；LastStatus 回传阶段
+  EdgeHost.cs            启动、定位与置顶浏览器窗口（已通用化，类名沿用 EdgeHost）
+  CdpClient.cs           WebSocket 与 CDP（超时、加锁、串行发送、整段解码）
+
+src/service/   后台服务的对外入口
+  PipeServer.cs          命名管道（IIpcHost）：ping / health / open / send
+
+src/ui/        托盘界面，不直接碰 CDP
+  Program.cs             入口、单实例、异常兜底、启动清理
+  TrayContext.cs         托盘、菜单、热键分发、模式路由（_busy 看门狗，_gate 锁）
+   ├─ web  → 经 ChatDriver（阶段 2 起改为经管道调服务）
+   └─ api  → ApiChat.cs  气泡生命周期、多轮对话、取消与超时
+                ├─ ApiClient.cs     请求体、SSE 解析、读超时看门狗、错误翻译、图片 data URL
+                ├─ AnswerBubble.cs  自绘气泡（流式、追问、复制、跟随鼠标）
+                └─ ApiProviders.cs  服务方预设
+  SettingsForm.cs        设置窗口（纯代码布局，4 页，含浏览器下拉框）
+  HotkeyManager.cs       RegisterHotKey 与隐藏窗口接收 WM_HOTKEY
+  ScreenCapture.cs       全屏遮罩拖框截图（单窗口覆盖多显示器的虚拟屏）
+  ClipboardCapture.cs    Ctrl+C 取词、Ctrl+V 粘贴
+  IconFactory.cs / MenuStyle.cs / AutoStart.cs
+
+src/tests/
+  TestProgram.cs         无界面自测（含 StubServer 与 stall 模式）
 ```
+
+`build.ps1` 按分组取源文件，用 `/main:` 区分两个目标。当前阶段四个分组（shared/engine/ui/service）都编进同一个 `BubbleAsk.exe`；`build.ps1` 里的注释标明了阶段 2 的拆分点。
 
 关键路径：配置 `%AppData%\BubbleAsk\config.json`；日志 `app.log`（超过 1MB 时删除重建）；profile 按浏览器分别存储；临时截图 `%TEMP%\BubbleAsk\shot-*.png`（启动时清理一天前的文件）。
 
