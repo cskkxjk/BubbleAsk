@@ -175,7 +175,7 @@ CDP 驱动只有一份实现，在无界面的 `BubbleAsk.Service.exe` 里（`Ch
 DSH 桌面端右侧栏的 Browser（`Ctrl+T`）看起来是更省事的位置，但它有两处由宿主决定、插件无法绕开的限制：
 
 - **登录不跨重启**。WebView 的存储分区由主进程生成：`dsh-sidebar-browser-${randomUUID()}`，没有 `persist:` 前缀，因此只存在于进程内存。应用重启后 Cookie 与 Web Storage 一并消失，需要重新登录；同时同一工作目录的多个标签页共享该分区。
-- **网页版会判定环境异常**。该 guest 运行在 Electron 内核中，`chat.deepseek.com` 会弹出「使用环境异常 / 可能存在数据和隐私泄露风险」的横幅。
+- **网页版会判定环境异常**。该 guest 运行在 Electron 内核中，`chat.deepseek.com` 会弹出「使用环境异常 / 可能存在数据和隐私泄露风险」的横幅。该横幅已通过实验归因到 **UA 字符串中的 `Electron` 标记**（改 UA 即消失、改回即复现，`userAgentData.brands` 与 `navigator.webdriver` 均已排除），实验记录见 [docs/ua-banner-finding.md](../docs/ua-banner-finding.md)。但侧边栏 webview 的 UA 由宿主控制，插件不便插手，故仍走原生窗口。
 
 插件的原生窗口链路用独立持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效，也没有上述横幅。
 

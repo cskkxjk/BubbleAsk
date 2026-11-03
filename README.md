@@ -17,7 +17,7 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 
 | | 桌面端 | DSH 插件 |
 | --- | --- | --- |
-| 产物 | `dist\BubbleAsk.exe`（主体实现，C# 5 / WinForms / .NET Framework） | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） |
+| 产物 | `dist\BubbleAsk.exe`（托盘界面）+ `dist\BubbleAsk.Service.exe`（无界面引擎服务），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） |
 | 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 |
 | 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 |
 | 上下文 | 仅模板中的问题文本 | 每次自动附带精简会话轨迹 |
@@ -64,15 +64,25 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 构建不依赖 .NET SDK，使用系统自带的 .NET Framework 编译器：
 
 ```powershell
-# 构建
+# 构建（产出三个 exe）
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 # 构建并运行自测（生成 dist\selftest\*.png 截图）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
-# 启动
+# 启动托盘界面
 .\dist\BubbleAsk.exe
 ```
+
+构建产物：
+
+| 文件 | 作用 |
+| --- | --- |
+| `dist\BubbleAsk.exe` | 托盘界面：热键、设置、气泡、截图。不含 CDP 驱动 |
+| `dist\BubbleAsk.Service.exe` | **无界面后台服务**：独占 CDP 引擎与浏览器窗口，被所有客户端共用 |
+| `dist\BubbleAsk.Tests.exe` | 无界面自测 |
+
+> **部署要求：两个 exe 必须放在同一目录。** `BubbleAsk.exe` 依赖同目录的 `BubbleAsk.Service.exe` 来驱动网页版；缺了它托盘仍能启动，但网页版功能不可用。服务不需要手动启动 —— 托盘或 DSH 插件需要时会自动拉起它。
 
 首次启动后的配置步骤：
 
@@ -80,6 +90,18 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 2. **网页版**：按 `Ctrl+Alt+D` 启动浏览器窗口并打开 chat.deepseek.com，在其中完成一次登录，此后长期有效。
 3. **API**：托盘菜单 →「设置…」→ API 页签，选择服务方、填写 Key 并确认模型名。
 4. 在任意程序中选中文本后按 `Ctrl+Alt+Q`，或按 `Ctrl+Alt+A` 框选屏幕区域。
+
+服务的启动与退出（引用计数式）：
+
+| 场景 | 服务 |
+| --- | --- |
+| 只开 DSH（插件未装或未启用） | 不启动 |
+| DSH + 插件 / 托盘 / 两者都开 | 启动并常驻（各持一条租约） |
+| 退出其中一个入口 | 不退出（还有别的入口） |
+| 最后一个入口退出 | 等 8 秒宽限期，期间有新入口则取消退出 |
+| 服务退出时浏览器窗口还开着 | 窗口保留，下次启动自动接回 |
+
+服务目前**没有**注册开机自启；它由第一个需要它的客户端拉起。
 
 ## DSH 插件：安装与验证
 
