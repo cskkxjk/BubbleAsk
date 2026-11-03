@@ -137,7 +137,8 @@ src/tests/
 - 命令：`ping`（握手）、`health`（运行状态/端口/profile/AutoSend）、`open`（只开窗口）、`send`（注入并发送）。
 - 版本：`ProtocolVersion = 1`。请求里的 `v` 与常量不一致时返回 `stage:"version"`，对端据此提示升级，而不是静默失败。
 - 并发：`send` / `open` 复用 `TrayContext.TryBeginOperation`（现由 `_gate` 加锁，因为管道线程与界面线程都会碰 `_busy`）；占用中返回 `stage:"busy"`。
-- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 的每条返回路径上赋值（`sent` / `filled` / `prefilled` / `cdp` / `launch` / `error`），管道把它作为 `stage` 返回给插件面板。
+- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 的每条返回路径上赋值（`sent` / `filled` / `prefilled` / `cdp` / `launch` / `error`），管道把它作为 `stage` 返回给插件，插件显示在划词气泡里。
+- 客户端用法：插件只用 `health` 与 `send`；`ping` 是握手，`open`（只开窗口不注入）保留在契约里供将来的 CLI / 其他 IDE 插件使用。
 
 
 ---

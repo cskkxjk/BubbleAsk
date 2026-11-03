@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ### 前置条件
 
 - 已安装 DSH，且其 Web 界面可正常打开（侧栏存在「插件」入口）。
-- 「发送到 DeepSeek」路径要求：本机已安装 Chromium 内核浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），并已登录 chat.deepseek.com。仅使用「只准备」时无此要求。
+- 「发送到 DeepSeek」路径要求：本机已安装 Chromium 内核浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），并已登录 chat.deepseek.com。仅使用「复制提问」时无此要求。
 
 ### 方式一：界面安装（桌面版推荐）
 
@@ -155,9 +155,9 @@ error: profile "desktop" is managed exclusively by the Electron application
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ```
 
-安装成功时返回 `{"ok":true,"cdpReady":true,"browsers":["..."]}`；未安装时该路径返回 404（本机实测）。
+安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,...}}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示托盘应用已连通且协议版本一致。
 
-**功能验证**：在会话中选中一段回答，选区下方出现「💬 问这段」气泡；点击「只准备」后，右侧栏会出现 Bubble Ask 专属面板并显示整理好的完整提问。
+**功能验证**：在会话中选中一段回答，选区下方出现「💬 问这段」气泡；点击「复制提问」后，完整提问应已复制到剪贴板，气泡里显示「已复制 N 字」。
 
 ### 安装排查
 

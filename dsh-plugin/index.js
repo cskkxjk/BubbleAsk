@@ -4,19 +4,19 @@
  * 职责：把当前会话的「精简轨迹」取出来，和用户选中的文字一起拼成一段带上下文的提问，
  * 再交给 DeepSeek 网页版。Client 半只负责选词和气泡，通过本进程的 HTTP 路由拿结果。
  *
- * 两条链路：
- *   panel —— 组好的提问交给右侧栏的 Bubble Ask 专属面板（可见、可复制、可再发送）
- *   app   —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
+ * 投递方式只有一条（外加一个纯手动兜底）：
+ *   app      —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
+ *   clipboard —— 只组上下文、不发送，把完整提问复制到剪贴板供手动粘贴
  *
- * 不再使用右侧栏的内嵌浏览器（ctrl+T Browser）：那套 Electron guest 环境的存储分区
- * 由主进程按进程生命周期生成（无 persist: 前缀），每次重启都要重新登录，
- * 且网页版会把 guest 环境判定为「使用环境异常」。
+ * 不在右侧栏渲染任何东西。内嵌浏览器（ctrl+T Browser）不可用：那套 Electron guest
+ * 环境的存储分区由主进程按进程生命周期生成（无 persist: 前缀），每次重启都要重新登录，
+ * 且网页版会把 guest 环境判定为「使用环境异常」；而原生窗口是独立 OS 窗口，无法内嵌。
  *
- * 也不再自己驱动 CDP：托盘应用持有唯一一份持久化登录 profile，是网页版窗口的唯一权威，
+ * 也不自己驱动 CDP：托盘应用持有唯一一份持久化登录 profile，是网页版窗口的唯一权威，
  * 插件只当薄客户端（见 lib/ask-client.mjs）。
  */
 /**
- * 托盘应用通信模块（lib/ask-client.mjs）按需加载：缺文件时面板与「复制全文」照样能用，
+ * 托盘应用通信模块（lib/ask-client.mjs）按需加载：缺文件时「复制提问」照样能用，
  * 只是「发送到 DeepSeek」这条自动路径会明确报未就绪，而不是整个插件挂掉。
  */
 let appModule
@@ -72,8 +72,6 @@ const DEFAULTS = {
 
 const ROUTE_PROMPT = '/bubble-ask/prompt'
 const ROUTE_SEND = '/bubble-ask/send'
-const ROUTE_OPEN = '/bubble-ask/open'
-const ROUTE_STATE = '/bubble-ask/state'
 const ROUTE_HEALTH = '/bubble-ask/health'
 const ROUTE_DIAG = '/bubble-ask/diag'
 const MAX_BODY_BYTES = 128 * 1024
@@ -81,15 +79,6 @@ const MAX_BODY_BYTES = 128 * 1024
 /** Client 半上报的记录（最近若干条，用于无人值守自检）。 */
 const diagLog = []
 const DIAG_LIMIT = 40
-
-/**
- * 上一次「组好的提问」和「发送结果」。
- *
- * 侧边栏面板是独立的一棵子树，页面重载后模块内存会清空；面板挂载时读这两个字段
- * 就能把上一次的上下文找回来，不必让用户重新划词。
- */
-let lastAsk = null
-let lastSend = null
 
 export const name = 'bubble-ask'
 export const inject = ['webServer']
@@ -665,55 +654,12 @@ export function apply(ctx, config = {}) {
       try {
         const input = await readJsonBody(req)
         const result = prepareAsk(sessions(), settings, input)
-        if (result.ok) {
-          lastAsk = {
-            at: Date.now(),
-            sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
-            question: typeof input.question === 'string' ? input.question : '',
-            selection: typeof input.selection === 'string' ? input.selection.trim() : '',
-            mode: result.mode,
-            prompt: result.prompt,
-            url: result.url,
-            stats: result.stats,
-          }
-        }
         sendJson(res, result.ok ? 200 : 400, result)
       } catch (error) {
         sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
       }
     },
   }), 'bubble-ask: prompt route')
-
-  /**
-   * 只把原生浏览器窗口拉起来 / 复用，不注入、不发送。
-   *
-   * 侧边栏面板的「打开窗口」用它：用户想先看看网页版、或者手动粘贴。
-   */
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: ROUTE_OPEN,
-    async handler(req, res) {
-      try {
-        const app = await loadApp()
-        if (!app || typeof app.openWindow !== 'function') {
-          return sendJson(res, 503, { ok: false, stage: 'module', detail: '托盘通信模块未就绪' })
-        }
-        const opened = await app.openWindow({ appPath: settings.appPath, log: (line) => log(line) })
-        sendJson(res, 200, opened)
-      } catch (error) {
-        sendJson(res, 500, { ok: false, stage: 'error', detail: String(error?.message ?? error) })
-      }
-    },
-  }), 'bubble-ask: open route')
-
-  /** 面板重载后用来恢复上一次的提问与发送结果。 */
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: ROUTE_STATE,
-    async handler(_req, res) {
-      sendJson(res, 200, { ok: true, lastAsk, lastSend })
-    },
-  }), 'bubble-ask: state route')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -732,7 +678,7 @@ export function apply(ctx, config = {}) {
           return sendJson(res, 503, {
             ok: false,
             stage: 'module',
-            detail: '托盘通信模块未就绪，可先用面板里的「复制全文」手动粘贴',
+            detail: '托盘通信模块未就绪，可改用气泡里的「复制提问」手动粘贴',
             prompt: fullPrompt,
             url: prepared.url,
             stats: prepared.stats,
@@ -746,23 +692,6 @@ export function apply(ctx, config = {}) {
         const body = { ...sent, prompt: fullPrompt, stats: prepared.stats, prefillUrl: prepared.url }
         // 发送成功时网页版会停在会话页；插件这边没有直达地址，留预填地址做参考。
         if (!body.url) body.url = prepared.url
-        lastAsk = {
-          at: Date.now(),
-          sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
-          question: typeof input.question === 'string' ? input.question : '',
-          selection: typeof input.selection === 'string' ? input.selection.trim() : '',
-          mode: 'app',
-          prompt: fullPrompt,
-          url: body.url,
-          stats: prepared.stats,
-        }
-        lastSend = {
-          at: Date.now(),
-          ok: Boolean(sent.ok),
-          stage: sent.stage,
-          detail: sent.detail ?? '',
-          url: body.url,
-        }
         sendJson(res, 200, body)
       } catch (error) {
         sendJson(res, 500, { ok: false, stage: 'error', detail: String(error?.message ?? error) })

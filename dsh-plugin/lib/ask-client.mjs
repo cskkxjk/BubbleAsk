@@ -24,9 +24,7 @@ export const PROTOCOL_VERSION = 1
 
 /** 发送要等页面渲染 + 注入 + 校验，冷启动还会拉浏览器，给足预算。 */
 const SEND_TIMEOUT_MS = 180000
-/** 只开窗口：连接 + 等 composer。 */
-const OPEN_TIMEOUT_MS = 60000
-/** 健康检查要快，不该卡住面板。 */
+/** 健康检查要快，不该卡住任何调用方。 */
 const HEALTH_TIMEOUT_MS = 10000
 
 /** 发现文件路径。 */
@@ -199,16 +197,11 @@ async function call(command, payload, options = {}) {
 
 /**
  * 健康检查：应用是否在线、协议版本、运行中的浏览器 profile 等。
- * 永不抛错——面板和自检都靠它判断状态。
+ * 永不抛错——/health 与自检都靠它判断状态。
  */
 export async function health(options = {}) {
   const result = await call('health', {}, { ...options, timeoutMs: HEALTH_TIMEOUT_MS })
   return result
-}
-
-/** 只打开 / 复用网页版窗口，不注入任何内容。 */
-export async function openWindow(options = {}) {
-  return call('open', {}, { ...options, timeoutMs: OPEN_TIMEOUT_MS })
 }
 
 /** 注入完整提问并发送（是否自动点发送由托盘应用自己的配置决定）。 */

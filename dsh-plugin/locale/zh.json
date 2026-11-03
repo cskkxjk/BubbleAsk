@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "划词提问（Bubble Ask）",
-    "description": "在会话里选中文字，一键把「精简会话轨迹 + 选中文字」注入 DeepSeek 网页版，让它解释这段文字在当前上下文中的含义。问答走原生浏览器窗口，右侧栏提供 Bubble Ask 专属面板。"
+    "description": "在会话里选中文字，一键把「精简会话轨迹 + 选中文字」交给 Bubble Ask 桌面端注入 DeepSeek 网页版，让它解释这段文字在当前上下文中的含义。"
   }
 }

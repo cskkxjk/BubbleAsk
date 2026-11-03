@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Bubble Ask (selection ask)",
-    "description": "Select text in a session and inject a condensed session trace plus the selection into the DeepSeek web app, so it explains what the selected text means in that context. Answers open in the native browser window; the right sidebar hosts a dedicated Bubble Ask panel."
+    "description": "Select text in a session and hand a condensed session trace plus the selection to the Bubble Ask desktop app, which injects it into the DeepSeek web app so it explains what the selected text means in that context."
   }
 }
