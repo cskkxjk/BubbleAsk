@@ -99,7 +99,7 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 同一段原文被多处引用时（例如先 grep 出来、后来又被重新读一遍），命中指纹会识别出来，只保留原文出处那一处。
 
-轨迹在每次提问时重新生成，因此连续追问时上下文始终跟随会话。Harness 注入的运行时上下文（时间戳、`Current runtime context` 等）会被过滤，不计入会话内容。
+轨迹在每次提问时重新生成，因此连续追问时上下文始终跟随会话。Harness 注入的运行时上下文（时间戳、`Current runtime context`、技能目录、子代理通知等）按消息自带的 `source.kind` 判别并排除：只有 `source.kind === 'user'` 的才是用户真的说的话，其余都视为注入。拿不到 `source` 的旧会话退回文案黑名单。
 
 ## 结构
 

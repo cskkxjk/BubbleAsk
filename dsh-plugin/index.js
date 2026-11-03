@@ -136,7 +136,12 @@ function sendJson(res, status, payload) {
   res.end(body)
 }
 
-/** 这些是 Harness 注入的运行时上下文，不是用户真的说的话，拼轨迹时丢掉。 */
+/**
+ * 这些是 Harness 注入的运行时上下文，不是用户真的说的话，拼轨迹时丢掉。
+ *
+ * 正常路径已改用消息自带的 `source.kind`（见 `isUserSpeech`）判别，这份清单只在
+ * 拿不到 `source` 的旧会话里兜底，不要再往里加新文案。
+ */
 const RUNTIME_NOISE = [
   /^Time sampled while preparing/,
   /^Elapsed since the preceding/,
@@ -151,6 +156,24 @@ const RUNTIME_NOISE = [
   /^\[BubbleAsk 自检\]/,
   /<system-reminder>/,
 ]
+
+/** 无论来源如何都不进轨迹的：本插件自检时发出去的探针消息。 */
+const ALWAYS_NOISE = [/^\[BubbleAsk 自检\]/]
+
+/**
+ * 一条 user 角色消息是不是「用户真的说的话」。
+ *
+ * DSH 给每条注入消息都写了 `source.kind`：真实用户消息是 `user`，注入的是
+ * `time-context` / `runtime-context` / `skill-catalog` / `agent-message` /
+ * `agent-instructions` / `compact-checkpoint` 等。这个字段比 Harness 的文案稳定得多
+ * （实测本机 895 条 user 消息里 580 条是注入），所以优先用它；拿不到再退回文案黑名单。
+ */
+function isUserSpeech(message, text) {
+  if (ALWAYS_NOISE.some((pattern) => pattern.test(text))) return false
+  const kind = message && message.source ? message.source.kind : ''
+  if (typeof kind === 'string' && kind) return kind === 'user'
+  return !RUNTIME_NOISE.some((pattern) => pattern.test(text))
+}
 
 /**
  * 工具结果里这些内容对「解释语义」没帮助，整条跳过：
@@ -220,7 +243,7 @@ function collectTraceEntries(messages, options = {}) {
     if (message.role === 'user') {
       const text = blocksText(blocks, ['text'])
       if (!text) continue
-      if (RUNTIME_NOISE.some((pattern) => pattern.test(text))) continue
+      if (!isUserSpeech(message, text)) continue
       entries.push({ index, kind: 'user', text })
       continue
     }
