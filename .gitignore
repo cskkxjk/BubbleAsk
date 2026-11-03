@@ -4,6 +4,10 @@ dist/
 *.pdb
 *.rsp
 
+# 分发包
+packages/
+.tmp-pack/
+
 # 临时/实验文件
 .tmp-*/
 *.tmp

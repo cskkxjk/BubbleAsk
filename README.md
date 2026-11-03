@@ -13,19 +13,21 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 
 ## 项目组成
 
-本仓库包含两个相互独立的交付物。
+本仓库包含三个相互独立的交付物，三者可以只用其中一个。
 
-| | 桌面端 | DSH 插件 |
-| --- | --- | --- |
-| 产物 | `dist\BubbleAsk.exe`（一个可执行文件，托盘界面 + 可选的后台服务身份），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） |
-| 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 |
-| 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 |
-| 上下文 | 仅模板中的问题文本 | 每次自动附带精简会话轨迹 |
-| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端（网页版注入由它执行） |
+| | 桌面端 | DSH 插件 | Chrome 扩展 |
+| --- | --- | --- | --- |
+| 产物 | `dist\BubbleAsk.exe`（一个可执行文件，托盘界面 + 可选的后台服务身份），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） | [`chrome-extension/`](chrome-extension/README.md)（MV3 扩展） |
+| 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 | Chrome / Edge 浏览器 |
+| 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 | 工具栏图标或 `Ctrl+Shift+Y` |
+| 上下文 | 选中的文字 / 截图 | 精简会话轨迹 | 当前网页的结构与文字 |
+| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端 | 无（复用浏览器自身的 DeepSeek 登录） |
 
 桌面端是本仓库唯一的 CDP 实现（`ChatDriver.cs` / `CdpClient.cs`）。插件不再移植一份，而是通过本地命名管道调用桌面端，两边共用同一份持久化登录 profile —— 装一次、登一次即可。
 
 因此使用插件需要先装桌面端：**先构建并启动 `BubbleAsk.exe`，再安装插件。** 仅使用桌面端时无需安装插件；插件在桌面端未运行时仍可整理上下文与复制全文，只是无法自动发送。
+
+Chrome 扩展是唯一的例外：它不依赖桌面端，也不依赖任何本地服务 —— 它在自己的沙箱里采集页面，再把提问交给一个真实打开的 chat.deepseek.com 标签页（所以直接用你浏览器里已登录的账号）。为什么不能像普通侧边栏那样用 iframe 内嵌，见 [chrome-extension/README.md](chrome-extension/README.md#为什么要单开窗口而不是在页面里嵌一个-iframe)。
 
 ## 功能
 
@@ -224,6 +226,43 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 6. 不要修改仓库源码，不要改动 dist\ 下的桌面端产物，不要修改 DSH 中与本插件无关的配置。
 ```
 
+## Chrome 扩展：安装与使用
+
+把**当前网页**当作上下文，在右侧独立窗口里用 DeepSeek 网页版提问，复用浏览器已有的登录态，不需要 API Key，也不依赖桌面端。
+
+### 安装
+
+1. 打开 `chrome://extensions`（Edge 为 `edge://extensions`），开启「开发者模式」。
+2. 点「加载已解压的扩展程序」，选择本仓库的 `chrome-extension/` 目录（或解压后的分发包目录）。
+3. 首次使用时右侧窗口会打开 chat.deepseek.com，登录一次即可长期有效。
+
+### 使用
+
+- 点工具栏图标：弹窗显示页面规模与选中文字，填问题后「发送到 DeepSeek」。
+- 快捷键 `Ctrl+Shift+Y`：直接以默认问题提问。
+- 「复制提问」把含完整上下文的提问复制到剪贴板。
+
+### 为什么不是页内 iframe 侧栏
+
+`chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，且登录 cookie 是 `SameSite=Strict` —— 跨站 iframe 既渲染不出来、也带不上登录态。所以侧边窗口是真实的 DeepSeek 标签页（无地址栏弹窗，贴屏幕右侧），这也正是它能"免登录"的原因。细节与采集范围见 [chrome-extension/README.md](chrome-extension/README.md)。
+
+## 打包分发包
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pack.ps1
+powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 dist
+```
+
+产物落在 `packages\`，三个交付物各一个 zip：
+
+| 包 | 内容 | 用法 |
+| --- | --- | --- |
+| `BubbleAsk-desktop-<ver>.zip` | `BubbleAsk.exe` + 用法说明 | 解压后双击运行（单文件，无需其他文件） |
+| `BubbleAsk-dsh-plugin-<ver>.zip` | 插件完整目录 | 作为 DSH 插件的安装来源（本地目录或解压后的路径） |
+| `BubbleAsk-chrome-extension-<ver>.zip` | 扩展完整目录 | 解压后「加载已解压的扩展程序」 |
+
+版本号由脚本从各交付物的真实来源读取（`IpcContract.cs` 的 `AppVersion`、`package.json`、`manifest.json`），不手写。
+
 ## 配置
 
 配置文件位于 `%AppData%\BubbleAsk\config.json`，也可在托盘菜单 →「设置…」中修改。常用项：
@@ -327,6 +366,20 @@ src/
   tests/TestProgram.cs 无界面自测（含本地 HTTP 桩服务）
   app.manifest        DPI 感知与管理员权限声明
 build.ps1             构建脚本（csc，无需 SDK）
+pack.ps1              打包脚本（三个交付物各一个 zip）
+
+dsh-plugin/           DSH 插件（Node 包）
+  index.js            Host 端：轨迹精简、prompt 拼装、HTTP 路由
+  client.js           Client 端：选区气泡与会话探针
+  lib/ask-client.mjs  与桌面端服务的命名管道通信
+
+chrome-extension/     Chrome / Edge 扩展（MV3）
+  manifest.json       权限与入口声明
+  background.js       调度：采集 → 拼提问 → 交给 DeepSeek 侧边窗口
+  lib/prompt.js       页面上下文 → 提问文本（纯函数）
+  content/collect.js  页面结构与文字采集（隔离世界执行）
+  content/deepseek-bridge.js  在 chat.deepseek.com 内填入并发送、回读确认
+  popup/              工具栏弹窗（预览 + 提问 + 复制）
 ```
 
 ## 测试
@@ -350,8 +403,10 @@ build.ps1             构建脚本（csc，无需 SDK）
 
 ## 已知限制
 
-- 仅支持 Windows，依赖 Win32 热键、剪贴板与 Chromium 内核浏览器。
+- 桌面端仅支持 Windows，依赖 Win32 热键、剪贴板与 Chromium 内核浏览器。
 - 网页版依赖 Chromium 的 `--app` 与 CDP；浏览器大版本更新或 chat.deepseek.com 改版后可能需要调整选择器。
 - 网页版取词依赖目标程序支持 `Ctrl+C`；截图上传依赖页面存在 `input[type=file]` 或可识别的上传按钮。
+- Chrome 扩展只支持 Chromium 内核浏览器；`chrome://` 等内置页面、PDF 预览页与跨域 iframe 内的内容读不到。
+- 三个交付物都要面对 chat.deepseek.com 改版：发送按钮按 `ds-button--primary` + `ds-button--circle` 结构化匹配，改版后可能需要调整；失败时会如实报告阶段，不会谎报成功。
 - API 模式将图片重新编码为 PNG 并将长边压缩至 1400px，超长截图会损失细节。
 - 沙箱或远程桌面环境可能拦截浏览器调试端口；纯 API 模式不受影响。

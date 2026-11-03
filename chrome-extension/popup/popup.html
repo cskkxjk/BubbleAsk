@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bubble Ask</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="../icons/icon32.png" alt="" width="20" height="20" />
+      <div class="titles">
+        <strong>用这个页面提问</strong>
+        <span id="page-title" class="muted">正在读取页面…</span>
+      </div>
+    </header>
+
+    <section id="summary-row" class="muted" hidden>
+      <span id="summary"></span>
+    </section>
+
+    <section id="selection-box" hidden>
+      <div class="label">选中的文字</div>
+      <pre id="selection"></pre>
+    </section>
+
+    <section>
+      <label class="label" for="question">我的问题（留空则用默认问题）</label>
+      <textarea id="question" rows="3" placeholder="例如：这段配置的作用是什么？"></textarea>
+    </section>
+
+    <section class="actions">
+      <button id="send" class="primary">发送到 DeepSeek</button>
+      <button id="copy">复制提问</button>
+    </section>
+
+    <p id="status" class="muted"></p>
+
+    <footer class="muted">
+      侧边窗口是真实的 chat.deepseek.com 标签页，直接复用浏览器已登录的账号。
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Bubble Ask — 页面问答",
+  "version": "1.0.0",
+  "description": "把当前页面的结构与文字作为上下文，在右侧独立窗口里用 DeepSeek 网页版提问，复用浏览器已登录的账号。",
+  "minimum_chrome_version": "114",
+  "permissions": ["scripting", "activeTab", "tabs", "storage", "windows"],
+  "host_permissions": ["https://chat.deepseek.com/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "用页面上下文提问",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "ask-page": {
+      "suggested_key": { "default": "Ctrl+Shift+Y" },
+      "description": "用当前页面上下文提问"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content/deepseek-bridge.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

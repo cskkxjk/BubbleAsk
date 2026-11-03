@@ -1,0 +1,85 @@
+# Bubble Ask — Chrome 扩展（页面问答）
+
+把**当前网页**当成上下文，在右侧独立窗口里用 DeepSeek 网页版提问。回答直接出现在 DeepSeek 页面里，不需要 API Key。
+
+## 为什么要单开窗口，而不是在页面里嵌一个 iframe
+
+这是硬约束，不是偷懒：
+
+```text
+Content-Security-Policy: frame-ancestors 'none'
+Set-Cookie: ds_session_id=…; HttpOnly; Secure; SameSite=Strict
+```
+
+1. `frame-ancestors 'none'` —— DeepSeek 明确禁止被任何页面（包括扩展）放进 iframe。
+2. 更关键的是 `SameSite=Strict` —— 即使剥离 CSP，跨站 iframe 也**带不上**登录 cookie，嵌进去必然是未登录状态。
+
+所以侧边窗口是一个**真实的 chat.deepseek.com 标签页**（`chrome.windows.create` 建的无地址栏弹窗），它天然复用浏览器已登录的账号：装完扩展打开一次，之后都不用再登录。
+
+## 安装
+
+1. 打开 `chrome://extensions`（Edge 是 `edge://extensions`），开启「开发者模式」。
+2. 点「加载已解压的扩展程序」，选择本目录（`chrome-extension/`）。
+3. 首次使用时，右侧窗口打开 chat.deepseek.com 并登录一次 —— 用的是你自己浏览器的登录态，之后长期有效。
+
+## 用法
+
+- **点击工具栏图标**：弹窗里显示这个页面的规模、你选中的文字，填问题（留空则用默认问题）→「发送到 DeepSeek」。
+- **快捷键** `Ctrl+Shift+Y`：直接用默认问题提问，不弹窗。
+- 「复制提问」把完整提问（含页面上下文）复制到剪贴板，可自行粘贴到别处。
+
+右侧窗口只在第一次需要时创建，之后复用同一个标签页，所以连续追问是同一段对话、上下文连续。
+
+## 采集了什么
+
+「读取页面所有元素」按预算分层提取，不是无脑全量（一个页面轻易上万节点，全塞进去会淹没问题）：
+
+| 层 | 内容 | 上限 |
+| --- | --- | --- |
+| 页面背景 | 标题、地址、`meta description`、语言、规模统计 | — |
+| 结构 | `h1`–`h6` 层级（带缩进） | 40 条 |
+| 文字 | `body.innerText`（已排除不可见内容） | 9000 字，超出按头尾截断 |
+| 元素分布 | 标签数量 Top12、语义区块计数（nav/main/aside/form/table…） | — |
+| 可交互 | 链接、按钮、输入框、下拉框、`role=button` 等，取可见标签 | 80 条 |
+| 表单 | 字段类型、绑定 `<label>`、`name`、占位符、是否必填 | 40 条 |
+| 选中文字 | 选区文本 + 它所在 DOM 路径（如 `p#target（正文段落） < main`） | — |
+
+上下文读取在**隔离世界**里执行（`chrome.scripting.executeScript`），不受页面自身 CSP 限制。
+
+## 权限说明
+
+| 权限 | 为什么需要 |
+| --- | --- |
+| `activeTab` + `scripting` | 只在你点击扩展时才读当前标签页，不需要「读取所有网站数据」 |
+| `tabs` | 找到并复用已经打开的 DeepSeek 标签页 |
+| `windows` | 创建贴右侧的独立窗口 |
+| `storage` | 保存最近一次发送结果 |
+| `host_permissions: https://chat.deepseek.com/*` | 在该页面注入执行器、调用管道消息 |
+
+扩展**不向任何第三方服务器发送数据**，页面内容只进你自己浏览器里的 DeepSeek 网页版。
+
+## 发送是怎么确认成功的
+
+与桌面端 `ChatDriver` 同一套判据：填入 → 定位发送按钮（`ds-button--primary` + `ds-button--circle`，且不会误命中上传按钮的 `ds-button--iconLabelPrimary`）→ 点击 → **回读输入框是否被清空**。
+
+一个坑：在**首页**发送会新建会话并跳转到 `/a/chat/s/<id>`，旧 `textarea` 被整体替换，盯着旧节点永远读不到「已清空」。所以回读时每次都重新查输入框，并把 URL 变成会话页也当作成功信号。
+
+阶段回传：`sent`（确认发出）/ `filled`（填入成功但没确认）/ `login`（未登录）/ `no-composer`（找不到输入框）/ `no-button` / `unverified` / `window`（窗口没就绪）。
+
+## 与另外两个交付物的关系
+
+| | 桌面端 `BubbleAsk.exe` | DSH 插件 | 本扩展 |
+| --- | --- | --- | --- |
+| 上下文 | 选中的文字/截图 | 会话轨迹 | 当前网页 |
+| 触发 | 全局热键 | 会话内气泡 | 工具栏图标 / 快捷键 |
+| 需要装什么 | 无（自带 CDP 驱动浏览器） | 需先装桌面端 | 无 |
+| 登录 | 独立 profile，登一次 | 复用桌面端 profile | **复用浏览器现有登录** |
+
+三者互不依赖，可以只用其中一个。
+
+## 已知限制
+
+- 只支持 Chromium 内核浏览器（Chrome / Edge 等），Firefox 不可用（`chrome.sidePanel`/MV3 差异）。
+- 浏览器内置页面（`chrome://`、`edge://`、扩展页）不允许读取，会明确提示。
+- PDF 预览页与跨域 iframe 内的内容读不到（浏览器限制）。
+- DeepSeek 改版后选择器可能需要调整；失败时会给明确阶段，不会谎报成功。
