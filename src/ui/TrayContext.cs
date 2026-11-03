@@ -9,17 +9,17 @@ using System.Windows.Forms;
 namespace BubbleAsk
 {
     /// <summary>托盘应用主体：热键分发、菜单、设置。</summary>
-    public class TrayContext : ApplicationContext, IIpcHost
+    public class TrayContext : ApplicationContext
     {
         private readonly AppConfig _config;
-        private readonly ChatDriver _driver;
+        /// <summary>网页版引擎在后台服务里；这里只是客户端。</summary>
+        private readonly EngineClient _engine;
         private readonly ApiChat _api;
         private HotkeyManager _hotkeys;
         private readonly NotifyIcon _tray;
         private readonly Icon _icon;
         private SettingsForm _settingsForm;
-        private PipeServer _ipc;
-        /// <summary>管道线程与界面线程都会碰 _busy，统一用它串行化。</summary>
+        /// <summary>本地占用位：避免连点/热键重复触发，服务端还有一层自己的占用位。</summary>
         private readonly object _gate = new object();
         private bool _busy;
         private DateTime _busySince;
@@ -30,7 +30,7 @@ namespace BubbleAsk
         public TrayContext(AppConfig config)
         {
             _config = config;
-            _driver = new ChatDriver(config);
+            _engine = new EngineClient(config);
             _api = new ApiChat(config);
 
             _icon = IconFactory.Create(32);
@@ -48,18 +48,24 @@ namespace BubbleAsk
                 ToolTipIcon.Info);
             Log.Info("托盘已就绪");
 
-            // 管道服务：让 DSH 插件复用同一套登录 profile 与 CDP 驱动。
-            // 起不来不该影响托盘本身，所以整体包一层。
+            // 引擎在后台服务里：确保它起来，并登记一条租约让服务知道托盘还活着。
+            // 起不来不影响托盘与其他功能，只是网页版不可用。
             try
             {
-                _ipc = new PipeServer(this);
-                _ipc.Start();
-                PipeServer.WriteDiscovery(Application.ExecutablePath);
-                Log.Info("DSH 插件可经管道调用: " + PipeServer.PipeName);
+                string error;
+                if (_engine.EnsureRunning(out error))
+                {
+                    _engine.AttachLease();
+                    Log.Info("后台服务已就绪: " + IpcContract.PipeName);
+                }
+                else
+                {
+                    Log.Warn("后台服务未就绪（网页版功能不可用）: " + error);
+                }
             }
             catch (Exception error)
             {
-                Log.Warn("管道服务启动失败（插件将无法调用本应用）: " + error.Message);
+                Log.Warn("连接后台服务失败: " + error.Message);
             }
         }
 
@@ -119,19 +125,24 @@ namespace BubbleAsk
         {
             try
             {
-                BrowserInfo browser = _driver.Edge.Browser;
-                if (browser == null)
+                Dictionary<string, object> health = _engine.Health();
+                if (!Json.GetBool(health, "ok", false))
                 {
-                    Log.Warn("没有检测到可用的浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），网页版会启动失败");
+                    Log.Warn("后台服务未就绪，浏览器信息由服务在启动时记录");
+                    return;
+                }
+                string browser = Json.GetString(health, "browser", "");
+                if (string.IsNullOrEmpty(browser))
+                {
+                    Log.Warn("服务报告没有可用的浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），网页版会启动失败");
                     Balloon("找不到浏览器", "没有检测到 Edge / Chrome 等 Chromium 内核浏览器，请在设置里指定浏览器路径。");
                     return;
                 }
-                Log.Info("使用的浏览器: " + browser.DisplayName + " " + browser.Version + " (" + browser.ExePath
-                         + ")，profile: " + _driver.Edge.EffectiveProfileDir);
+                Log.Info("服务使用的浏览器: " + browser + "，profile: " + Json.GetString(health, "profileDir", ""));
             }
             catch (Exception error)
             {
-                Log.Warn("检测浏览器失败: " + error.Message);
+                Log.Warn("查询服务状态失败: " + error.Message);
             }
         }
 
@@ -185,56 +196,6 @@ namespace BubbleAsk
             }
         }
 
-        //#region IIpcHost —— 供 DSH 插件通过本地管道复用本应用的登录态与 CDP 驱动
-
-        bool IIpcHost.TryBegin(string what)
-        {
-            return TryBeginOperation(what);
-        }
-
-        void IIpcHost.End()
-        {
-            EndOperation();
-        }
-
-        async Task<bool> IIpcHost.SendAsync(string prompt)
-        {
-            return await _driver.AskAsync(prompt);
-        }
-
-        async Task<bool> IIpcHost.OpenAsync()
-        {
-            return await _driver.OpenAsync();
-        }
-
-        string IIpcHost.LastStatus
-        {
-            get { return _driver.LastStatus; }
-        }
-
-        Dictionary<string, object> IIpcHost.Health()
-        {
-            Dictionary<string, object> health = new Dictionary<string, object>();
-            try
-            {
-                health["running"] = _driver.Edge.IsRunning;
-                health["profileDir"] = _driver.Edge.EffectiveProfileDir;
-            }
-            catch (Exception error)
-            {
-                health["running"] = false;
-                health["error"] = error.Message;
-            }
-            health["apiMode"] = IsApiMode();
-            health["mode"] = _config.Mode;
-            health["autoSend"] = _config.AutoSend;
-            health["cdpPort"] = _config.CdpPort;
-            health["chatUrl"] = _config.ChatUrl;
-            return health;
-        }
-
-        //#endregion
-
         private async void OpenChat()
         {
             if (!TryBeginOperation("唤起/收起窗口"))
@@ -254,7 +215,7 @@ namespace BubbleAsk
                 }
                 try
                 {
-                    bool closed = await _driver.ToggleAsync();
+                    bool closed = await _engine.ToggleAsync();
                     if (closed)
                     {
                         Log.Info("网页版窗口已收起");
@@ -310,7 +271,7 @@ namespace BubbleAsk
 
                 try
                 {
-                    bool ok = await _driver.AskAsync(prompt);
+                    bool ok = await _engine.AskAsync(prompt);
                     if (!ok)
                     {
                         Balloon("没能自动发送",
@@ -367,7 +328,7 @@ namespace BubbleAsk
 
                 try
                 {
-                    bool ok = await _driver.AskWithImageAsync(path, prompt);
+                    bool ok = await _engine.AskWithImageAsync(path, prompt);
                     if (!ok)
                     {
                         Balloon("截图没能自动发出",
@@ -424,7 +385,7 @@ namespace BubbleAsk
                 {
                     _config.Save();
                     RebindHotkeys();
-                    _driver.Edge.ApplyTopMost();
+                    _engine.ApplyTopMost();
                     // 窗口尺寸/调试端口/浏览器 这些要等下次拉起浏览器才生效，别一律说"已生效"。
                     Balloon("设置已保存", "热键立即生效；窗口尺寸、调试端口、浏览器改动会在下次打开网页窗口时生效。");
                 }
@@ -436,8 +397,7 @@ namespace BubbleAsk
         {
             try
             {
-                _driver.Dispose();
-                _driver.Edge.Stop();
+                _engine.Restart();
                 Balloon("会话已重启", "下次提问会重新拉起 Edge。");
             }
             catch (Exception error)
@@ -472,16 +432,11 @@ namespace BubbleAsk
             {
                 _tray.Visible = false;
                 _tray.Dispose();
-                if (_ipc != null)
-                {
-                    _ipc.Dispose();
-                    _ipc = null;
-                }
                 if (_hotkeys != null)
                 {
                     _hotkeys.Dispose();
                 }
-                _driver.Dispose();
+                _engine.Dispose();
                 _api.Dispose();
                 _icon.Dispose();
             }
@@ -500,18 +455,13 @@ namespace BubbleAsk
                     _tray.Visible = false;
                     _tray.Dispose();
                 }
-                if (_ipc != null)
-                {
-                    _ipc.Dispose();
-                    _ipc = null;
-                }
                 if (_hotkeys != null)
                 {
                     _hotkeys.Dispose();
                 }
-                if (_driver != null)
+                if (_engine != null)
                 {
-                    _driver.Dispose();
+                    _engine.Dispose();
                 }
                 if (_api != null)
                 {

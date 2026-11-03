@@ -450,7 +450,49 @@ function condenseMessages(messages, options, selection) {
     totalEntries: entries.length,
     toolCandidates: toolPool.length,
     mode,
+    /** 被选中的条目（含完整原文），供另一种格式重渲染 / 对照。 */
+    chosen,
   }
+}
+
+/**
+ * 把同一批条目渲染成「原生对话结构」的 JSON 文本。
+ *
+ * 动机：DeepSeek 网页版只接受一个输入框，所以只能把轨迹序列化成文本。但序列化成
+ * 模型训练时见过的形状（role / content / tool_calls）比自定义的 `[mN] 我：…` 更易读。
+ * 这里保留 `ref` 字段（对应 prose 里的 `[mN]`），让模型仍能按消息号引用。
+ *
+ * 代价：JSON 语法本身占字符，同样的字数预算装的内容更少。是否启用要按实测决定。
+ */
+function renderNativeTrace(chosen, options) {
+  const transcript = []
+  for (const entry of chosen) {
+    const ref = `m${entry.index}`
+    if (entry.kind === 'user') {
+      transcript.push({
+        ref,
+        role: 'user',
+        content: salientExcerpt(entry.text, options.maxCharsPerMessage),
+      })
+      continue
+    }
+    if (entry.kind === 'assistant') {
+      const message = {
+        ref,
+        role: 'assistant',
+        content: salientExcerpt(entry.text, options.maxCharsPerMessage),
+      }
+      if (entry.tools && entry.tools.length > 0) message.tool_calls = entry.tools.slice()
+      transcript.push(message)
+      continue
+    }
+    transcript.push({
+      ref,
+      role: 'tool',
+      content: describeToolResult(clip(entry.text, options.maxCharsPerMessage * 3)),
+    })
+  }
+  return JSON.stringify(transcript)
 }
 
 /** 组一段「带上下文的提问」。 */
@@ -699,9 +741,59 @@ export function apply(ctx, config = {}) {
     },
   }), 'bubble-ask: send route')
 
-  ctx.effect(() => () => {
-    void appModule?.shutdown?.()
-  }, 'bubble-ask: shutdown')
+  /**
+   * 插件存活期间向后台服务登记一条租约。
+   *
+   * 服务靠「还有没有租约」决定是否退出：DSH 运行期间插件一直挂着这条连接，
+   * DSH 退出时 Host 进程消失、连接自动断开，服务进入宽限期后退出。
+   * 启动失败只记一条日志，首次发送时会再尝试拉起。
+   */
+  ctx.effect(() => {
+    let lease = null
+    let disposed = false
+    void (async () => {
+      try {
+        const app = await loadApp()
+        if (!app || typeof app.attachLease !== 'function') return
+        const attached = await app.attachLease({ appPath: settings.appPath, log: (line) => log(line) })
+        if (disposed) {
+          attached.close()
+          return
+        }
+        if (!attached.ok) {
+          log(`未能向服务登记租约：${attached.detail || '未知原因'}`)
+          return
+        }
+        lease = attached
+        log('已登记服务租约')
+      } catch (error) {
+        log(`登记服务租约失败：${String(error?.message ?? error)}`)
+      }
+    })()
+    return () => {
+      disposed = true
+      if (lease && typeof lease.close === 'function') lease.close()
+      lease = null
+      void appModule?.shutdown?.()
+    }
+  }, 'bubble-ask: service lease')
 
   log(`已就绪（chatUrl=${settings.chatUrl}）`)
+}
+
+/**
+ * 供离线分析与对照工具使用的内部导出。
+ *
+ * DSH 只认 apply / inject / name，多导出这些不改变插件行为，
+ * 但能让 `npm test` 之外的脚本用**真实实现**跑对照，而不是另写一份近似版本。
+ */
+export {
+  DEFAULTS,
+  buildPrompt,
+  collectTraceEntries,
+  condenseMessages,
+  renderNativeTrace,
+  salientExcerpt,
+  describeToolResult,
+  prepareAsk,
 }

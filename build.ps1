@@ -22,16 +22,20 @@ if ($Clean -and (Test-Path $distDir)) {
 }
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
-# 源码按职责分组。分组只影响构建与阅读，不改任何运行期行为。
-#   shared  纯工具：配置、日志、JSON、浏览器探测、提示词拼装（界面与引擎都要）
-#   engine  CDP 与浏览器窗口：ChatDriver / EdgeHost / CdpClient（唯一持有者，见下）
-#   service 后台服务的对外入口：PipeServer
-#   ui      托盘界面、设置、气泡、热键、截图（不直接碰 CDP）
+# 源码按职责分组。
+#   shared  纯工具：配置、日志、JSON、浏览器探测、提示词拼装、IPC 契约与客户端
+#   engine  CDP 与浏览器窗口：ChatDriver / EdgeHost / CdpClient（只编进服务）
+#   service 后台服务入口与宿主：Program / PipeHost / PipeServer
+#   ui      托盘界面、设置、气泡、热键、截图（只编进托盘）
 #   tests   无界面自测入口
 #
-# 阶段 1（当前）：四组仍全部编进同一个 BubbleAsk.exe，部署形态与之前完全一致。
-# 阶段 2：service 单独成 BubbleAsk.Service.exe 并独占 engine；托盘改为管道客户端，
-#         届时 $appSources 去掉 engine 与 service 两组。
+# 部署形态：
+#   BubbleAsk.exe          = shared + ui                 —— 纯 UI，网页版经管道调用服务
+#   BubbleAsk.Service.exe  = shared + engine + service    —— 无界面，独占引擎
+#   BubbleAsk.Tests.exe    = 以上全部 + tests            —— 自测需要触达所有类型
+#
+# 关键：engine 只进服务。托盘里不再有第二份 ChatDriver，两个所有者抢同一个
+# profile / CDP 端口的问题从结构上消除。
 function Get-GroupSources {
     param([string[]]$Groups)
 
@@ -52,11 +56,15 @@ $uiSources = Get-GroupSources @('ui')
 $serviceSources = Get-GroupSources @('service')
 $testSources = Get-GroupSources @('tests')
 
-$appSources = @($sharedSources) + @($engineSources) + @($uiSources) + @($serviceSources)
-$testAllSources = $appSources + @($testSources)
+$appSources = @($sharedSources) + @($uiSources)
+$serviceTargetSources = @($sharedSources) + @($engineSources) + @($serviceSources)
+$testAllSources = @($sharedSources) + @($engineSources) + @($uiSources) + @($serviceSources) + @($testSources)
 
 if ($appSources.Count -eq 0) {
-    throw 'No .cs files found under src/<group>.'
+    throw 'No .cs files found under src/shared and src/ui.'
+}
+if ($serviceTargetSources.Count -eq 0) {
+    throw 'No .cs files found under src/shared, src/engine and src/service.'
 }
 if ($testAllSources.Count -eq 0) {
     throw 'No .cs files found for the test target.'
@@ -106,11 +114,16 @@ $appOut = Join-Path $distDir 'BubbleAsk.exe'
 Write-Host "Building $appOut ($($appSources.Count) sources)"
 Build-Target -Target 'winexe' -EntryPoint 'BubbleAsk.Program' -Output $appOut -ResponseFile (Join-Path $distDir 'app.rsp') -Sources $appSources
 
+$serviceOut = Join-Path $distDir 'BubbleAsk.Service.exe'
+Write-Host "Building $serviceOut ($($serviceTargetSources.Count) sources)"
+Build-Target -Target 'winexe' -EntryPoint 'BubbleAsk.ServiceProgram' -Output $serviceOut -ResponseFile (Join-Path $distDir 'service.rsp') -Sources $serviceTargetSources
+
 $testOut = Join-Path $distDir 'BubbleAsk.Tests.exe'
 Write-Host "Building $testOut ($($testAllSources.Count) sources)"
 Build-Target -Target 'exe' -EntryPoint 'BubbleAsk.TestProgram' -Output $testOut -ResponseFile (Join-Path $distDir 'tests.rsp') -Sources $testAllSources
 
 Write-Host "Build OK: $appOut"
+Write-Host "Build OK: $serviceOut"
 if ($Test) {
     Write-Host 'Running self tests...'
     & $testOut (Join-Path $distDir 'selftest')

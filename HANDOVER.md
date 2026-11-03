@@ -102,13 +102,15 @@ src/engine/    CDP 与浏览器窗口 —— 全仓库只有这一份实现
   EdgeHost.cs            启动、定位与置顶浏览器窗口（已通用化，类名沿用 EdgeHost）
   CdpClient.cs           WebSocket 与 CDP（超时、加锁、串行发送、整段解码）
 
-src/service/   后台服务的对外入口
-  PipeServer.cs          命名管道（IIpcHost）：ping / health / open / send
+src/service/   后台服务（无界面，独占引擎）
+  Program.cs             ServiceProgram.Main：静默单实例、租约驱动退出、宽限期
+  PipeHost.cs            IIpcHost 实现：持有唯一一份 ChatDriver
+  PipeServer.cs          命名管道：ping / health / attach / open / toggle / send / send-image / topmost / restart
 
 src/ui/        托盘界面，不直接碰 CDP
   Program.cs             入口、单实例、异常兜底、启动清理
-  TrayContext.cs         托盘、菜单、热键分发、模式路由（_busy 看门狗，_gate 锁）
-   ├─ web  → 经 ChatDriver（阶段 2 起改为经管道调服务）
+  TrayContext.cs         托盘、菜单、热键分发、模式路由（本地 _busy 看门狗）
+   ├─ web  → EngineClient（经管道调服务）
    └─ api  → ApiChat.cs  气泡生命周期、多轮对话、取消与超时
                 ├─ ApiClient.cs     请求体、SSE 解析、读超时看门狗、错误翻译、图片 data URL
                 ├─ AnswerBubble.cs  自绘气泡（流式、追问、复制、跟随鼠标）
@@ -123,22 +125,44 @@ src/tests/
   TestProgram.cs         无界面自测（含 StubServer 与 stall 模式）
 ```
 
-`build.ps1` 按分组取源文件，用 `/main:` 区分两个目标。当前阶段四个分组（shared/engine/ui/service）都编进同一个 `BubbleAsk.exe`；`build.ps1` 里的注释标明了阶段 2 的拆分点。
+`build.ps1` 按分组取源文件，用 `/main:` 区分三个目标：
 
-关键路径：配置 `%AppData%\BubbleAsk\config.json`；日志 `app.log`（超过 1MB 时删除重建）；profile 按浏览器分别存储；临时截图 `%TEMP%\BubbleAsk\shot-*.png`（启动时清理一天前的文件）。
+| 目标 | 源文件 | 说明 |
+| --- | --- | --- |
+| `BubbleAsk.exe` | shared + ui | 纯 UI；网页版经管道调服务 |
+| `BubbleAsk.Service.exe` | shared + engine + service | 无界面，独占引擎 |
+| `BubbleAsk.Tests.exe` | 以上全部 + tests | 自测 |
 
-### 4.1 插件与桌面端的管道协议（`PipeServer.cs`）
+**engine 只编进服务**，托盘里没有第二份 `ChatDriver` —— 两个所有者抢同一份 profile / CDP 端口的问题从结构上消除。
 
-网页版 CDP 驱动只有一份实现，在桌面端。DSH 插件通过本地命名管道调用它，不再移植一份到 JS。
+关键路径：配置 `%AppData%\BubbleAsk\config.json`；日志 `app.log`（超过 1MB 时删除重建）；profile 按浏览器分别存储；临时截图 `%TEMP%\BubbleAsk\shot-*.png`（启动时清理一天前的文件）；IPC 发现文件 `%AppData%\BubbleAsk\ipc.json`。
 
-- 管道名：`BubbleAsk.Ipc.v1.<用户名清洗后>`；ACL 只允许当前登录用户，并显式拒绝 `NetworkSid`。
-- 发现文件：`%AppData%\BubbleAsk\ipc.json`，内容 `{version, app, pipe, pid, exe}`。启动时写入；正常退出时把 `pid` 置 0 但**不删文件**——它同时是「桌面端装在哪」的记录，插件靠 `exe` 字段在对端未运行时自动拉起。
-- 帧格式：一连接 = 一行 JSON 请求 → 一行 JSON 响应，随后关闭。
-- 命令：`ping`（握手）、`health`（运行状态/端口/profile/AutoSend）、`open`（只开窗口）、`send`（注入并发送）。
-- 版本：`ProtocolVersion = 1`。请求里的 `v` 与常量不一致时返回 `stage:"version"`，对端据此提示升级，而不是静默失败。
-- 并发：`send` / `open` 复用 `TrayContext.TryBeginOperation`（现由 `_gate` 加锁，因为管道线程与界面线程都会碰 `_busy`）；占用中返回 `stage:"busy"`。
-- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 的每条返回路径上赋值（`sent` / `filled` / `prefilled` / `cdp` / `launch` / `error`），管道把它作为 `stage` 返回给插件，插件显示在划词气泡里。
-- 客户端用法：插件只用 `health` 与 `send`；`ping` 是握手，`open`（只开窗口不注入）保留在契约里供将来的 CLI / 其他 IDE 插件使用。
+### 4.1 后台服务与管道协议（`src/service/` + `src/shared/IpcContract.cs`）
+
+网页版 CDP 驱动只有一份实现，在 `BubbleAsk.Service.exe` 里。托盘与 DSH 插件都是客户端。
+
+- **它为什么不是 Windows 服务（SCM）**：Session 0 隔离下无法创建/聚焦用户桌面上的浏览器窗口，而它的职责正是驱动那个窗口。所以它是每用户的后台进程（可由任意客户端按需拉起）。
+- 管道名：`BubbleAsk.Ipc.v2.<用户名清洗后>`；ACL 只允许当前登录用户，并显式拒绝 `NetworkSid`。
+- 发现文件：`{version, app, pipe, pid, exe}`。服务启动时写入；退出时只把 `pid` 置 0、**不删文件** —— 它同时是「服务装在哪」的记录，客户端靠 `exe` 字段在服务未运行时自动拉起。
+- 帧格式：默认一连接 = 一行 JSON 请求 → 一行 JSON 响应后关闭；发 `attach` 后该连接转为**长期租约**，服务一直挂着直到对端断开。
+- 命令：`ping` / `health` / `state` / `attach` / `open` / `toggle` / `send` / `send-image` / `topmost` / `restart`。
+- 版本：`IpcContract.ProtocolVersion = 2`。不一致直接返回 `stage:"version"`，不静默兼容。
+- 并发：`send`/`open`/`toggle`/`restart` 走 `PipeHost.TryBegin`（`_gate` 加锁 + 90 秒看门狗）；占用中返回 `stage:"busy"`。
+- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 每条返回路径赋值（`sent` / `filled` / `prefilled` / `cdp` / `launch` / `error`），`health` 与 `send` 都会带回。
+
+**生命周期（引用计数式，已实测）**
+
+| 场景 | 行为 |
+| --- | --- |
+| 只开 DSH（插件未装/未启用） | 服务不启动 |
+| DSH + 插件 / 仅托盘 / 两者都开 | 服务启动并常驻（各持一条租约） |
+| 退出其中一个入口 | 服务不退出（还有租约） |
+| 最后一个租约断开 | 等 **8 秒宽限期**，期间有新租约则取消退出，否则退出 |
+| 从未有过租约（手工启动服务） | 不自行退出 |
+| 服务退出时 Edge 窗口还开着 | 窗口保留；下次服务启动 `EnsureStarted` 见窗口即复用 |
+
+客户端崩溃/被杀不需要注销：连接断开即租约消失。
+
 
 
 ---
@@ -251,6 +275,6 @@ src/tests/
 | csc.exe | 14.8.10001.0 |
 | 浏览器 | Edge 156.0.4314.58（`Program Files (x86)`）、Chrome 156.0.8078.48（`Program Files`） |
 | git | `main` 跟踪 `origin`（地址以 `git remote -v` 为准），基线 commit `6e45d98` |
-| 源码规模 | 桌面端 23 个 `.cs`（新增 `BrowserLocator.cs` 与 `PipeServer.cs`）；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`） |
+| 源码规模 | 桌面端 27 个 `.cs`（shared 8 / engine 3 / service 3 / ui 12 / tests 1），构建为 `BubbleAsk.exe` + `BubbleAsk.Service.exe` + `BubbleAsk.Tests.exe`；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`） |
 
 **已验证的事实**：`BubbleAsk.exe` 可启动，三个热键注册成功，自动检测到 Edge；将 `BrowserPath` 指向 Chrome 会改用 Chrome 并使用 `profile-chrome`；指向不存在的路径会回退自动检测。（测试过程中产生的 `%AppData%\BubbleAsk` 已清空，首次运行是全新状态。）

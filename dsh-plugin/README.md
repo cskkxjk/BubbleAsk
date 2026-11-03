@@ -101,22 +101,27 @@ cordis.patch.yml       插入 bubble-ask 条目
 
 插件只在 DSH 里画一个气泡，不在右侧栏渲染任何页面 —— 原因见[已知限制](#为什么不用右侧栏的内嵌浏览器)。
 
-## 与托盘应用的协作
+## 与后台服务的协作
 
-CDP 驱动只有一份实现，在托盘应用里（`ChatDriver.cs` / `CdpClient.cs`）。插件是薄客户端，通过本地命名管道调用它：
+CDP 驱动只有一份实现，在无界面的 `BubbleAsk.Service.exe` 里（`ChatDriver.cs` / `CdpClient.cs`）。托盘界面与 DSH 插件都是它的客户端：
 
 ```text
-插件 index.js
-  └─ lib/ask-client.mjs  ──命名管道──▶  BubbleAsk.exe (PipeServer.cs)
-                                            └─ ChatDriver.AskAsync()
-                                                 └─ EdgeHost + CdpClient ──CDP──▶ Edge
+插件 index.js                      BubbleAsk.exe（托盘 UI）
+  └─ lib/ask-client.mjs                └─ EngineClient
+        │                                    │
+        └──────── 本地命名管道 ──────────────┘
+                            │
+                    BubbleAsk.Service.exe
+                      ├─ PipeServer（协议 + 租约）
+                      └─ ChatDriver ──CDP──▶ Edge
 ```
 
-- 发现：托盘应用启动时把 `{version, app, pipe, pid, exe}` 写入 `%APPDATA%\BubbleAsk\ipc.json`。插件读它得到管道名与 exe 路径；把它当作「装在哪」的长期记录，是否在跑由 pid 存活 + `ping` 探活判断。
-- 自动拉起：插件发现对端不在跑时，会用该文件里的 exe 路径启动一次托盘应用，并等待就绪（最多 25 秒）。
-- 协议：一连接 = 一行 JSON 请求 → 一行 JSON 响应，命令 `ping` / `health` / `open` / `send`。`version` 字段必须与 `PipeServer.ProtocolVersion` 一致，不一致直接报「版本过旧」而不是静默失败。
-  插件目前只用到 `health` 与 `send`；`ping` 是握手、`open` 是「只开窗口不注入」，都保留在服务契约里供将来的客户端（CLI、其他 IDE 插件）使用。
-- 登录态：两边共用同一份持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效。
+- 发现：服务启动时把 `{version, app, pipe, pid, exe}` 写入 `%APPDATA%\BubbleAsk\ipc.json`。插件读它得到管道名与服务 exe 路径；把它当作「装在哪」的长期记录，是否在跑由 pid 存活 + `ping` 探活判断。
+- 自动拉起：插件第一次需要时若发现服务不在跑，会用 `exe` 字段启动它并等待就绪（最多 25 秒）。
+- 租约：插件在 Host 加载时发 `attach` 持有一条长期连接，DSH 运行期间一直挂着。服务靠租约数量判断「还有没有入口」，最后一个断开后等 8 秒宽限期再退出。DSH 退出时进程消失，连接自动断开，无需任何注销。
+- 协议 `v2`：命令 `ping` / `health` / `state` / `attach` / `open` / `toggle` / `send` / `send-image` / `topmost` / `restart`。版本字段必须与 `IpcContract.ProtocolVersion` 一致，不一致直接报「版本过旧」而不是静默失败。
+  插件目前只用到 `health` / `send` / `attach`；其余命令保留在契约里供托盘与将来的客户端（CLI、其他 IDE 插件）使用。
+- 登录态：所有客户端共用同一份持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效。
 
 ## HTTP 路由
 

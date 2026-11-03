@@ -19,8 +19,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 
-/** 必须与 src/PipeServer.cs 的 ProtocolVersion 一致。 */
-export const PROTOCOL_VERSION = 1
+/** 必须与 src/shared/IpcContract.cs 的 ProtocolVersion 一致。 */
+export const PROTOCOL_VERSION = 2
 
 /** 发送要等页面渲染 + 注入 + 校验，冷启动还会拉浏览器，给足预算。 */
 const SEND_TIMEOUT_MS = 180000
@@ -214,7 +214,87 @@ export async function sendPrompt(options = {}) {
 }
 
 /**
- * 兼容旧调用点：以前这里关的是本模块持有的 CDP websocket。
- * 现在每次请求都是一条独立管道连接，没有常驻资源要释放。
+ * 登记一条长期租约：让服务知道「DSH 插件还活着」，直到返回的 close() 被调用
+ * 或本进程消失（对端断开，服务不需要额外清理）。
+ *
+ * 服务在「最后一条租约断开」后再等一段时间才退出，所以插件在 DSH 运行期间
+ * 一直挂着这条连接，DSH 退出时进程消失、连接自动断开。
+ *
+ * @returns {Promise<{ok: boolean, close: () => void, detail?: string}>}
+ */
+export async function attachLease(options = {}) {
+  const log = typeof options.log === 'function' ? options.log : () => {}
+  const ready = await ensureApp({ ...options, log })
+  if (!ready.ok) {
+    return { ok: false, close: () => {}, detail: ready.detail || '服务未就绪' }
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    let buffer = ''
+    const socket = net.connect(`\\\\.\\pipe\\${ready.discovery.pipe}`)
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try {
+        socket.destroy()
+      } catch {
+        /* 忽略 */
+      }
+      resolve({ ok: false, close: () => {}, detail: '租约握手超时' })
+    }, 8000)
+
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+
+    socket.setEncoding('utf8')
+    socket.on('connect', () => {
+      try {
+        socket.write(`${JSON.stringify({ v: PROTOCOL_VERSION, cmd: 'attach' })}\n`)
+      } catch (error) {
+        finish({ ok: false, close: () => {}, detail: String(error?.message ?? error) })
+      }
+    })
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      const index = buffer.indexOf('\n')
+      if (index < 0) return
+      let ack = {}
+      try {
+        ack = JSON.parse(buffer.slice(0, index))
+      } catch {
+        ack = {}
+      }
+      if (ack.ok !== true) {
+        try {
+          socket.destroy()
+        } catch {
+          /* 忽略 */
+        }
+        finish({ ok: false, close: () => {}, detail: ack.detail || '服务拒绝租约' })
+        return
+      }
+      log(`已向服务登记租约（当前 ${ack.leases ?? '?'} 条）`)
+      finish({
+        ok: true,
+        close: () => {
+          try {
+            socket.destroy()
+          } catch {
+            /* 忽略 */
+          }
+        },
+      })
+    })
+    socket.on('error', (error) => finish({ ok: false, close: () => {}, detail: String(error?.message ?? error) }))
+  })
+}
+
+/**
+ * 释放本模块持有的常驻资源（目前只有租约）。
+ * 由 Host 的卸载钩子调用。
  */
 export async function shutdown() {}
