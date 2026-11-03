@@ -6,31 +6,34 @@
  *
  * 两条链路：
  *   panel —— 组好的提问交给右侧栏的 Bubble Ask 专属面板（可见、可复制、可再发送）
- *   cdp   —— 直接驱动本机 Chromium（--app + CDP）注入并发送，且回读校验
+ *   app   —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
  *
  * 不再使用右侧栏的内嵌浏览器（ctrl+T Browser）：那套 Electron guest 环境的存储分区
  * 由主进程按进程生命周期生成（无 persist: 前缀），每次重启都要重新登录，
  * 且网页版会把 guest 环境判定为「使用环境异常」。
+ *
+ * 也不再自己驱动 CDP：托盘应用持有唯一一份持久化登录 profile，是网页版窗口的唯一权威，
+ * 插件只当薄客户端（见 lib/ask-client.mjs）。
  */
 /**
- * CDP 模块（lib/deepseek-web.mjs）按需加载：缺文件时面板与「复制全文」照样能用，
+ * 托盘应用通信模块（lib/ask-client.mjs）按需加载：缺文件时面板与「复制全文」照样能用，
  * 只是「发送到 DeepSeek」这条自动路径会明确报未就绪，而不是整个插件挂掉。
  */
-let cdpModule
-async function loadCdp() {
-  if (cdpModule) return cdpModule
+let appModule
+async function loadApp() {
+  if (appModule) return appModule
   try {
-    cdpModule = await import('./lib/deepseek-web.mjs')
+    appModule = await import('./lib/ask-client.mjs')
   } catch (error) {
     // 不缓存失败：文件后补到位时，下一次请求还能重新尝试加载。
     try {
-      console.log('[bubble-ask] CDP 模块加载失败：' + String(error?.message ?? error))
+      console.log('[bubble-ask] 托盘通信模块加载失败：' + String(error?.message ?? error))
     } catch {
       /* 忽略 */
     }
     return null
   }
-  return cdpModule
+  return appModule
 }
 
 const DEFAULTS = {
@@ -59,19 +62,12 @@ const DEFAULTS = {
    * 属于「过程性叙述」（Now let me…／正在…），不进轨迹。
    */
   minAssistantChars: 60,
-  /** 浏览器 exe；留空自动检测 */
-  browserPath: '',
-  /** CDP 调试端口 */
-  cdpPort: 9333,
-  /** 独立登录 profile 目录；留空用 %APPDATA%\BubbleAsk\edge-profile */
-  profileDir: '',
-  /** true 则注入后自动点发送 */
-  autoSend: true,
+  /** 浏览器/端口/profile 等归托盘应用自己管，插件不再重复配置，避免两处漂移。 */
   /**
-   * 等网页版输入框的预算（毫秒）。首次冷启动（新 profile、刚登录）实测会超过 25s：
-   * 拉浏览器 + 整页加载 + SPA 渲染都在这个窗口里，给足 60s。
+   * 托盘应用 exe 路径。留空时依次用「发现文件里记录的路径」，
+   * 两者都没有就报「未找到 Bubble Ask 托盘应用」。
    */
-  readyTimeoutMs: 60000,
+  appPath: '',
 }
 
 const ROUTE_PROMPT = '/bubble-ask/prompt'
@@ -616,19 +612,31 @@ export function apply(ctx, config = {}) {
     kind: 'exact',
     path: ROUTE_HEALTH,
     async handler(_req, res) {
-      const cdp = await loadCdp()
-      let browsers = []
-      try {
-        browsers = cdp?.detectBrowsers?.() ?? []
-      } catch {
-        browsers = []
+      const app = await loadApp()
+      let pipe = { ok: false, stage: 'module', detail: '托盘通信模块未就绪' }
+      if (app) {
+        try {
+          pipe = await app.health({ appPath: settings.appPath, log: (line) => log(line) })
+        } catch (error) {
+          pipe = { ok: false, stage: 'error', detail: String(error?.message ?? error) }
+        }
       }
       sendJson(res, 200, {
+        // 保留旧字段名，README 里的自检命令仍然有效。
         ok: true,
-        cdpReady: cdp !== null && cdp !== undefined,
-        browsers,
+        cdpReady: Boolean(pipe && pipe.ok),
+        app: {
+          connected: Boolean(pipe && pipe.ok),
+          version: pipe?.version ?? null,
+          app: pipe?.app ?? null,
+          stage: pipe?.stage ?? null,
+          detail: pipe?.detail ?? null,
+          running: pipe?.running ?? null,
+          profileDir: pipe?.profileDir ?? null,
+          autoSend: pipe?.autoSend ?? null,
+        },
         diag: diagLog,
-        settings: { chatUrl: settings.chatUrl, autoSend: settings.autoSend },
+        settings: { chatUrl: settings.chatUrl, appPath: settings.appPath },
       })
     },
   }), 'bubble-ask: health route')
@@ -686,21 +694,11 @@ export function apply(ctx, config = {}) {
     path: ROUTE_OPEN,
     async handler(req, res) {
       try {
-        const cdp = await loadCdp()
-        if (!cdp || typeof cdp.ensureBrowser !== 'function') {
-          return sendJson(res, 503, { ok: false, stage: 'cdp', detail: 'CDP 模块未就绪' })
+        const app = await loadApp()
+        if (!app || typeof app.openWindow !== 'function') {
+          return sendJson(res, 503, { ok: false, stage: 'module', detail: '托盘通信模块未就绪' })
         }
-        const opened = await cdp.ensureBrowser({
-          config: {
-            browserPath: settings.browserPath || undefined,
-            cdpPort: settings.cdpPort,
-            profileDir: settings.profileDir || undefined,
-            chatUrl: settings.chatUrl,
-            autoSend: false,
-            readyTimeoutMs: settings.readyTimeoutMs,
-          },
-          log: (line) => log(line),
-        })
+        const opened = await app.openWindow({ appPath: settings.appPath, log: (line) => log(line) })
         sendJson(res, 200, opened)
       } catch (error) {
         sendJson(res, 500, { ok: false, stage: 'error', detail: String(error?.message ?? error) })
@@ -729,38 +727,31 @@ export function apply(ctx, config = {}) {
         // CDP 注入没有长度限制，prompt 本身就是完整版。
         const fullPrompt = prepared.prompt
         log(`注入网页版：${fullPrompt.length} 字（轨迹 ${prepared.stats.traceMessages} 条）`)
-        const cdp = await loadCdp()
-        if (!cdp || typeof cdp.sendToDeepSeekWeb !== 'function') {
+        const app = await loadApp()
+        if (!app || typeof app.sendPrompt !== 'function') {
           return sendJson(res, 503, {
             ok: false,
-            stage: 'cdp',
-            detail: 'CDP 模块未就绪，可先用面板里的「复制全文」手动粘贴',
+            stage: 'module',
+            detail: '托盘通信模块未就绪，可先用面板里的「复制全文」手动粘贴',
             prompt: fullPrompt,
             url: prepared.url,
             stats: prepared.stats,
           })
         }
-        const sent = await cdp.sendToDeepSeekWeb({
+        const sent = await app.sendPrompt({
           prompt: fullPrompt,
-          config: {
-            browserPath: settings.browserPath || undefined,
-            cdpPort: settings.cdpPort,
-            profileDir: settings.profileDir || undefined,
-            chatUrl: settings.chatUrl,
-            autoSend: settings.autoSend,
-            readyTimeoutMs: settings.readyTimeoutMs,
-          },
+          appPath: settings.appPath,
           log: (line) => log(line),
         })
         const body = { ...sent, prompt: fullPrompt, stats: prepared.stats, prefillUrl: prepared.url }
-        // sent.url 是发送后真实的页面地址（会话页更好），没有才退回预填地址。
+        // 发送成功时网页版会停在会话页；插件这边没有直达地址，留预填地址做参考。
         if (!body.url) body.url = prepared.url
         lastAsk = {
           at: Date.now(),
           sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
           question: typeof input.question === 'string' ? input.question : '',
           selection: typeof input.selection === 'string' ? input.selection.trim() : '',
-          mode: 'cdp',
+          mode: 'app',
           prompt: fullPrompt,
           url: body.url,
           stats: prepared.stats,
@@ -780,7 +771,7 @@ export function apply(ctx, config = {}) {
   }), 'bubble-ask: send route')
 
   ctx.effect(() => () => {
-    void cdpModule?.shutdown?.()
+    void appModule?.shutdown?.()
   }, 'bubble-ask: shutdown')
 
   log(`已就绪（chatUrl=${settings.chatUrl}）`)

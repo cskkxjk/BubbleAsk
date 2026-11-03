@@ -10,6 +10,16 @@
 | 提问内容 | 模板中的问题文本（默认「什么是 %s」） | 每次附带精简会话轨迹，因此始终具备上下文 |
 | 窗口 | 自行启动 `--app` 浏览器窗口 | 同一个原生 `--app` 窗口（持久登录）；DSH 右侧栏放一个专属控制面板，不再占用 `Ctrl+T` 浏览器 |
 
+## 前置条件：先装托盘应用
+
+**顺序是先装 `BubbleAsk.exe`，再装本插件。** 插件不含 CDP 驱动，它通过本地命名管道调用托盘应用来注入并发送；两边共用同一份持久化登录 profile，登录一次长期有效。
+
+1. 构建并安装托盘应用（见[根目录 README](../README.md)），启动一次，确认托盘出现图标。
+   - 启动后它会写 `%APPDATA%\BubbleAsk\ipc.json`，其中记录了管道名与 exe 路径，插件据此找到它。
+2. 再安装本插件并重启 DSH。
+
+托盘应用没安装或没启动时，插件仍可整理上下文、复制全文，但「发送到 DeepSeek」会明确报错而不会静默失败。插件发现对端不在跑时会尝试用 `ipc.json` 里记录的路径自动拉起一次（最多等 25 秒）。
+
 ## 安装
 
 界面安装最为直接：DSH 侧栏「插件」→「添加插件」→ 填写本目录的绝对路径 → 安装 → 重启。
@@ -32,8 +42,10 @@ github:<owner>/<repo>#path:/dsh-plugin
 
 ```powershell
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
-# {"ok":true,"cdpReady":true,"browsers":["..."],...}   未安装时返回 404
+# {"ok":true,"cdpReady":true,"app":{"connected":true,...},...}   未安装时返回 404
 ```
+
+`cdpReady` 现在表示「托盘应用已连通且协议版本一致」。
 
 ## 用法
 
@@ -41,7 +53,7 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 2. 选区下方出现「💬 问这段」气泡。
 3. 气泡内可填写自定义问题；留空时注入的默认问题为「请解释这段文字在当前会话上下文中的含义。」（输入框占位符的措辞为「解释它在当前上下文中是什么意思」，与注入内容含义一致）。
 4. 点击气泡中的按钮，并在右侧栏的 **Bubble Ask 专属面板** 中查看结果：
-   - **发送到 DeepSeek**（默认，回车同效）：Host 启动或复用原生 Chromium 实例（`--app` + CDP），注入完整提问并点击发送；仅当回读确认输入框被清空时判定发送成功。发送后面板会显示轨迹条数、字数和发送阶段。
+   - **发送到 DeepSeek**（默认，回车同效）：Host 经本地管道让托盘应用注入完整提问并点击发送；是否自动点发送由托盘应用的 `AutoSend` 配置决定，仅当回读确认输入框被清空时判定发送成功。发送后面板会显示轨迹条数、字数和发送阶段。
    - **只准备**：只整理上下文并在面板里打开，不发送。面板中可「发送到 DeepSeek」「只打开窗口」「复制全文」「重新整理」。
 
 专属面板同时出现在右侧栏的引导页（指南针图标 → Bubble Ask 卡片），也可以从中直接打开。面板显示的是**上一次**组好的提问：页面重载后由 Host 的 `GET /bubble-ask/state` 恢复，不必重新划词。
@@ -81,11 +93,11 @@ Host 端从会话日志（`session.deriveMessages()`）读取最近的 user/assi
 ## 结构
 
 ```text
-index.js              Host 端：HTTP 路由、轨迹精简、prompt 拼装
-client.js             Client 端：选区气泡（shell.overlay）、会话 id 探针（conversation.input.dock）、
-                      专属 tab 类型注册（ctx.sidebarRightTabs）与面板正文（sidebar.right.pane.tab）
-lib/deepseek-web.mjs  CDP 驱动（移植自桌面端 ChatDriver / CdpClient，惰性加载）
-cordis.patch.yml      插入 bubble-ask 条目
+index.js               Host 端：HTTP 路由、轨迹精简、prompt 拼装
+client.js              Client 端：选区气泡（shell.overlay）、会话 id 探针（conversation.input.dock）、
+                       专属 tab 类型注册（ctx.sidebarRightTabs）与面板正文（sidebar.right.pane.tab）
+lib/ask-client.mjs     与托盘应用的通信（Windows 命名管道客户端 + 自动拉起，惰性加载）
+cordis.patch.yml       插入 bubble-ask 条目
 ```
 
 专属 tab 走的是右侧栏的公开扩展点，与内置 Document Preview 用的是同一条路径：
@@ -94,6 +106,22 @@ cordis.patch.yml      插入 bubble-ask 条目
 2. `ctx.slots.register({ name: 'sidebar.right.pane.tab', key: id }, Body)` 提供正文；
 3. `ctx.sidebarRight.openTab('bubble-ask')` 打开它。
 
+## 与托盘应用的协作
+
+CDP 驱动只有一份实现，在托盘应用里（`ChatDriver.cs` / `CdpClient.cs`）。插件是薄客户端，通过本地命名管道调用它：
+
+```text
+插件 index.js
+  └─ lib/ask-client.mjs  ──命名管道──▶  BubbleAsk.exe (PipeServer.cs)
+                                            └─ ChatDriver.AskAsync()
+                                                 └─ EdgeHost + CdpClient ──CDP──▶ Edge
+```
+
+- 发现：托盘应用启动时把 `{version, app, pipe, pid, exe}` 写入 `%APPDATA%\BubbleAsk\ipc.json`。插件读它得到管道名与 exe 路径；把它当作「装在哪」的长期记录，是否在跑由 pid 存活 + `ping` 探活判断。
+- 自动拉起：插件发现对端不在跑时，会用该文件里的 exe 路径启动一次托盘应用，并等待就绪（最多 25 秒）。
+- 协议：一连接 = 一行 JSON 请求 → 一行 JSON 响应，命令 `ping` / `health` / `open` / `send`。`version` 字段必须与 `PipeServer.ProtocolVersion` 一致，不一致直接报「版本过旧」而不是静默失败。
+- 登录态：两边共用同一份持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效。
+
 ## HTTP 路由
 
 路由同源，且仅监听本机：
@@ -101,10 +129,10 @@ cordis.patch.yml      插入 bubble-ask 条目
 | 路由 | 作用 |
 | --- | --- |
 | `POST /bubble-ask/prompt` | `{sessionId, selection, question}` → `{prompt, url, stats}` |
-| `POST /bubble-ask/send` | 同上，但会实际注入网页版并发送 |
+| `POST /bubble-ask/send` | 同上，但会经管道让托盘应用实际注入网页版并发送 |
 | `POST /bubble-ask/open` | 只启动或复用原生窗口，不注入、不发送 |
 | `GET /bubble-ask/state` | 面板重载后恢复上一次的提问与发送结果 |
-| `GET /bubble-ask/health` | 自检：CDP 模块是否就绪、检测到的浏览器、最近的自检记录 |
+| `GET /bubble-ask/health` | 自检：托盘应用是否连通（`cdpReady`）、协议版本、profile 目录、最近的自检记录 |
 | `POST /bubble-ask/diag` | Client 端上报自检记录（最多保留 40 条），可通过 `/health` 的 `diag` 字段读取 |
 
 ## 配置
@@ -113,7 +141,7 @@ cordis.patch.yml      插入 bubble-ask 条目
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `chatUrl` | `https://chat.deepseek.com/` | 网页版地址 |
+| `chatUrl` | `https://chat.deepseek.com/` | 网页版地址（仅用于展示与 `?q=` 参考；实际导航由托盘应用自己的配置决定） |
 | `maxMessages` | `12` | 轨迹包含的消息条数上限 |
 | `maxCharsPerMessage` | `240` | 单条消息的截断长度 |
 | `maxTraceChars` | `2600` | 整段轨迹的字数上限 |
@@ -122,11 +150,9 @@ cordis.patch.yml      插入 bubble-ask 条目
 | `maxToolEntries` | `2` | 进入轨迹的工具结果条数上限（作为证据，仅在其覆盖选区时纳入） |
 | `toolMinCoverage` | `0.12` | 工具结果覆盖选区的最低比例，达到该比例才进入轨迹 |
 | `minAssistantChars` | `60` | 助手正文短于该长度且不含路径、错误或决策时，视为过程性叙述，不进入轨迹 |
-| `browserPath` | 空 | 自动发送所用的浏览器可执行文件；留空则自动检测 |
-| `cdpPort` | `9333` | CDP 端口 |
-| `profileDir` | 空 | 登录状态目录；留空使用 `%APPDATA%\BubbleAsk\edge-profile` |
-| `autoSend` | `true` | 是否自动点击发送 |
-| `readyTimeoutMs` | `60000` | 等待网页版输入框的时间预算；冷启动（新 profile 或刚完成登录）实测超过 25 秒，故设为 60 秒 |
+| `appPath` | 空 | 托盘应用 exe 路径；留空时用 `%APPDATA%\BubbleAsk\ipc.json` 里记录的路径 |
+
+浏览器、CDP 端口、登录 profile、是否自动发送这些设置归属托盘应用的 `config.json`，插件不再重复配置 —— 一处配置、一处生效，避免两边漂移。
 
 ## 已知限制
 
@@ -149,7 +175,10 @@ DSH 桌面端右侧栏的 Browser（`Ctrl+T`）看起来是更省事的位置，
 
 ### 其他
 
+- **必须同时安装托盘应用**。插件自身不驱动浏览器；`BubbleAsk.exe` 未安装或未启动时，「发送到 DeepSeek」会失败并说明原因，「只准备」与「复制全文」仍然可用。
+- **平台限定 Windows**。通信走 Windows 命名管道，托盘应用是 WinForms 程序。macOS/Linux 上的 DSH 可以装本插件，但自动发送不可用。
 - 原生窗口是独立 OS 窗口，不会嵌入 DSH 窗口内部；它需要与 DSH 并排摆放。
-- `?q=` 传参不可靠（实测）：请求行超过 8KB 时返回 `414`（纯 ASCII 8029 字节通过，8329 字节失败）；长 prompt 生成的约 7K URL 还会稳定返回 `429`。插件因此不依赖 URL 传参。
+- `?q=` 传参不可靠（实测）：请求行超过 8KB 时返回 `414`（纯 ASCII 8029 字节通过，8329 字节失败）；长 prompt 生成的约 7K URL 还会稳定返回 `429`。插件因此不依赖 URL 传参（预填退路由托盘应用内部处理）。
 - 选区取自 DSH 页面；插件无法读取外部窗口内的选区（跨进程）。
-- 若 `lib/deepseek-web.mjs` 缺失，「发送到 DeepSeek」会明确报 CDP 未就绪，面板与复制链路仍然可用。
+- 若 `lib/ask-client.mjs` 缺失，「发送到 DeepSeek」会明确报模块未就绪，面板与复制链路仍然可用。
+- 同一时刻只允许一个操作：插件的发送与托盘自身的全局热键共用同一把 `TryBeginOperation` 锁，并发请求会被拒绝并提示稍后重试。

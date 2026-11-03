@@ -23,6 +23,12 @@ namespace BubbleAsk
             get { return _edge; }
         }
 
+        /// <summary>
+        /// 最近一次 AskAsync 的阶段标签，供管道对端报告失败原因。
+        /// 取值与插件原有词汇一致：sent / filled / prefilled / error 等。
+        /// </summary>
+        public string LastStatus { get; private set; }
+
         public void EnsureWindow()
         {
             _edge.ShowAndFocus();
@@ -30,8 +36,10 @@ namespace BubbleAsk
 
         public async Task<bool> AskAsync(string prompt)
         {
+            LastStatus = "idle";
             if (string.IsNullOrEmpty(prompt))
             {
+                LastStatus = "fill";
                 return false;
             }
             for (int attempt = 0; attempt < 2; attempt++)
@@ -57,6 +65,7 @@ namespace BubbleAsk
                     if (!_config.AutoSend)
                     {
                         Log.Info("自动发送已关闭，只填入不发送");
+                        LastStatus = "filled";
                         return true;
                     }
                     await Task.Delay(250);
@@ -64,6 +73,7 @@ namespace BubbleAsk
                     Log.Info("发送校验结果: " + status);
                     if (status == "sent")
                     {
+                        LastStatus = "sent";
                         return true;
                     }
                     if (NeedsPrefillFallback(status))
@@ -74,11 +84,13 @@ namespace BubbleAsk
                     // 已经点过发送但没能确认：别再导航（会丢掉当前会话，也可能其实已经发出去了），
                     // 保持页面原样让用户手动按 Enter。
                     Log.Warn("已点击发送但没能确认发出去（" + status + "），不导航，保持页面原样，请手动回车确认");
+                    LastStatus = status;
                     return false;
                 }
                 catch (Exception error)
                 {
                     Log.Error("发送失败（第 " + (attempt + 1) + " 次）", error);
+                    LastStatus = "error";
                     Reset();
                     retry = true;
                 }
@@ -86,6 +98,10 @@ namespace BubbleAsk
                 {
                     await Task.Delay(400);
                 }
+            }
+            if (string.IsNullOrEmpty(LastStatus) || LastStatus == "idle")
+            {
+                LastStatus = "error";
             }
             return false;
         }

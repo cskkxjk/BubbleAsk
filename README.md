@@ -21,9 +21,11 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 | 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 |
 | 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 |
 | 上下文 | 仅模板中的问题文本 | 每次自动附带精简会话轨迹 |
-| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH；仅「自动发送」路径需要浏览器 |
+| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端（网页版注入由它执行） |
 
-两者互不依赖：仅使用桌面端时无需安装插件；仅使用插件时无需构建可执行文件。插件的 CDP 驱动为独立移植实现（`dsh-plugin/lib/deepseek-web.mjs`），不引用 `dist\` 下的产物。
+桌面端是本仓库唯一的 CDP 实现（`ChatDriver.cs` / `CdpClient.cs`）。插件不再移植一份，而是通过本地命名管道调用桌面端，两边共用同一份持久化登录 profile —— 装一次、登一次即可。
+
+因此使用插件需要先装桌面端：**先构建并启动 `BubbleAsk.exe`，再安装插件。** 仅使用桌面端时无需安装插件；插件在桌面端未运行时仍可整理上下文与复制全文，只是无法自动发送。
 
 ## 功能
 
@@ -160,7 +162,7 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ### 安装排查
 
 - 插件页存在条目但未生效：检查 profile 的 `cordis.patch.yml`，该条目的启用状态记录于此（插件页开关写入该文件）。
-- `health` 返回 `cdpReady:false`：CDP 模块未加载，通常为 `lib/deepseek-web.mjs` 未包含在安装目录中。
+- `health` 返回 `cdpReady:false`：托盘应用未连通。检查它是否在运行（托盘是否有图标）、`%APPDATA%\BubbleAsk\ipc.json` 是否存在，以及插件与桌面端的协议版本是否一致（版本不一致时 `app.stage` 为 `version`）。
 
 ### 卸载与更新
 

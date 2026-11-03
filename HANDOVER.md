@@ -100,6 +100,7 @@ TrayContext.cs        托盘、菜单、热键分发、模式路由（_busy 看�
             ├─ AnswerBubble.cs  自绘气泡（流式、追问、复制、跟随鼠标）
             └─ ApiProviders.cs  服务方预设
 SettingsForm.cs       设置窗口（纯代码布局，4 页，含浏览器下拉框）
+PipeServer.cs         本地命名管道服务（IIpcHost）：供 DSH 插件复用本应用的 CDP 驱动
 AppConfig.cs          配置读写（%AppData%\BubbleAsk\config.json）
 HotkeyManager.cs      RegisterHotKey 与隐藏窗口接收 WM_HOTKEY
 ScreenCapture.cs      全屏遮罩拖框截图（单窗口覆盖多显示器的虚拟屏）
@@ -109,6 +110,19 @@ TestProgram.cs        无界面自测（含 StubServer 与 stall 模式）
 ```
 
 关键路径：配置 `%AppData%\BubbleAsk\config.json`；日志 `app.log`（超过 1MB 时删除重建）；profile 按浏览器分别存储；临时截图 `%TEMP%\BubbleAsk\shot-*.png`（启动时清理一天前的文件）。
+
+### 4.1 插件与桌面端的管道协议（`PipeServer.cs`）
+
+网页版 CDP 驱动只有一份实现，在桌面端。DSH 插件通过本地命名管道调用它，不再移植一份到 JS。
+
+- 管道名：`BubbleAsk.Ipc.v1.<用户名清洗后>`；ACL 只允许当前登录用户，并显式拒绝 `NetworkSid`。
+- 发现文件：`%AppData%\BubbleAsk\ipc.json`，内容 `{version, app, pipe, pid, exe}`。启动时写入；正常退出时把 `pid` 置 0 但**不删文件**——它同时是「桌面端装在哪」的记录，插件靠 `exe` 字段在对端未运行时自动拉起。
+- 帧格式：一连接 = 一行 JSON 请求 → 一行 JSON 响应，随后关闭。
+- 命令：`ping`（握手）、`health`（运行状态/端口/profile/AutoSend）、`open`（只开窗口）、`send`（注入并发送）。
+- 版本：`ProtocolVersion = 1`。请求里的 `v` 与常量不一致时返回 `stage:"version"`，对端据此提示升级，而不是静默失败。
+- 并发：`send` / `open` 复用 `TrayContext.TryBeginOperation`（现由 `_gate` 加锁，因为管道线程与界面线程都会碰 `_busy`）；占用中返回 `stage:"busy"`。
+- 阶段回传：`ChatDriver.LastStatus` 在 `AskAsync` 的每条返回路径上赋值（`sent` / `filled` / `prefilled` / `cdp` / `launch` / `error`），管道把它作为 `stage` 返回给插件面板。
+
 
 ---
 
@@ -220,6 +234,6 @@ TestProgram.cs        无界面自测（含 StubServer 与 stall 模式）
 | csc.exe | 14.8.10001.0 |
 | 浏览器 | Edge 156.0.4314.58（`Program Files (x86)`）、Chrome 156.0.8078.48（`Program Files`） |
 | git | `main` 跟踪 `origin`（地址以 `git remote -v` 为准），基线 commit `6e45d98` |
-| 源码规模 | 桌面端 22 个 `.cs`（上一轮新增 `BrowserLocator.cs`）；DSH 插件 4 个 JS 模块（`index.js`、`client.js`、`lib/deepseek-web.mjs` 及其测试） |
+| 源码规模 | 桌面端 23 个 `.cs`（新增 `BrowserLocator.cs` 与 `PipeServer.cs`）；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`） |
 
 **已验证的事实**：`BubbleAsk.exe` 可启动，三个热键注册成功，自动检测到 Edge；将 `BrowserPath` 指向 Chrome 会改用 Chrome 并使用 `profile-chrome`；指向不存在的路径会回退自动检测。（测试过程中产生的 `%AppData%\BubbleAsk` 已清空，首次运行是全新状态。）

@@ -9,7 +9,7 @@ using System.Windows.Forms;
 namespace BubbleAsk
 {
     /// <summary>托盘应用主体：热键分发、菜单、设置。</summary>
-    public class TrayContext : ApplicationContext
+    public class TrayContext : ApplicationContext, IIpcHost
     {
         private readonly AppConfig _config;
         private readonly ChatDriver _driver;
@@ -18,6 +18,9 @@ namespace BubbleAsk
         private readonly NotifyIcon _tray;
         private readonly Icon _icon;
         private SettingsForm _settingsForm;
+        private PipeServer _ipc;
+        /// <summary>管道线程与界面线程都会碰 _busy，统一用它串行化。</summary>
+        private readonly object _gate = new object();
         private bool _busy;
         private DateTime _busySince;
 
@@ -44,6 +47,20 @@ namespace BubbleAsk
                 _config.HotkeyAsk + " 抓词提问；" + _config.HotkeyShot + " 截图提问；" + _config.HotkeySummon + " 唤起/收起。",
                 ToolTipIcon.Info);
             Log.Info("托盘已就绪");
+
+            // 管道服务：让 DSH 插件复用同一套登录 profile 与 CDP 驱动。
+            // 起不来不该影响托盘本身，所以整体包一层。
+            try
+            {
+                _ipc = new PipeServer(this);
+                _ipc.Start();
+                PipeServer.WriteDiscovery(Application.ExecutablePath);
+                Log.Info("DSH 插件可经管道调用: " + PipeServer.PipeName);
+            }
+            catch (Exception error)
+            {
+                Log.Warn("管道服务启动失败（插件将无法调用本应用）: " + error.Message);
+            }
         }
 
         private ContextMenuStrip BuildMenu()
@@ -142,25 +159,81 @@ namespace BubbleAsk
         /// </summary>
         private bool TryBeginOperation(string what)
         {
-            if (_busy)
+            lock (_gate)
             {
-                double elapsed = (DateTime.UtcNow - _busySince).TotalSeconds;
-                if (elapsed < BusyTimeoutSeconds)
+                if (_busy)
                 {
-                    Log.Info("上一个操作还没结束（" + (int)elapsed + " 秒），忽略: " + what);
-                    return false;
+                    double elapsed = (DateTime.UtcNow - _busySince).TotalSeconds;
+                    if (elapsed < BusyTimeoutSeconds)
+                    {
+                        Log.Info("上一个操作还没结束（" + (int)elapsed + " 秒），忽略: " + what);
+                        return false;
+                    }
+                    Log.Warn("上一个操作卡了 " + (int)elapsed + " 秒，强制解除占用后继续: " + what);
                 }
-                Log.Warn("上一个操作卡了 " + (int)elapsed + " 秒，强制解除占用后继续: " + what);
+                _busy = true;
+                _busySince = DateTime.UtcNow;
+                return true;
             }
-            _busy = true;
-            _busySince = DateTime.UtcNow;
-            return true;
         }
 
         private void EndOperation()
         {
-            _busy = false;
+            lock (_gate)
+            {
+                _busy = false;
+            }
         }
+
+        //#region IIpcHost —— 供 DSH 插件通过本地管道复用本应用的登录态与 CDP 驱动
+
+        bool IIpcHost.TryBegin(string what)
+        {
+            return TryBeginOperation(what);
+        }
+
+        void IIpcHost.End()
+        {
+            EndOperation();
+        }
+
+        async Task<bool> IIpcHost.SendAsync(string prompt)
+        {
+            return await _driver.AskAsync(prompt);
+        }
+
+        async Task<bool> IIpcHost.OpenAsync()
+        {
+            return await _driver.OpenAsync();
+        }
+
+        string IIpcHost.LastStatus
+        {
+            get { return _driver.LastStatus; }
+        }
+
+        Dictionary<string, object> IIpcHost.Health()
+        {
+            Dictionary<string, object> health = new Dictionary<string, object>();
+            try
+            {
+                health["running"] = _driver.Edge.IsRunning;
+                health["profileDir"] = _driver.Edge.EffectiveProfileDir;
+            }
+            catch (Exception error)
+            {
+                health["running"] = false;
+                health["error"] = error.Message;
+            }
+            health["apiMode"] = IsApiMode();
+            health["mode"] = _config.Mode;
+            health["autoSend"] = _config.AutoSend;
+            health["cdpPort"] = _config.CdpPort;
+            health["chatUrl"] = _config.ChatUrl;
+            return health;
+        }
+
+        //#endregion
 
         private async void OpenChat()
         {
@@ -399,6 +472,11 @@ namespace BubbleAsk
             {
                 _tray.Visible = false;
                 _tray.Dispose();
+                if (_ipc != null)
+                {
+                    _ipc.Dispose();
+                    _ipc = null;
+                }
                 if (_hotkeys != null)
                 {
                     _hotkeys.Dispose();
@@ -421,6 +499,11 @@ namespace BubbleAsk
                 {
                     _tray.Visible = false;
                     _tray.Dispose();
+                }
+                if (_ipc != null)
+                {
+                    _ipc.Dispose();
+                    _ipc = null;
                 }
                 if (_hotkeys != null)
                 {
