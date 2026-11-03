@@ -47,12 +47,26 @@ const DEFAULTS = {
   maxTraceChars: 2600,
   /**
    * 轨迹挑选策略：
-   *   relevance（默认）—— 首条用户请求 + 最后 recentTail 条固定保留，其余按与选区的相关性挑
+   *   relevance（默认）—— 首条用户请求 + 命中选区的消息及邻居 + 最后 recentTail 条固定保留，
+   *                       其余按与选区的相关性挑
    *   recent —— 老行为，只取最后 maxMessages 条
    */
   traceMode: 'relevance',
-  /** relevance 模式下固定保留的末尾条数 */
-  recentTail: 3,
+  /**
+   * relevance 模式下固定保留的末尾条数。
+   *
+   * 默认 1（原为 3）：有了「命中锚点」之后，"最近的一定最相关"不再成立 ——
+   * 实测最近几条常是工具操作的元叙述，反而挤掉真信息。
+   */
+  recentTail: 1,
+  /** 命中消息前后各带几条邻居消息进轨迹 */
+  hitNeighbors: 1,
+  /** 「围绕命中位置的上下文」最多取几处命中 */
+  maxHits: 3,
+  /** 每处命中窗口取多少行 */
+  hitWindowLines: 14,
+  /** 每处命中窗口的字符上限 */
+  hitWindowChars: 1200,
   /** 工具结果最多进几条（作为「证据」，只在真的覆盖选区时进） */
   maxToolEntries: 2,
   /** 工具结果进轨迹所需的最小覆盖率 */
@@ -365,7 +379,7 @@ function coverageOf(text, grams) {
  *   2. 证据池（工具结果）—— 最多 toolBudget 条，且必须真的覆盖了选区文字；渲染成骨架
  *   3. 兜底 —— 名额没填满就从末尾往前补正文
  */
-function condenseMessages(messages, options, selection) {
+function condenseMessages(messages, options, selection, pinnedWindow) {
   const entries = collectTraceEntries(messages, options)
   const grams = bigramsOf(selection)
   const mode = options.traceMode === 'recent' ? 'recent' : 'relevance'
@@ -383,7 +397,23 @@ function condenseMessages(messages, options, selection) {
     const pinned = new Set()
     const firstUser = prosePool.find((entry) => entry.kind === 'user')
     if (firstUser) pinned.add(firstUser.index)
-    const tailCount = Math.max(1, Math.min(options.recentTail ?? 3, prosePool.length))
+
+    // 命中选区的那条消息及其邻居：这是最可靠的锚点，优先占位。
+    let hitPinned = 0
+    if (pinnedWindow && pinnedWindow.size > 0) {
+      for (const entry of entries) {
+        if (!pinnedWindow.has(entry.index)) continue
+        // 工具结果也允许被锚定，但受 toolBudget 限制，下面单独处理。
+        if (entry.kind === 'tool') continue
+        if (pinned.has(entry.index)) continue
+        pinned.add(entry.index)
+        hitPinned += 1
+      }
+    }
+
+    // 尾部只保留最后 1 条：有了命中锚点之后，"最近的一定最相关"不再成立，
+    // 实测里最近几条常常是工具操作的元叙述，反而挤掉真信息。
+    const tailCount = Math.max(1, Math.min(options.recentTail ?? 1, prosePool.length))
     for (const entry of prosePool.slice(-tailCount)) pinned.add(entry.index)
 
     const proseBudget = Math.max(1, options.maxMessages - (options.maxToolEntries ?? 2))
@@ -495,32 +525,301 @@ function renderNativeTrace(chosen, options) {
   return JSON.stringify(transcript)
 }
 
-/** 组一段「带上下文的提问」。 */
-function buildPrompt({ trace, selection, question, cwd }) {
-  const ask = (question && question.trim())
-    || '请解释这段文字在当前会话上下文中的含义。'
+/**
+ * 匹配用的归一化：去掉所有空白与统一大小写。
+ *
+ * 选区是从**渲染后的 DOM** 里抄出来的，原文可能带 markdown 包裹、软换行、
+ * 缩进差异；只要去空白后仍是子串，就足以认定"这条消息就是选区出处"。
+ */
+function normalizeForMatch(text) {
+  return String(text || '').replace(/\s+/g, '').toLowerCase()
+}
+
+/** 归一化后的选区至少要这么长才敢做精确子串判定，太短容易到处命中。 */
+const HIT_MIN_CHARS = 8
+
+/**
+ * 找出选区出自哪几条消息。
+ *
+ * 这是整个轨迹质量的关键：知道"用户问的是第几条消息里的那句话"，就不用再靠
+ * 话题相似度去猜，可以直接把这±邻居无条件带进上下文。
+ *
+ * @returns {{hits: number[], window: Set<number>, exact: boolean}}
+ *   hits   —— 归一化后确实包含选区的消息下标
+ *   window —— hit 及其前后各 neighbors 条（要一并纳入轨迹）
+ *   exact  —— 是否靠精确子串命中（false 表示退化为覆盖率最高的那条）
+ */
+function locateSelection(messages, selection, neighbors = 1) {
+  const needle = normalizeForMatch(selection)
+  const hits = []
+  if (needle.length >= HIT_MIN_CHARS) {
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]
+      if (!message) continue
+      const blocks = Array.isArray(message.content) ? message.content : []
+      const haystack = normalizeForMatch(blocksText(blocks, ['text']))
+      if (haystack && haystack.includes(needle)) hits.push(index)
+    }
+  }
+
+  if (hits.length === 0) {
+    // 精确匹配失败：退化成"覆盖率最高的那条"，只取一条，避免又变成噪声源。
+    const grams = bigramsOf(selection)
+    let best = null
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]
+      if (!message) continue
+      const blocks = Array.isArray(message.content) ? message.content : []
+      const text = blocksText(blocks, ['text'])
+      if (!text) continue
+      const score = coverageOf(text, grams)
+      if (best === null || score > best.score) best = { index, score }
+    }
+    if (best && best.score >= 0.3) {
+      return { hits: [best.index], window: spanOf([best.index], messages.length, neighbors), exact: false }
+    }
+    return { hits: [], window: new Set(), exact: false }
+  }
+
+  return { hits, window: spanOf(hits, messages.length, neighbors), exact: true }
+}
+
+/** 把若干下标扩成"前后各 neighbors 条"的窗口。 */
+function spanOf(indexes, total, neighbors) {
+  const window = new Set()
+  for (const index of indexes) {
+    for (let offset = -neighbors; offset <= neighbors; offset += 1) {
+      const target = index + offset
+      if (target >= 0 && target < total) window.add(target)
+    }
+  }
+  return window
+}
+
+/**
+ * 字符窗口：以命中位置为圆心取一段，并对齐到行边界。
+ *
+ * 行窗口处理不了"整个文件被压成一行"这类工具输出（实测 main.js 的 grep 结果
+ * 就是一个巨型单行），那时按行裁剪完全失效 —— 这里按字符兜底。
+ */
+function charWindowAround(text, selection, maxChars) {
+  const value = String(text || '')
+  const needle = normalizeForMatch(selection)
+  if (!needle) return ''
+
+  // 建立 归一化下标 → 原文下标 的映射，才能精确回指。
+  const normalizedChars = []
+  const mapping = []
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    if (/\s/.test(char)) continue
+    normalizedChars.push(char.toLowerCase())
+    mapping.push(index)
+  }
+  const haystack = normalizedChars.join('')
+  const at = haystack.indexOf(needle)
+  if (at < 0) return ''
+
+  const rawStart = mapping[at]
+  const rawEnd = mapping[Math.min(at + needle.length - 1, mapping.length - 1)]
+  const budget = Math.max(120, maxChars)
+  const half = Math.floor(budget / 2)
+  let from = Math.max(0, rawStart - half)
+  let to = Math.min(value.length, rawEnd + (budget - (rawEnd - from)))
+
+  // 尽量对齐到行边界，读起来自然一些。
+  const lineStart = value.lastIndexOf('\n', from)
+  if (lineStart >= 0 && from - lineStart < 120) from = lineStart + 1
+  const lineEnd = value.indexOf('\n', to)
+  if (lineEnd >= 0 && lineEnd - to < 120) to = lineEnd
+
+  const head = from > 0 ? `…（前面还有 ${from} 字符）` : ''
+  const tail = to < value.length ? `（后面还有 ${value.length - to} 字符）…` : ''
+  return `${head}${value.slice(from, to)}${tail}`
+}
+
+/**
+ * 围绕命中位置取一段上下文（而不是"留头留尾"）。
+ *
+ * 之前的做法是 `clipBothEnds`：长工具结果只留头尾 —— 而"在长文件里找某一行"
+ * 恰恰是最典型的场景，命中行正好被截掉。
+ */
+function hitWindow(text, selection, options = {}) {
+  const value = String(text || '')
+  const needle = normalizeForMatch(selection)
+  const maxLines = options.maxLines ?? 14
+  const maxChars = options.maxChars ?? 1200
+  if (!value) return ''
+
+  const lines = value.split(/\r?\n/)
+  let hitLine = -1
+  if (needle.length >= HIT_MIN_CHARS) {
+    for (let index = 0; index < lines.length; index += 1) {
+      if (normalizeForMatch(lines[index]).includes(needle)) {
+        hitLine = index
+        break
+      }
+    }
+    // 选区跨行时，用前若干字符再试一次。
+    if (hitLine < 0 && needle.length > 24) {
+      const probe = needle.slice(0, Math.min(40, Math.floor(needle.length / 2)))
+      for (let index = 0; index < lines.length; index += 1) {
+        if (normalizeForMatch(lines[index]).includes(probe)) {
+          hitLine = index
+          break
+        }
+      }
+    }
+  }
+  if (hitLine < 0) return ''
+
+  const half = Math.floor(maxLines / 2)
+  let from = Math.max(0, hitLine - half)
+  let to = Math.min(lines.length - 1, hitLine + half)
+  let picked = lines.slice(from, to + 1)
+
+  // 超出字符预算就从两端往中间收，保证命中行留下。
+  while (picked.join('\n').length > maxChars && (from < hitLine || to > hitLine)) {
+    if (to - hitLine >= hitLine - from && to > hitLine) to -= 1
+    else if (from < hitLine) from += 1
+    else break
+    picked = lines.slice(from, to + 1)
+  }
+
+  const joined = picked.join('\n')
+  // 单行就超预算（被压平的工具输出）：退化为字符窗口。
+  if (joined.length > maxChars) {
+    const windowed = charWindowAround(value, selection, maxChars)
+    if (windowed) return windowed
+    return `${joined.slice(0, maxChars)}…`
+  }
+
+  const head = from > 0 ? `…（前面还有 ${from} 行）\n` : ''
+  const tail = to < lines.length - 1 ? `\n…（后面还有 ${lines.length - 1 - to} 行）` : ''
+  return `${head}${joined}${tail}`
+}
+
+/**
+ * 组装"围绕命中位置的上下文"：命中消息本身 + 其它包含选区的工具结果。
+ *
+ * 与【会话精简轨迹】的区别：轨迹是按相关性挑选的**背景**，这里是选区所在的
+ * **原文现场**，必须完整到能看懂上下文，所以按行取窗口而不是摘句。
+ */
+/**
+ * 命中指纹：从命中位置往后取一段归一化文本。
+ *
+ * 用来识别"同一段原文被多处引用"（例如先 grep 出来、后来又被重新读了一遍），
+ * 那种情况下两条消息的窗口前缀不同，但命中处的原文是一样的。
+ */
+function matchFingerprint(text, selection, size = 240) {
+  const needle = normalizeForMatch(selection)
+  const haystack = normalizeForMatch(text)
+  if (!needle || !haystack) return ''
+  const at = haystack.indexOf(needle)
+  if (at < 0) return ''
+  return haystack.slice(at, at + size)
+}
+
+function buildHitContext(messages, selection, options = {}) {
+  const located = locateSelection(messages, selection, 0)
+  const budget = options.totalChars ?? 2400
+
+  // 同一段文字常被多处引用（例如我自己在回复里引用过它），
+  // 工具结果/用户原话是"原文出处"，助手的转述只是二手，所以按这个顺序优先。
+  const rank = (index) => {
+    const role = messages[index] && messages[index].role
+    if (role === 'tool') return 0
+    if (role === 'user') return 1
+    return 2
+  }
+  const ordered = located.hits.slice().sort((a, b) => rank(a) - rank(b) || a - b)
+
+  const sections = []
+  const seen = new Set()
+  let used = 0
+  for (const index of ordered) {
+    if (sections.length >= (options.maxHits ?? 2)) break
+    const message = messages[index]
+    if (!message) continue
+    const blocks = Array.isArray(message.content) ? message.content : []
+    const text = blocksText(blocks, ['text'])
+    const remaining = budget - used
+    if (remaining < 200) break
+    const window = hitWindow(text, selection, {
+      maxLines: options.maxLines ?? 14,
+      maxChars: Math.min(options.maxCharsPerHit ?? 1400, remaining),
+    })
+    if (!window) continue
+    // 同一段原文被多处引用时只留第一处（工具结果的排序已保证优先取原文出处）。
+    const fingerprint = matchFingerprint(text, selection)
+    if (fingerprint && seen.has(fingerprint)) continue
+    if (fingerprint) seen.add(fingerprint)
+    const role = message.role === 'user' ? '我' : (message.role === 'tool' ? '工具结果' : '助手')
+    sections.push(`[m${index}] ${role}（包含选中文字）\n${window}`)
+    used += window.length
+  }
+  return { text: sections.join('\n\n'), hits: located.hits, exact: located.exact }
+}
+
+/** 组一段「带上下文的提问」。
+ *
+ * 结构固定为三段，顺序对应阅读顺序：
+ *   1. 背景上下文（精简轨迹）
+ *   2. 围绕命中位置的上下文（选区所在的原文现场，按行取窗口）
+ *   3. 选中的文字 + 我的问题
+ */
+function buildPrompt({ trace, hit, selection, question, cwd }) {
+  const typed = (question && question.trim()) || ''
+  const hasHit = Boolean(hit && hit.trim())
+  const level = { trace: '一', hit: hasHit ? '二' : '' }
+  const selectionLabel = hasHit ? '三' : '二'
+  const questionLabel = hasHit ? '四' : '三'
+
   const parts = [
     '下面是我和一个 AI 编码助手刚才那段会话的「精简轨迹」，请把它当作背景上下文。',
   ]
   if (cwd) parts.push(`（会话的工作目录：${cwd}）`)
+
   parts.push(
     '',
-    '【会话精简轨迹】',
+    `【${level.trace}、会话精简轨迹（背景）】`,
     '（标注：`[mNN]` 是消息引用号；我＝用户原话，助手＝AI 回复，括号里是它这一轮调用的工具；工具结果只保留骨架）',
     trace || '（这次会话还没有可用的消息）',
+  )
+
+  if (hasHit) {
+    parts.push(
+      '',
+      `【${level.hit}、围绕命中位置的上下文】`,
+      '（选中的文字就是从下面这段原文里来的；这里取了它前后的内容，用来判断它到底指代什么）',
+      hit,
+    )
+  }
+
+  parts.push(
     '',
-    '【我在会话里选中的文字】',
+    `【${selectionLabel}、我在会话里选中的文字】`,
     '"""',
     selection,
     '"""',
+  )
+
+  // 用户没填问题时不再单独重复一句默认问句，交给下面的指令说清楚即可。
+  if (typed) {
+    parts.push('', `【${questionLabel}、我的问题】`, typed)
+  }
+
+  parts.push(
     '',
-    '【我的问题】',
-    ask,
-    '',
-    '请结合【会话精简轨迹】解释这段选中文字在当前上下文中的含义：它指代什么、为什么这样表述、' +
-      '和上下文里的哪一步相关。先给一句结论，再列 2 到 4 条依据，' +
-      '依据请带上消息引用号（例如「见 m23」）；' +
-      '如果轨迹里的信息不足以判断，直接说明缺什么，不要编造。',
+    typed
+      ? '请结合上面的轨迹与命中位置上下文回答我的问题：先给一句结论，再列 2 到 4 条依据，' +
+        '依据请带上消息引用号（例如「见 m23」）；优先以命中位置的原文为准，轨迹只作背景；' +
+        '如果信息不足以判断，直接说明缺什么，不要编造。'
+      : '请解释这段选中文字在当前上下文中的含义：它指代什么、为什么这样表述、' +
+        '和上下文里的哪一步相关。先给一句结论，再列 2 到 4 条依据，' +
+        '依据请带上消息引用号（例如「见 m23」）；' +
+        '优先以命中位置的原文为准，轨迹只作背景；' +
+        '如果信息不足以判断，直接说明缺什么，不要编造。',
     '',
     '（阅读轨迹时的取舍规则：带行号的文件路径、函数签名、错误原文、决策及其理由、精确数值与版本' +
       '比叙述性文字重要得多；冗长日志、重复读取、失败的尝试只看结论。据此判断哪些细节值得引用。）',
@@ -560,7 +859,7 @@ function prefillBase(chatUrl) {
   return `${base}${base.includes('?') ? '&' : '?'}q=`
 }
 
-/** 从会话日志里取轨迹（把选区传进去，用于相关性选段）。 */
+/** 从会话日志里取轨迹（把选区传进去，用于命中定位与相关性选段）。 */
 function traceOfSession(sessions, sessionId, options, selection) {
   const session = sessions?.get(sessionId)
   if (!session) return undefined
@@ -570,14 +869,29 @@ function traceOfSession(sessions, sessionId, options, selection) {
   } catch {
     messages = []
   }
-  const condensed = condenseMessages(messages, options, selection)
+
+  // 先定位选区出处：命中的消息及其邻居要无条件进轨迹（这是质量的支点）。
+  const located = locateSelection(messages, selection, options.hitNeighbors ?? 1)
+  const condensed = condenseMessages(messages, options, selection, located.window)
+  const hit = buildHitContext(messages, selection, {
+    maxHits: options.maxHits ?? 3,
+    maxLines: options.hitWindowLines ?? 14,
+    maxCharsPerHit: options.hitWindowChars ?? 1200,
+  })
+
   let cwd = ''
   try {
     cwd = session.header?.cwd ?? ''
   } catch {
     cwd = ''
   }
-  return { ...condensed, cwd }
+  return {
+    ...condensed,
+    cwd,
+    hit: hit.text,
+    hitMessages: hit.hits,
+    hitExact: hit.exact,
+  }
 }
 
 /**
@@ -596,6 +910,7 @@ function prepareAsk(sessions, settings, input) {
   const condensed = sessionId ? traceOfSession(sessions, sessionId, settings, selection) : undefined
   const prompt = buildPrompt({
     trace: condensed?.trace ?? '',
+    hit: condensed?.hit ?? '',
     selection,
     question: input.question,
     cwd: condensed?.cwd,
@@ -618,6 +933,10 @@ function prepareAsk(sessions, settings, input) {
       traceCounts: condensed?.counts ?? { user: 0, assistant: 0, tool: 0 },
       traceRelevant: condensed?.relevantEntries ?? 0,
       traceTotalEntries: condensed?.totalEntries ?? 0,
+      /** 选区命中的消息下标（空数组表示没定位到，退化成了相关性近似） */
+      hitMessages: condensed?.hitMessages ?? [],
+      hitExact: condensed?.hitExact ?? false,
+      hitChars: condensed?.hit ? condensed.hit.length : 0,
       promptChars: prompt.length,
       encodedChars,
       urlChars: usePrefill ? base.length + encodedChars : base.length,
