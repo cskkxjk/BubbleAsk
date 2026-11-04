@@ -126,9 +126,21 @@ async function preview(tabId, question) {
   }
 }
 
-/** 采集 + 拼 prompt + 交给 DeepSeek 窗口发送。 */
-async function ask(tabId, question) {
+/**
+ * 采集 + 拼 prompt + 交给 DeepSeek 窗口发送。
+ *
+ * @param selectionOverride 划词气泡带来的选区文本。点气泡时页面选区可能已经被
+ *        收起，所以以气泡记住的那份为准。
+ */
+async function ask(tabId, question, selectionOverride) {
   const context = await collectFromTab(tabId)
+  const selectionText = String(selectionOverride || '').trim()
+  if (selectionText) {
+    context.selection = {
+      text: selectionText,
+      ancestors: (context.selection && context.selection.ancestors) || [],
+    }
+  }
   // question 为空时 buildPrompt 会按「有没有选区」自动选默认问题。
   const prompt = buildPrompt(context, question)
   const deepseekTabId = await ensureDeepSeekTab()
@@ -165,6 +177,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'BA_ASK') {
     ask(message.tabId, message.question)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, stage: 'error', detail: String(error && error.message ? error.message : error) }))
+    return true
+  }
+
+  // 划词气泡：sender.tab 就是气泡所在页面，不用再问一次「当前标签页」
+  if (message.type === 'BA_ASK_SELECTION') {
+    const tabId = sender && sender.tab ? sender.tab.id : undefined
+    const selection = typeof message.selection === 'string' ? message.selection : ''
+    if (tabId === undefined || !selection.trim()) {
+      sendResponse({ ok: false, stage: 'collect', detail: '没有拿到选区' })
+      return false
+    }
+    ask(tabId, '', selection)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, stage: 'error', detail: String(error && error.message ? error.message : error) }))
     return true

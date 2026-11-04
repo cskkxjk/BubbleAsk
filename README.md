@@ -19,7 +19,7 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 | --- | --- | --- | --- |
 | 产物 | `dist\BubbleAsk.exe`（一个可执行文件，托盘界面 + 可选的后台服务身份），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） | [`chrome-extension/`](chrome-extension/README.md)（MV3 扩展） |
 | 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 | Chrome / Edge 浏览器 |
-| 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 | 工具栏图标或 `Ctrl+Shift+Y` |
+| 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 | 任意网页划词弹出的「问这段」气泡；或工具栏图标、`Ctrl+Shift+Y` |
 | 上下文 | 选中的文字 / 截图 | 精简会话轨迹 | 当前网页的结构与文字 |
 | 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端 | 无（复用浏览器自身的 DeepSeek 登录） |
 
@@ -238,9 +238,12 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 ### 使用
 
+- **划词提问**（主用法）：任意网页选中一段文字 → 选区旁浮出「问这段」气泡 → 点它即把「页面上下文 + 这段文字 + 默认问题」发到右侧 DeepSeek 窗口。
 - 点工具栏图标：弹窗显示页面规模与选中文字，填问题后「发送到 DeepSeek」。
 - 快捷键 `Ctrl+Shift+Y`：直接以默认问题提问。
 - 「复制提问」把含完整上下文的提问复制到剪贴板。
+
+> 1.0 → 1.1 新增了划词气泡，因此多了 `<all_urls>` 主机权限：Chrome 出于安全会自动禁用扩展并要求确认，在 `chrome://extensions` 重新启用即可。气泡只在选中文字后出现，点它才读页面，不点不读。
 
 ### 为什么不是页内 iframe 侧栏
 
