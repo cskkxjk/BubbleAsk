@@ -11,8 +11,14 @@
   if (globalThis.__bubbleAskSelectionBubble) return
   globalThis.__bubbleAskSelectionBubble = true
 
-  /** 少于这么多字不弹：点一下、选个词不该打扰。 */
-  const MIN_CHARS = 8
+  /**
+   * 少于这么多字不弹。
+   *
+   * 原先是 8，结果像 crxsoso 顶部那种「EDGE / CHROME / FIREFOX」的短标签选中后
+   * 永远不弹 —— 而双击选词、短拖选本身就是明确的意图，不该被字数卡住。
+   * 现在只挡「单字」这种明显误触。
+   */
+  const MIN_CHARS = 2
   /** 气泡与选区的间距。 */
   const GAP = 8
 
