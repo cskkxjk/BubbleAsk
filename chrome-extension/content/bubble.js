@@ -211,6 +211,33 @@
     event.stopPropagation()
   })
 
+  /**
+   * 把后台返回的 stage 翻成人话。
+   *
+   * 只显示「失败」等于没说 —— 用户既不知道断在哪，我也没法远程判断。
+   * 短标签放在气泡上，完整原因放进 title（悬停可读）。
+   */
+  function describeFailure(result) {
+    const stage = result && result.stage ? String(result.stage) : ''
+    const detail = result && result.detail ? String(result.detail) : ''
+    const labels = {
+      login: '未登录',
+      collect: '读不到页面',
+      window: '窗口没起来',
+      'no-composer': '找不到输入框',
+      'no-button': '找不到发送键',
+      unverified: '发送未确认',
+      busy: '忙',
+      version: '版本不符',
+      ipc: '服务不通',
+      module: '模块未就绪',
+      fill: '没填进去',
+      error: '失败',
+    }
+    const label = labels[stage] || '失败'
+    return { label, detail: detail ? `${stage || 'error'}：${detail}` : stage || '未知原因' }
+  }
+
   pill.addEventListener('click', async (event) => {
     event.preventDefault()
     event.stopPropagation()
@@ -229,17 +256,47 @@
         label.textContent = '已发送'
       } else {
         pill.dataset.tone = 'error'
-        label.textContent = (result && result.stage === 'login') ? '未登录' : '失败'
+        const failure = describeFailure(result)
+        pill.dataset.tone = 'error'
+        label.textContent = failure.label
+        pill.title = failure.detail
         console.warn('[BubbleAsk] 发送失败', result)
       }
     } catch (error) {
+      const detail = String(error && error.message ? error.message : error)
       pill.dataset.tone = 'error'
       label.textContent = '失败'
+      pill.title = detail
       console.warn('[BubbleAsk] 发送异常', error)
     } finally {
       pill.dataset.busy = 'false'
-      hideSoon(1200)
+      // 出错时多留一会儿，让人能看清 / 悬停读原因
+      hideSoon(pill.dataset.tone === 'error' ? 6000 : 1200)
     }
+  })
+
+  /**
+   * 采集请求的处理者。
+   *
+   * 为什么不让后台注入：Maxthon 这类 Chromium 分支**没有实现 `chrome.scripting`**
+   * （连老的 `chrome.tabs.executeScript` 也没有），点的时候再注入必然失败。
+   * 而内容脚本本身是正常运行的 —— 所以改成「后台问一句，页面自己把上下文交出来」。
+   */
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || message.type !== 'BA_COLLECT') return false
+    const collect = globalThis.__bubbleAskCollect
+    if (typeof collect !== 'function') {
+      sendResponse({ ok: false, detail: '页面里的采集器没加载（collect.js）' })
+      return true
+    }
+    try {
+      sendResponse({ ok: true, context: collect(message.limits || {}) })
+    } catch (error) {
+      sendResponse({ ok: false, detail: String(error && error.message ? error.message : error) })
+    }
+    // 始终回 true：有些 Chromium 分支（如 Maxthon）会按返回值判断「是否会有响应」，
+    // 返回 false 时同步 sendResponse 可能被丢弃。
+    return true
   })
 
   function mount() {

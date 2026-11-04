@@ -20,6 +20,37 @@ const PANEL_GAP = 12
 
 const log = (...args) => console.log('[BubbleAsk]', ...args)
 
+/**
+ * 向标签页里的内容脚本发消息。
+ *
+ * 为什么不用 `await chrome.tabs.sendMessage(...)`：并非所有 Chromium 分支都实现了
+ * 它的 Promise 形式 —— Maxthon 下直接返回 `undefined`，回调形式则可能报
+ * "The message port closed before a response was received"。这里统一用回调 + 超时，
+ * 并把 `runtime.lastError` 读掉（不读会污染控制台），对两边都能用。
+ */
+function sendToTab(tabId, message, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(null), timeoutMs)
+    try {
+      chrome.tabs.sendMessage(tabId, message, (reply) => {
+        // 读掉 lastError：对端没响应时它会有值，但对我们只是「拿不到回复」
+        void chrome.runtime.lastError
+        finish(reply === undefined ? null : reply)
+      })
+    } catch (error) {
+      finish(null)
+    }
+  })
+}
+
+
 /** 把侧边窗口贴到当前窗口的右侧。 */
 async function panelBounds() {
   let width = PANEL_WIDTH
@@ -75,7 +106,7 @@ async function ensureDeepSeekTab() {
 async function ensureBridge(tabId) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
-      const pong = await chrome.tabs.sendMessage(tabId, { type: 'BA_PING' })
+      const pong = await sendToTab(tabId, { type: 'BA_PING' }, 3000)
       if (pong && pong.ok) return true
     } catch (error) {
       // 首次通常就走到这里：内容脚本还没就绪，注入一份再试。
@@ -95,10 +126,26 @@ async function ensureBridge(tabId) {
 /**
  * 从标签页采集上下文。
  *
- * 先注入采集器文件（定义 globalThis.__bubbleAskCollect），再调用它取回结果 ——
- * 这样采集逻辑可以用普通函数写法，不必塞进 executeScript 的 func 里序列化。
+ * 首选「问页面里的内容脚本」：`chrome.tabs.sendMessage` 在所有 Chromium 分支上都可用，
+ * 而 `chrome.scripting` 并非如此 —— Maxthon 就没实现它（连 MV2 的
+ * `chrome.tabs.executeScript` 也没有），点的时候再注入必然失败。
+ *
+ * 只有页面里没有内容脚本时（比如扩展装上之前就打开的标签页）才退回注入；
+ * 注入也不可用时给出能看懂的提示，而不是一句「失败」。
  */
 async function collectFromTab(tabId) {
+  try {
+    const reply = await sendToTab(tabId, { type: 'BA_COLLECT', limits: CONTEXT_BUDGET }, 8000)
+    if (reply && reply.ok && reply.context) return reply.context
+    if (reply && reply.ok === false) throw new Error(reply.detail || '页面采集失败')
+  } catch (error) {
+    log('内容脚本没响应，尝试注入采集器', error && error.message ? error.message : error)
+  }
+
+  if (typeof chrome.scripting === 'undefined') {
+    throw new Error('这个页面里没有内容脚本，而当前浏览器不支持脚本注入（如 Maxthon）。请刷新页面后重试。')
+  }
+
   await chrome.scripting.executeScript({ target: { tabId }, files: ['content/collect.js'] })
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -148,7 +195,8 @@ async function ask(tabId, question, selectionOverride) {
   if (!ready) {
     return { ok: false, stage: 'window', detail: 'DeepSeek 窗口没能就绪，请稍后重试' }
   }
-  const result = await chrome.tabs.sendMessage(deepseekTabId, { type: 'BA_ASK', prompt })
+  const reply = await sendToTab(deepseekTabId, { type: 'BA_ASK', prompt }, 120000)
+  const result = reply || { ok: false, stage: 'unverified', detail: 'DeepSeek 页面没有回报结果（可能还在加载）' }
   const record = {
     ...result,
     at: Date.now(),
