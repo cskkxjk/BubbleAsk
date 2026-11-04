@@ -68,7 +68,18 @@ Set-Cookie: ds_session_id=…; HttpOnly; Secure; SameSite=Strict
 
 侧边窗口是真实的 chat.deepseek.com 页面，**窗口图标由该站点的 favicon 决定**，扩展无法覆盖。DeepSeek 用的是 SVG favicon；Chrome / Edge 能渲染，部分第三方 Chromium 分支（如遨游）不渲染 SVG，任务栏就会显示系统默认的空白文档图标。这是浏览器差异，不是扩展的问题。
 
-扩展自己的图标（工具栏、扩展管理页）是一条手绘的小鲸鱼：`icons/whale.svg` 是细节版（32/48/128 由它渲染），`icons/whale-small.svg` 是给 16px 单独画的简化版（把细节多的图直接缩小必然糊）。两者都由 `tools/make-icons.ps1` 经无头 Edge 渲染后缩放产出，改图标只改 SVG 再跑一次脚本。
+扩展自己的图标（工具栏、扩展管理页）是一条小鲸鱼：
+
+| 文件 | 用途 |
+| --- | --- |
+| `icons/whale.png` | 细节版母图（透明底），渲染 32/48/128 |
+| `icons/whale-small.png` | 小尺寸母图（造型更粗、更整齐），渲染 16 |
+| `icons/icon16/32/48/128.png` | 实际使用的四张图 |
+
+母图由图像生成模型产出（`gpt-image-2`，提示词要求扁平矢量、透明底、`#4D6BFE`），再用 `tools/make-icons-from-png.py` 处理：从四角泛洪去白底（肚皮被蓝色包围，不会被误伤）→ 裁到内容外接框 → 合成到浅色圆角底板 → 导出各尺寸。
+
+16px 单独画一份不是洁癖：把细节多的图直接缩小必然糊成一团，小尺寸要的是**更粗的轮廓**而不是更多细节。16px 还特意不铺底板——裸字形配工具栏自身的底色，对比反而更强。
+
 
 
 

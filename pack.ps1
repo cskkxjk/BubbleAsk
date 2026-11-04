@@ -106,7 +106,8 @@ $extVer = Get-ExtensionVersion
 $extStage = Join-Path $stage 'chrome-extension'
 New-Item -ItemType Directory -Force -Path $extStage | Out-Null
 $extSrc = Join-Path $root 'chrome-extension'
-Get-ChildItem $extSrc -Force | ForEach-Object {
+# tools/ 是构建素材（图标母图 + 生成脚本），不进用户包
+Get-ChildItem $extSrc -Force | Where-Object { $_.Name -ne 'tools' } | ForEach-Object {
     Copy-Item $_.FullName -Destination $extStage -Recurse -Force
 }
 $results += New-Package -Name "BubbleAsk-chrome-extension-$extVer" -SourceDir $extStage
