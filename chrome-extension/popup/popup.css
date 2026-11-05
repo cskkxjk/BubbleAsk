@@ -148,3 +148,14 @@ footer {
   border-top: 1px solid var(--line);
   line-height: 1.45;
 }
+
+/* 次要操作：打开窗口是个不常用的动作，视觉上弱一点 */
+.actions.secondary {
+  margin-top: -2px;
+}
+
+.actions.secondary button {
+  font-size: 12px;
+  padding: 6px 10px;
+  color: var(--muted);
+}

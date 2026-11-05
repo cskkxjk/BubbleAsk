@@ -57,38 +57,108 @@ async function panelBounds() {
   let height = 900
   let left = 0
   let top = 40
-  try {
-    const current = await chrome.windows.getLastFocused()
-    if (current && current.width) {
-      width = Math.min(PANEL_WIDTH, Math.max(360, Math.floor(current.width / 2)))
-      height = Math.max(480, current.height - PANEL_GAP * 2)
-      left = current.left + current.width - width - PANEL_GAP
-      top = current.top + PANEL_GAP
-    }
-  } catch (error) {
-    log('读取当前窗口失败，用默认尺寸', error)
+  // 走回调 + 超时：Promise 形式在部分分支上不兑现，卡住会让整个发送流程无响应
+  const current = await withTimeout(
+    (done) => {
+      chrome.windows.getLastFocused((win) => {
+        void chrome.runtime.lastError
+        done(win || null)
+      })
+    },
+    null,
+    2500,
+  )
+  if (current && current.width) {
+    width = Math.min(PANEL_WIDTH, Math.max(360, Math.floor(current.width / 2)))
+    height = Math.max(480, current.height - PANEL_GAP * 2)
+    left = current.left + current.width - width - PANEL_GAP
+    top = current.top + PANEL_GAP
   }
   return { width, height, left: Math.max(0, left), top: Math.max(0, top) }
 }
 
 /**
- * 找到（或创建）DeepSeek 侧边窗口，返回它的标签页 id。
+ * 给任何 chrome.* 调用套上超时，拿不到结果就当失败。
  *
- * 复用而不是每次新开：反复点击不该堆一堆窗口，且同一个标签页能保持对话上下文。
+ * Maxthon 里这些 API 的 Promise 形式并不总能兑现：有的直接返回 undefined，
+ * 有的干脆不 resolve。一旦不 resolve，整个 await 链就永远停在那里，
+ * 消息端口随之关闭（"The message port closed before a response was received"）。
+ * 所以这里一律「回调 + 超时」，超时按失败处理 —— 宁可多开一个窗口，也不能没反应。
  */
-async function ensureDeepSeekTab() {
-  const existing = await chrome.tabs.query({ url: DEEPSEEK_MATCH })
-  if (existing && existing.length > 0) {
-    const tab = existing[0]
-    try {
-      await chrome.windows.update(tab.windowId, { focused: true })
-    } catch (error) {
-      log('聚焦已有窗口失败', error)
+function withTimeout(call, fallback, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
     }
-    return tab.id
+    const timer = setTimeout(() => finish(fallback), timeoutMs)
+    try {
+      const returned = call(finish)
+      // 有些实现不发回调却给 Promise，两边都兜住
+      if (returned && typeof returned.then === 'function') {
+        returned.then((value) => finish(value === undefined ? fallback : value), () => finish(fallback))
+      }
+    } catch (error) {
+      finish(fallback)
+    }
+  })
+}
+
+/** 用回调形式查询窗口/标签页，避免依赖 Promise 形式。 */
+function getWindow(windowId, timeoutMs = 3000) {
+  return withTimeout(
+    (done) => {
+      chrome.windows.get(windowId, (win) => {
+        void chrome.runtime.lastError
+        done(win && win.id !== undefined ? win : null)
+      })
+    },
+    null,
+    timeoutMs,
+  )
+}
+
+function queryTabsByIds() {
+  return withTimeout(
+    (done) => {
+      chrome.tabs.query({ url: DEEPSEEK_MATCH }, (tabs) => {
+        void chrome.runtime.lastError
+        done(Array.isArray(tabs) ? tabs : [])
+      })
+    },
+    [],
+    3000,
+  )
+}
+
+/**
+ * 找一个**还活着**的 DeepSeek 标签页。
+ *
+ * 必须验证它所属的窗口还在：有些 Chromium 分支（如 Maxthon）在窗口被关掉之后，
+ * `tabs.query` 仍会返回那个已死的标签。只看 query 结果就会以为窗口还在，
+ * 于是一直往不存在的标签发消息 —— 表现就是「关掉浮窗后再发送毫无反应」。
+ */
+async function findLiveDeepSeekTab() {
+  const tabs = await queryTabsByIds()
+  for (const tab of tabs) {
+    if (!tab || tab.id === undefined) continue
+    if (typeof tab.windowId === 'number' && tab.windowId >= 0) {
+      const win = await getWindow(tab.windowId)
+      // 查不到窗口（含超时）就当作残留，宁可重建也不能卡住
+      if (!win) continue
+    }
+    return tab
   }
+  return null
+}
+
+/** 新建 DeepSeek 侧边窗口，返回标签页 id。 */
+async function createDeepSeekWindow() {
   const bounds = await panelBounds()
-  const created = await chrome.windows.create({
+  const payload = {
     url: DEEPSEEK_URL,
     type: 'popup',
     width: bounds.width,
@@ -96,10 +166,47 @@ async function ensureDeepSeekTab() {
     left: bounds.left,
     top: bounds.top,
     focused: true,
-  })
-  const tab = created.tabs && created.tabs[0]
-  if (!tab || tab.id === undefined) throw new Error('没能创建 DeepSeek 窗口')
+  }
+  const created = await withTimeout(
+    (done) => {
+      chrome.windows.create(payload, (win) => {
+        void chrome.runtime.lastError
+        done(win || null)
+      })
+    },
+    null,
+    15000,
+  )
+  const tab = created && created.tabs && created.tabs[0]
+  if (!tab || tab.id === undefined) {
+    // 创建没回话（超时）也可能其实建成功了，回头再找一次
+    const fallback = await findLiveDeepSeekTab()
+    if (fallback) return fallback.id
+    throw new Error('没能创建 DeepSeek 窗口')
+  }
   return tab.id
+}
+
+/**
+ * 找到（或创建）DeepSeek 侧边窗口，返回它的标签页 id。
+ *
+ * 复用而不是每次新开：反复点击不该堆一堆窗口，且同一个标签页能保持对话上下文。
+ * forceNew=true 时忽略已有窗口，强制重建（用于「窗口在但页面已死」的情况）。
+ */
+async function ensureDeepSeekTab(options) {
+  const forceNew = Boolean(options && options.forceNew)
+  if (!forceNew) {
+    const live = await findLiveDeepSeekTab()
+    if (live) {
+      try {
+        await chrome.windows.update(live.windowId, { focused: true })
+      } catch (error) {
+        log('聚焦已有窗口失败', error)
+      }
+      return live.id
+    }
+  }
+  return await createDeepSeekWindow()
 }
 
 /** 确保 DeepSeek 页面里的执行器就绪（冷启动时内容脚本可能还没注入）。 */
@@ -190,10 +297,23 @@ async function ask(tabId, question, selectionOverride) {
   }
   // question 为空时 buildPrompt 会按「有没有选区」自动选默认问题。
   const prompt = buildPrompt(context, question)
-  const deepseekTabId = await ensureDeepSeekTab()
-  const ready = await ensureBridge(deepseekTabId)
+
+  let deepseekTabId = await ensureDeepSeekTab()
+  let ready = await ensureBridge(deepseekTabId)
   if (!ready) {
-    return { ok: false, stage: 'window', detail: 'DeepSeek 窗口没能就绪，请稍后重试' }
+    // 窗口可能在、但页面已经死了（用户关过浮窗，或页面崩溃）。
+    // 关掉这个残留、强制重建一个新窗口再试一次，而不是直接报错。
+    log('执行器没就绪，重建 DeepSeek 窗口后重试')
+    try {
+      await chrome.tabs.remove(deepseekTabId)
+    } catch (error) {
+      /* 已经没了也无所谓 */
+    }
+    deepseekTabId = await ensureDeepSeekTab({ forceNew: true })
+    ready = await ensureBridge(deepseekTabId)
+  }
+  if (!ready) {
+    return { ok: false, stage: 'window', detail: 'DeepSeek 窗口没能就绪，请稍后重试（也可以点扩展图标里的「打开 DeepSeek 窗口」）' }
   }
   const reply = await sendToTab(deepseekTabId, { type: 'BA_ASK', prompt }, 120000)
   const result = reply || { ok: false, stage: 'unverified', detail: 'DeepSeek 页面没有回报结果（可能还在加载）' }
@@ -246,6 +366,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'BA_LAST') {
     chrome.storage.local.get(RESULT_KEY).then((data) => sendResponse({ ok: true, record: data[RESULT_KEY] || null }))
+    return true
+  }
+
+  // 手动打开/唤起 DeepSeek 窗口（popup 里的按钮用）
+  if (message.type === 'BA_OPEN_WINDOW') {
+    ensureDeepSeekTab({ forceNew: Boolean(message.forceNew) })
+      .then((tabId) => sendResponse({ ok: true, tabId }))
+      .catch((error) => sendResponse({ ok: false, stage: 'window', detail: String(error && error.message ? error.message : error) }))
     return true
   }
 

@@ -12,6 +12,7 @@ const els = {
   question: document.getElementById('question'),
   send: document.getElementById('send'),
   copy: document.getElementById('copy'),
+  openWindow: document.getElementById('open-window'),
   status: document.getElementById('status'),
 }
 
@@ -26,6 +27,7 @@ function setStatus(text, isError) {
 function setBusy(busy) {
   els.send.disabled = busy
   els.copy.disabled = busy || !lastPrompt
+  if (els.openWindow) els.openWindow.disabled = busy
 }
 
 async function currentTab() {
@@ -103,3 +105,21 @@ els.copy.addEventListener('click', async () => {
 })
 
 init()
+
+// 手动打开 / 唤起 DeepSeek 窗口（关掉浮窗后想再开）
+els.openWindow?.addEventListener('click', async () => {
+  setBusy(true)
+  setStatus('正在打开 DeepSeek 窗口…')
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'BA_OPEN_WINDOW' })
+    if (result && result.ok) {
+      setStatus('已打开，去右侧窗口看')
+    } else {
+      setStatus((result && result.detail) || '打开失败', true)
+    }
+  } catch (error) {
+    setStatus(`打开失败：${error && error.message ? error.message : error}`, true)
+  } finally {
+    setBusy(false)
+  }
+})
