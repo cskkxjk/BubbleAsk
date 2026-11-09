@@ -1,18 +1,33 @@
 {
   "manifest_version": 3,
-  "name": "Bubble Ask — 页面问答",
-  "version": "1.1.1",
-  "description": "划词即问：选中文字后点气泡，把当前页面的结构与文字作为上下文，在右侧独立窗口里用 DeepSeek 网页版提问，复用浏览器已登录的账号。",
+  "name": "Bubble Ask — 网页问答",
+  "version": "1.2.0",
+  "description": "划词即问：选中文字后点气泡，把当前页面的结构与文字作为上下文，在右侧独立窗口里用 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok 网页版提问，复用浏览器已登录的账号。",
   "minimum_chrome_version": "114",
   "permissions": ["scripting", "activeTab", "tabs", "storage", "windows"],
-  "host_permissions": ["https://chat.deepseek.com/*", "<all_urls>"],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "https://*.deepseek.com/*",
+    "https://*.qianwen.com/*",
+    "https://qianwen.aliyun.com/*",
+    "https://chat.qwen.ai/*",
+    "https://tongyi.aliyun.com/*",
+    "https://*.tongyi.com/*",
+    "https://*.doubao.com/*",
+    "https://*.chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*",
+    "https://*.grok.com/*",
+    "https://*.x.com/*",
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "用页面上下文提问",
+    "default_title": "用页面上下文提问（可切换服务方）",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -29,19 +44,48 @@
   "commands": {
     "ask-page": {
       "suggested_key": { "default": "Ctrl+Shift+Y" },
-      "description": "用当前页面上下文提问"
+      "description": "用当前页面上下文提问（发送到当前服务方）"
     }
   },
   "content_scripts": [
     {
-      "matches": ["https://chat.deepseek.com/*"],
-      "js": ["content/deepseek-bridge.js"],
+      "matches": [
+        "https://chat.deepseek.com/*",
+        "https://*.deepseek.com/*",
+        "https://*.qianwen.com/*",
+        "https://qianwen.aliyun.com/*",
+        "https://chat.qwen.ai/*",
+        "https://tongyi.aliyun.com/*",
+        "https://*.tongyi.com/*",
+        "https://*.doubao.com/*",
+        "https://*.chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*",
+        "https://*.grok.com/*",
+        "https://*.x.com/*"
+      ],
+      "js": ["content/chat-bridge.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "exclude_matches": ["https://chat.deepseek.com/*", "*://*/bubble-ask/*"],
+      "exclude_matches": [
+        "https://chat.deepseek.com/*",
+        "https://*.deepseek.com/*",
+        "https://*.qianwen.com/*",
+        "https://qianwen.aliyun.com/*",
+        "https://chat.qwen.ai/*",
+        "https://tongyi.aliyun.com/*",
+        "https://*.tongyi.com/*",
+        "https://*.doubao.com/*",
+        "https://*.chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*",
+        "https://*.grok.com/*",
+        "https://*.x.com/*",
+        "*://*/bubble-ask/*"
+      ],
       "js": ["content/collect.js", "content/bubble.js"],
       "run_at": "document_idle",
       "all_frames": false

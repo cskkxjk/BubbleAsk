@@ -18,6 +18,13 @@ $outPath = Join-Path $root $OutDir
 $stage = Join-Path $root '.tmp-pack'
 
 # ---------- 版本号：各取各的真实来源，不手写 ----------
+# 注意：Windows PowerShell 5.1 的 Get-Content 默认按系统 ANSI 解码，UTF-8 中文描述会变成乱码
+# 并让 ConvertFrom-Json 解析失败；这里显式按 UTF-8 读文件（pwsh 7 / 5.1 行为一致）。
+function Read-Utf8Text {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+}
+
 function Get-DesktopVersion {
     $file = Join-Path $root 'src\shared\IpcContract.cs'
     $match = Select-String -Path $file -Pattern 'AppVersion\s*=\s*"([^"]+)"'
@@ -27,12 +34,12 @@ function Get-DesktopVersion {
 
 function Get-PluginVersion {
     $file = Join-Path $root 'dsh-plugin\package.json'
-    return (Get-Content $file -Raw | ConvertFrom-Json).version
+    return (ConvertFrom-Json -InputObject (Read-Utf8Text $file)).version
 }
 
 function Get-ExtensionVersion {
     $file = Join-Path $root 'chrome-extension\manifest.json'
-    return (Get-Content $file -Raw | ConvertFrom-Json).version
+    return (ConvertFrom-Json -InputObject (Read-Utf8Text $file)).version
 }
 
 if (-not $SkipBuild) {
@@ -79,8 +86,9 @@ Bubble Ask 桌面端 $desktopVer
 ================================
 
 双击 BubbleAsk.exe 即托盘常驻；网页版需要本机存在 Chromium 内核浏览器
-（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），首次按 Ctrl+Alt+D
-打开窗口并登录一次 chat.deepseek.com，之后长期有效。
+（Edge / Chrome / Brave / Vivaldi / Opera / Chromium）。网页版支持 DeepSeek / 千问 /
+豆包 / ChatGPT / Gemini / Grok（托盘「设置 → 窗口与网页 → 网页版服务方」切换），
+首次打开某个站点时在该窗口里登录一次，之后长期有效。
 
 它同时是 DSH 插件的后台服务：同一个 BubbleAsk.exe 带 --service 参数运行
 时会以无界面模式独占浏览器驱动。你不需要手动启动它 —— 托盘或插件需要时

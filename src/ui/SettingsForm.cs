@@ -35,6 +35,7 @@ namespace BubbleAsk
         private Label _status;
 
         private TextBox _chatUrl;
+        private ComboBox _webProvider;
         private NumericUpDown _width;
         private NumericUpDown _height;
         private CheckBox _topMost;
@@ -308,7 +309,7 @@ namespace BubbleAsk
 
             _mode = new ComboBox();
             _mode.DropDownStyle = ComboBoxStyle.DropDownList;
-            _mode.Items.Add(new ComboItem("web", "网页版：驱动 Edge 打开 DeepSeek"));
+            _mode.Items.Add(new ComboItem("web", "网页版：驱动浏览器打开所选服务方"));
             _mode.Items.Add(new ComboItem("api", "API：直连模型，气泡里流式回答"));
             AddRow(table, "运行模式", _mode, "网页版用浏览器登录态、不花额度；API 模式需要 key，回答显示在气泡里");
 
@@ -341,8 +342,20 @@ namespace BubbleAsk
         private Panel BuildWindowPage()
         {
             TableLayoutPanel table = NewTable();
+            _webProvider = new ComboBox();
+            _webProvider.DropDownStyle = ComboBoxStyle.DropDownList;
+            _webProvider.SelectedIndexChanged += delegate { WebProviderSelected(); };
+            for (int i = 0; i < WebProviders.All.Count; i++)
+            {
+                WebProvider preset = WebProviders.All[i];
+                _webProvider.Items.Add(new ComboItem(preset.Id, preset.Name));
+            }
+            _webProvider.Items.Add(new ComboItem(WebProviders.CustomId, "自定义（自己填地址）"));
+            AddRow(table, "网页版服务方", _webProvider,
+                "切换后下一次提问/唤起即生效；各站点的登录态按浏览器 profile 分别保存，第一次打开时登录一次即可");
+
             _chatUrl = new TextBox();
-            AddRow(table, "聊天地址", _chatUrl, "默认 https://chat.deepseek.com/");
+            AddRow(table, "网页版地址", _chatUrl, "预设服务方的地址由程序固定；选「自定义」时才可编辑");
 
             _width = new NumericUpDown();
             _width.Minimum = 320;
@@ -405,7 +418,7 @@ namespace BubbleAsk
             _browser = new ComboBox();
             _browser.DropDownStyle = ComboBoxStyle.DropDownList;
             _browser.SelectedIndexChanged += delegate { BrowserSelected(); };
-            AddRow(table, "浏览器", _browser, "网页版用哪个浏览器打开 DeepSeek；这些都支持，装哪个用哪个");
+            AddRow(table, "浏览器", _browser, "网页版用哪个浏览器打开服务方页面；这些都支持，装哪个用哪个");
 
             _edgePath = new TextBox();
             _edgePath.TextChanged += delegate { SyncBrowserCombo(); };
@@ -568,6 +581,8 @@ namespace BubbleAsk
             SetNumber(_maxChars, _config.MaxChars);
 
             _chatUrl.Text = _config.ChatUrl;
+            SetWebProviderSelection(_config.WebProvider);
+            WebProviderSelected();
             _width.Value = Clamp(_config.WindowWidth, _width);
             SetNumber(_width, _config.WindowWidth);
             _height.Value = Clamp(_config.WindowHeight, _height);
@@ -611,6 +626,59 @@ namespace BubbleAsk
             }
             _apiBase.Text = provider.BaseUrl;
             _apiModel.Text = provider.Model;
+        }
+
+        /// <summary>
+        /// 选中某个网页版服务方：预设回填入口地址并锁住地址框（预设地址由 WebProviders 固定），
+        /// 「自定义」则放开编辑，并给一个默认地址兜底。
+        /// </summary>
+        private void WebProviderSelected()
+        {
+            if (_webProvider == null || _chatUrl == null)
+            {
+                return;
+            }
+            string id = ComboId(_webProvider, WebProviders.DefaultId);
+            WebProvider preset = WebProviders.Get(id);
+            if (preset != null)
+            {
+                _chatUrl.Text = preset.Url;
+                _chatUrl.ReadOnly = true;
+                _chatUrl.BackColor = Canvas;
+                return;
+            }
+            _chatUrl.ReadOnly = false;
+            _chatUrl.BackColor = Color.White;
+            if (_chatUrl.Text.Trim().Length == 0)
+            {
+                _chatUrl.Text = WebProviders.DefaultUrl;
+            }
+        }
+
+        /// <summary>把配置里的服务方 id 映射成下拉框索引（未知 id 当自定义）。</summary>
+        private void SetWebProviderSelection(string id)
+        {
+            string normalized = WebProviders.NormalizeId(id);
+            int index = WebProviders.All.Count;
+            for (int i = 0; i < WebProviders.All.Count; i++)
+            {
+                if (string.Equals(WebProviders.All[i].Id, normalized, StringComparison.OrdinalIgnoreCase))
+                {
+                    index = i;
+                    break;
+                }
+            }
+            _webProvider.SelectedIndex = index;
+        }
+
+        private static bool IsHttpUrl(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+            {
+                return false;
+            }
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
         }
 
         private static decimal Clamp(int value, NumericUpDown box)
@@ -695,6 +763,24 @@ namespace BubbleAsk
             AutoStart.SetEnabled(_config.StartWithWindows);
 
             _config.ChatUrl = _chatUrl.Text.Trim();
+            string webProviderId = ComboId(_webProvider, WebProviders.DefaultId);
+            _config.WebProvider = WebProviders.NormalizeId(webProviderId);
+            if (_config.WebProvider == WebProviders.CustomId)
+            {
+                string customUrl = _chatUrl.Text.Trim();
+                if (!IsHttpUrl(customUrl))
+                {
+                    _status.Text = "自定义服务方需要填一个 http(s) 网址";
+                    ShowPage(1);
+                    return;
+                }
+                _config.ChatUrl = customUrl;
+            }
+            else
+            {
+                WebProvider preset = WebProviders.Get(_config.WebProvider);
+                _config.ChatUrl = preset == null ? _chatUrl.Text.Trim() : preset.Url;
+            }
             _config.WindowWidth = ReadNumber(_width);
             _config.WindowHeight = ReadNumber(_height);
             _config.TopMost = _topMost.Checked;

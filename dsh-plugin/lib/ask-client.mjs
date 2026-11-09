@@ -249,13 +249,23 @@ export async function health(options = {}) {
   return call('health', {}, { ...options, timeoutMs: HEALTH_TIMEOUT_MS })
 }
 
-/** 注入完整提问并发送（是否自动点发送由服务侧的配置决定）。 */
+/**
+ * 注入完整提问并发送（是否自动点发送由服务侧的配置决定）。
+ *
+ * provider 可选（deepseek/qwen/doubao/chatgpt/gemini/grok）：不传时由服务端按默认
+ * DeepSeek 处理，旧桌面端会忽略该字段。providerUrl 只有 custom 需要，插件不传。
+ */
 export async function sendPrompt(options = {}) {
   const prompt = typeof options.prompt === 'string' ? options.prompt : ''
   if (!prompt.trim()) {
     return { ok: false, stage: 'fill', detail: 'prompt 为空，没有可发送的内容' }
   }
-  return call('send', { prompt }, { ...options, timeoutMs: SEND_TIMEOUT_MS })
+  const payload = { prompt }
+  const provider = typeof options.provider === 'string' ? options.provider.trim() : ''
+  if (provider) payload.provider = provider
+  const providerUrl = typeof options.providerUrl === 'string' ? options.providerUrl.trim() : ''
+  if (providerUrl) payload.providerUrl = providerUrl
+  return call('send', payload, { ...options, timeoutMs: SEND_TIMEOUT_MS })
 }
 
 /**

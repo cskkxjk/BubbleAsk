@@ -2,7 +2,8 @@
  * Bubble Ask —— Host 半。
  *
  * 职责：把当前会话的「精简轨迹」取出来，和用户选中的文字一起拼成一段带上下文的提问，
- * 再交给 DeepSeek 网页版。Client 半只负责选词和气泡，通过本进程的 HTTP 路由拿结果。
+ * 再交给网页版（默认 DeepSeek，气泡里可切换千问/豆包/ChatGPT/Gemini/Grok）。
+ * Client 半只负责选词和气泡，通过本进程的 HTTP 路由拿结果。
  *
  * 投递方式只有一条（外加一个纯手动兜底）：
  *   app      —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
@@ -37,8 +38,13 @@ async function loadApp() {
 }
 
 const DEFAULTS = {
-  /** DeepSeek 网页版地址 */
+  /** DeepSeek 网页版地址（provider=deepseek 时的入口；其余服务方用内置注册表里的地址） */
   chatUrl: 'https://chat.deepseek.com/',
+  /**
+   * 默认网页版服务方：deepseek / qwen / doubao / chatgpt / gemini / grok。
+   * 气泡里的下拉选择会随每次请求覆盖它，并记在浏览器 localStorage。
+   */
+  provider: 'deepseek',
   /** 轨迹里最多带几轮消息（user/assistant 各算一条） */
   maxMessages: 12,
   /** 每条消息截断到多少字 */
@@ -82,6 +88,95 @@ const DEFAULTS = {
    * 两者都没有就报「未找到 Bubble Ask 托盘应用」。
    */
   appPath: '',
+}
+
+/**
+ * 网页版服务方注册表。
+ *
+ * 与桌面端 `src/shared/WebProviders.cs` 的 6 家预设保持一致（id 是跨进程契约，不能改）。
+ * 插件只当客户端：选择器、导航、登录态、发送都在桌面端；这里只需要 id/名称/入口地址
+ * 用于气泡里的下拉框与「复制提问」的兜底地址。custom 不在插件里提供（桌面端设置里可配）。
+ *
+ * `prefillParam` 仅 DeepSeek 有：其余站点不支持 `?q=` 预填，直接走「复制提问」。
+ */
+const PROVIDERS = [
+  { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', prefillParam: 'q' },
+  { id: 'qwen', name: '千问 Qwen', url: 'https://www.qianwen.com/' },
+  { id: 'doubao', name: '豆包 Doubao', url: 'https://www.doubao.com/chat/' },
+  { id: 'chatgpt', name: 'ChatGPT', url: 'https://chatgpt.com/' },
+  { id: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/app' },
+  { id: 'grok', name: 'Grok', url: 'https://grok.com/' },
+]
+const PROVIDER_IDS = PROVIDERS.map((provider) => provider.id)
+
+/** 按 id 找服务方；未知 id 返回 null。 */
+function findProvider(id) {
+  return PROVIDERS.find((provider) => provider.id === id) || null
+}
+
+/**
+ * 解析一次请求要用哪家服务方：
+ *   1. 请求里带了 provider（气泡里的选择）—— 只认注册表里的 id，未知 id 明确报错；
+ *   2. 没带 —— 用插件配置的 `provider`；
+ *   3. 配置也不认识（手写 config 出错）—— 回退 DeepSeek，保证老用户行为不变。
+ */
+function resolveProvider(requested, settings) {
+  const raw = typeof requested === 'string' ? requested.trim().toLowerCase() : ''
+  if (raw) {
+    const provider = findProvider(raw)
+    if (!provider) return { error: raw }
+    return { provider }
+  }
+  const configured = typeof settings.provider === 'string' ? settings.provider.trim().toLowerCase() : ''
+  return { provider: findProvider(configured) || findProvider('deepseek') }
+}
+
+/** 解析版本号 "2.1.0" → [2,1,0]（允许省略后两段，如 "2.1"）；解析失败返回 null（无法判断时按不支持处理）。 */
+function parseVersion(text) {
+  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(String(text || '').trim())
+  if (!match) return null
+  return [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)]
+}
+
+/** 版本比较：a >= b。 */
+function versionAtLeast(a, b) {
+  const left = parseVersion(a)
+  const right = parseVersion(b)
+  if (!left || !right) return false
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] > right[index]) return true
+    if (left[index] < right[index]) return false
+  }
+  return true
+}
+
+/**
+ * 桌面端是否支持「按请求指定服务方」（AppVersion >= 2.1.0）。
+ *
+ * 旧桌面端会忽略 send 里的 provider 字段、按本机配置的入口发送 —— 切了服务方时
+ * 必须先确认版本再发，不能发错站点。
+ *
+ * 刻意不做进程级缓存：用户升级桌面端后无需重启 DSH 即可生效；桌面端被降级/换回
+ * 旧版时也能立刻重新拦截。一次 health 只是毫秒级管道往返，值得。
+ */
+async function checkProviderSupport(app, settings, log) {
+  try {
+    const health = await app.health({ appPath: settings.appPath, log })
+    if (!health || health.ok !== true) {
+      return { ok: false, error: 'provider-check', detail: (health && health.detail) || '无法连接托盘应用' }
+    }
+    const version = health.app
+    if (versionAtLeast(version, '2.1.0')) {
+      return { ok: true, version }
+    }
+    return {
+      ok: false,
+      error: 'old-app',
+      detail: `托盘应用版本 ${version || '未知'} 过旧，切换服务方需要 2.1.0 或更高版本`,
+    }
+  } catch (error) {
+    return { ok: false, error: 'provider-check', detail: String(error?.message ?? error) }
+  }
 }
 
 const ROUTE_PROMPT = '/bubble-ask/prompt'
@@ -872,15 +967,26 @@ function traceOfSession(sessions, sessionId, options, selection) {
 /**
  * 组装一次提问：精简轨迹 + 选中文字 + 问题。
  *
- * 两条投递模式（都不压缩上下文，prompt 永远是完整版）：
- *   prefill   —— prompt 很短时才用 `?q=` 预填（省掉粘贴动作）
- *   clipboard —— 长提问的默认方式：打开干净的 chat.deepseek.com，把完整 prompt 交给
- *                剪贴板，用户在输入框按 Ctrl+V 再回车。绕开 8KB 请求行 / WAF 限流。
+ * 服务方只影响「兜底入口地址与预填」：真正的导航、登录检测、注入与发送由桌面端按同一个
+ * provider id 完成。两条投递模式（都不压缩上下文，prompt 永远是完整版）：
+ *   prefill   —— 仅当该站点支持 URL 预填（目前只有 DeepSeek 的 `?q=`）且 prompt 够短；
+ *   clipboard —— 其余情况：给出该服务方入口地址 + 完整 prompt，由用户手动粘贴兜底。
  */
 function prepareAsk(sessions, settings, input) {
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId : ''
   const selection = typeof input.selection === 'string' ? input.selection.trim() : ''
   if (!selection) return { ok: false, error: '没有选中文字' }
+
+  const resolved = resolveProvider(input.provider, settings)
+  if (resolved.error) {
+    return {
+      ok: false,
+      stage: 'provider',
+      error: `未知的网页版服务方: ${resolved.error}`,
+      providers: PROVIDER_IDS,
+    }
+  }
+  const provider = resolved.provider
 
   const condensed = sessionId ? traceOfSession(sessions, sessionId, settings, selection) : undefined
   const prompt = buildPrompt({
@@ -891,17 +997,23 @@ function prepareAsk(sessions, settings, input) {
     cwd: condensed?.cwd,
   })
 
-  const base = prefillBase(settings.chatUrl)
+  // DeepSeek 保留 chatUrl 覆盖（镜像/自定义入口的老配置）；其余服务方用注册表地址。
+  const chatUrl = provider.id === 'deepseek' ? (settings.chatUrl || provider.url) : provider.url
+  const base = provider.prefillParam ? prefillBase(chatUrl) : chatUrl
   const encodedChars = encodedLength(prompt)
-  const usePrefill = base.length + encodedChars <= PREFILL_URL_SHORT_MAX
+  const usePrefill = Boolean(provider.prefillParam) && base.length + encodedChars <= PREFILL_URL_SHORT_MAX
   return {
     ok: true,
-    /** 'prefill' = 直接带 ?q= 打开；'clipboard' = 打开网页 + 复制完整提问 */
+    providerId: provider.id,
+    providerName: provider.name,
+    /** 'prefill' = 直接带 ?q= 打开；'clipboard' = 给出站点地址 + 复制完整提问 */
     mode: usePrefill ? 'prefill' : 'clipboard',
     prompt,
-    url: usePrefill ? base + encodeURIComponent(prompt) : (settings.chatUrl || DEFAULTS.chatUrl),
+    url: usePrefill ? base + encodeURIComponent(prompt) : chatUrl,
     stats: {
       sessionId,
+      provider: provider.id,
+      providerName: provider.name,
       traceMessages: condensed?.messages ?? 0,
       traceChars: condensed?.chars ?? 0,
       traceMode: condensed?.mode ?? settings.traceMode,
@@ -931,6 +1043,14 @@ export function apply(ctx, config = {}) {
       /* 日志失败不影响主流程 */
     }
   }
+  // 配置里的 provider 写错时回退 DeepSeek：不因为一行手写配置让插件整体报错。
+  const configuredProvider = typeof settings.provider === 'string' ? settings.provider.trim().toLowerCase() : ''
+  if (!findProvider(configuredProvider)) {
+    settings.provider = DEFAULTS.provider
+    log(`配置的 provider 不合法（${String(config.provider)}），已回退 ${DEFAULTS.provider}`)
+  } else {
+    settings.provider = configuredProvider
+  }
   const sessions = () => ctx.get('sessions')
 
   ctx.effect(() => ctx.webServer.register({
@@ -959,9 +1079,19 @@ export function apply(ctx, config = {}) {
           running: pipe?.running ?? null,
           profileDir: pipe?.profileDir ?? null,
           autoSend: pipe?.autoSend ?? null,
+          // 桌面端当前生效/配置的服务方，以及它支持的 provider id 列表（旧桌面端为 null）。
+          currentProvider: pipe?.currentProvider ?? null,
+          currentProviderName: pipe?.currentProviderName ?? null,
+          webProvider: pipe?.webProvider ?? null,
+          providers: pipe?.providers ?? null,
+          // 旧桌面端（< 2.1.0）会忽略 send 里的 provider 字段，气泡里只能提供 DeepSeek。
+          providerSwitchable: versionAtLeast(pipe?.app, '2.1.0'),
         },
+        // 插件自己的服务方注册表：Client 半据此渲染下拉框，不依赖桌面端版本。
+        providers: PROVIDERS,
+        provider: settings.provider,
         diag: diagLog,
-        settings: { chatUrl: settings.chatUrl, appPath: settings.appPath },
+        settings: { chatUrl: settings.chatUrl, appPath: settings.appPath, provider: settings.provider },
       })
     },
   }), 'bubble-ask: health route')
@@ -1008,7 +1138,8 @@ export function apply(ctx, config = {}) {
         if (!prepared.ok) return sendJson(res, 400, prepared)
         // CDP 注入没有长度限制，prompt 本身就是完整版。
         const fullPrompt = prepared.prompt
-        log(`注入网页版：${fullPrompt.length} 字（轨迹 ${prepared.stats.traceMessages} 条）`)
+        const providerId = prepared.providerId || DEFAULTS.provider
+        log(`注入网页版（${prepared.providerName}）：${fullPrompt.length} 字（轨迹 ${prepared.stats.traceMessages} 条）`)
         const app = await loadApp()
         if (!app || typeof app.sendPrompt !== 'function') {
           // 用 200 + ok:false：Client 端对非 2xx 是抛错的，那样就看不到这里的 prompt，
@@ -1023,12 +1154,41 @@ export function apply(ctx, config = {}) {
             stats: prepared.stats,
           })
         }
+        // 旧版桌面端会忽略 send 里的 provider 字段、静默发到 DeepSeek：切了服务方时
+        // 必须先确认版本再发，而不是把内容发错站点。
+        if (providerId !== 'deepseek') {
+          const support = await checkProviderSupport(app, settings, log)
+          if (!support.ok) {
+            return sendJson(res, 200, {
+              ok: false,
+              stage: support.error || 'provider-check',
+              error: support.error === 'old-app' ? '桌面端版本过旧，暂不支持切换服务方' : '无法确认桌面端是否支持切换服务方',
+              detail: support.detail || '请把 Bubble Ask 桌面端升级到 2.1.0 或更高版本，或改用「复制提问」',
+              provider: providerId,
+              providerName: prepared.providerName,
+              prompt: fullPrompt,
+              url: prepared.url,
+              stats: prepared.stats,
+            })
+          }
+        }
         const sent = await app.sendPrompt({
           prompt: fullPrompt,
+          // 总是显式带 provider：桌面端配置过其它默认服务方时，用户在这里明确选 DeepSeek
+          // 不能因为「省略就跟随配置」而发到别家。旧桌面端（< 2.1.0）会忽略这个增量字段，
+          // 仍按本机配置的入口发送（与升级前行为一致）；插件对旧桌面端只提供 DeepSeek。
+          provider: providerId,
           appPath: settings.appPath,
           log: (line) => log(line),
         })
-        const body = { ...sent, prompt: fullPrompt, stats: prepared.stats, prefillUrl: prepared.url }
+        const body = {
+          ...sent,
+          provider: sent.provider || providerId,
+          providerName: prepared.providerName,
+          prompt: fullPrompt,
+          stats: prepared.stats,
+          prefillUrl: prepared.url,
+        }
         // 发送成功时网页版会停在会话页；插件这边没有直达地址，留预填地址做参考。
         if (!body.url) body.url = prepared.url
         sendJson(res, 200, body)
@@ -1075,7 +1235,7 @@ export function apply(ctx, config = {}) {
     }
   }, 'bubble-ask: service lease')
 
-  log(`已就绪（chatUrl=${settings.chatUrl}）`)
+  log(`已就绪（provider=${settings.provider}，chatUrl=${settings.chatUrl}）`)
 }
 
 /**
@@ -1086,10 +1246,13 @@ export function apply(ctx, config = {}) {
  */
 export {
   DEFAULTS,
+  PROVIDERS,
   buildPrompt,
   collectTraceEntries,
   condenseMessages,
   salientExcerpt,
   describeToolResult,
   prepareAsk,
+  resolveProvider,
+  versionAtLeast,
 }

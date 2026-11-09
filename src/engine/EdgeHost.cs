@@ -77,8 +77,11 @@ namespace BubbleAsk
             get { return FindWindowHandle(); }
         }
 
-        /// <summary>没有窗口就启动一个；已有则直接返回。失败会抛异常。</summary>
-        public void EnsureStarted()
+        /// <summary>
+        /// 没有窗口就启动一个；已有则直接返回。失败会抛异常。
+        /// <paramref name="url"/> 是这次要打开的服务方入口（window 单实例：同一个窗口里换页面靠 CDP 导航）。
+        /// </summary>
+        public void EnsureStarted(string url)
         {
             if (FindWindowHandle() != IntPtr.Zero)
             {
@@ -95,11 +98,12 @@ namespace BubbleAsk
             string profile = EffectiveProfileDir;
             Directory.CreateDirectory(profile);
 
+            string target = string.IsNullOrEmpty(url) ? _config.ChatUrl : url;
             Point position = ComputePosition();
-            // --disable-sync / --disable-extensions：应用窗口是"只用来跑 DeepSeek 的独立 profile"，
+            // --disable-sync / --disable-extensions：应用窗口是"只用来跑网页版服务方的独立 profile"，
             // 不能被账号同步拉进来的第三方扩展（比如各种搜索小助手）注入，否则会干扰页面注入。
             StringBuilder arguments = new StringBuilder();
-            arguments.Append("--app=\"" + _config.ChatUrl + "\"");
+            arguments.Append("--app=\"" + target + "\"");
             arguments.Append(" --user-data-dir=\"" + profile + "\"");
             arguments.Append(" --remote-debugging-port=" + _config.CdpPort);
             arguments.Append(" --remote-allow-origins=*");

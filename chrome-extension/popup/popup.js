@@ -1,9 +1,19 @@
 /**
- * 扩展弹窗：预览页面上下文 → 填问题 → 发送。
+ * 扩展弹窗：预览页面上下文 → 选服务方 → 填问题 → 发送。
  *
- * 采集与发送都在后台做（popup 关掉也不影响任务继续）。
+ * 采集与发送都在后台做（popup 关掉也不影响任务继续）。服务方列表来自
+ * lib/providers.js；当前选择存在 chrome.storage.local（PROVIDER_STORAGE_KEY），
+ * 后台发送时读同一份存储，因此划词气泡与快捷键也跟随这里的默认服务方。
  */
+import {
+  PROVIDERS,
+  DEFAULT_PROVIDER_ID,
+  PROVIDER_STORAGE_KEY,
+  getProvider,
+} from '../lib/providers.js'
+
 const els = {
+  provider: document.getElementById('provider'),
   title: document.getElementById('page-title'),
   summaryRow: document.getElementById('summary-row'),
   summary: document.getElementById('summary'),
@@ -18,6 +28,14 @@ const els = {
 
 let activeTabId = null
 let lastPrompt = ''
+/** 当前选中的服务方 id（持久化到 chrome.storage.local）。 */
+let providerId = DEFAULT_PROVIDER_ID
+/** 页面规模摘要（不含服务方前缀，渲染时再拼）。 */
+let pageSummary = ''
+
+function currentProvider() {
+  return getProvider(providerId) || getProvider(DEFAULT_PROVIDER_ID)
+}
 
 function setStatus(text, isError) {
   els.status.textContent = text || ''
@@ -27,7 +45,15 @@ function setStatus(text, isError) {
 function setBusy(busy) {
   els.send.disabled = busy
   els.copy.disabled = busy || !lastPrompt
+  els.provider.disabled = busy
   if (els.openWindow) els.openWindow.disabled = busy
+}
+
+/** 页面信息区标注「将发送到哪个服务方」。 */
+function renderSummary() {
+  const provider = currentProvider()
+  if (!pageSummary) return
+  els.summary.textContent = `${provider.name} · ${pageSummary}`
 }
 
 async function currentTab() {
@@ -35,8 +61,34 @@ async function currentTab() {
   return tabs && tabs[0] ? tabs[0] : null
 }
 
-/** 首屏：采集当前页面，展示规模与选区。 */
+/** 读记住的默认服务方；存储值非法/读取失败时回落到 deepseek。 */
+async function loadStoredProvider() {
+  try {
+    const data = await chrome.storage.local.get(PROVIDER_STORAGE_KEY)
+    const stored = data && data[PROVIDER_STORAGE_KEY]
+    providerId = getProvider(stored) ? stored : DEFAULT_PROVIDER_ID
+  } catch (error) {
+    providerId = DEFAULT_PROVIDER_ID
+  }
+}
+
+function fillProviderOptions() {
+  els.provider.replaceChildren(
+    ...PROVIDERS.map((provider) => {
+      const option = document.createElement('option')
+      option.value = provider.id
+      option.textContent = provider.name
+      return option
+    }),
+  )
+  els.provider.value = currentProvider().id
+}
+
+/** 首屏：加载默认服务方 → 采集当前页面，展示规模与选区。 */
 async function init() {
+  await loadStoredProvider()
+  fillProviderOptions()
+
   const tab = await currentTab()
   if (!tab || tab.id === undefined) {
     setStatus('找不到当前标签页', true)
@@ -50,38 +102,55 @@ async function init() {
   activeTabId = tab.id
   els.title.textContent = tab.title || tab.url || ''
   try {
-    const preview = await chrome.runtime.sendMessage({ type: 'BA_PREVIEW', tabId: tab.id })
+    const preview = await chrome.runtime.sendMessage({ type: 'BA_PREVIEW', tabId: tab.id, provider: providerId })
     if (!preview || !preview.ok) {
       setStatus((preview && preview.detail) || '读取页面失败', true)
       return
     }
     lastPrompt = preview.prompt
+    pageSummary = preview.summary || ''
     els.summaryRow.hidden = false
-    els.summary.textContent = preview.summary
+    renderSummary()
     if (preview.selection) {
       els.selectionBox.hidden = false
       els.selection.textContent = preview.selection
     }
     els.question.placeholder = preview.defaultQuestion
     setBusy(false)
-    setStatus('')
+    setStatus(`将发送到 ${preview.providerName || currentProvider().name}`)
   } catch (error) {
     setStatus(`读取页面失败：${error && error.message ? error.message : error}`, true)
   }
 }
 
+/** 切换服务方：立即记住，后续发送/开窗都用它。 */
+els.provider.addEventListener('change', async () => {
+  const next = els.provider.value
+  providerId = getProvider(next) ? next : DEFAULT_PROVIDER_ID
+  renderSummary()
+  const provider = currentProvider()
+  setStatus(`将发送到 ${provider.name}`)
+  try {
+    await chrome.storage.local.set({ [PROVIDER_STORAGE_KEY]: provider.id })
+  } catch (error) {
+    setStatus(`保存服务方失败：${error && error.message ? error.message : error}`, true)
+  }
+})
+
 els.send.addEventListener('click', async () => {
   if (activeTabId === null) return
+  const provider = currentProvider()
   setBusy(true)
-  setStatus('正在发送到 DeepSeek 侧边窗口…')
+  setStatus(`正在发送到 ${provider.name} 窗口…`)
   try {
     const result = await chrome.runtime.sendMessage({
       type: 'BA_ASK',
       tabId: activeTabId,
       question: els.question.value,
+      provider: provider.id,
     })
     if (result && result.ok) {
-      setStatus('已发送，去右侧窗口看回答')
+      setStatus(`已发送到 ${result.providerName || provider.name}，去右侧窗口看回答`)
     } else if (result && result.stage === 'unverified') {
       setStatus(result.detail || '已点击发送但没能确认，请在窗口里核对', true)
     } else {
@@ -106,14 +175,15 @@ els.copy.addEventListener('click', async () => {
 
 init()
 
-// 手动打开 / 唤起 DeepSeek 窗口（关掉浮窗后想再开）
+// 手动打开 / 唤起当前服务方的窗口（关掉窗口后想再开）
 els.openWindow?.addEventListener('click', async () => {
+  const provider = currentProvider()
   setBusy(true)
-  setStatus('正在打开 DeepSeek 窗口…')
+  setStatus(`正在打开 ${provider.name} 窗口…`)
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'BA_OPEN_WINDOW' })
+    const result = await chrome.runtime.sendMessage({ type: 'BA_OPEN_WINDOW', provider: provider.id })
     if (result && result.ok) {
-      setStatus('已打开，去右侧窗口看')
+      setStatus(`已打开 ${result.providerName || provider.name} 窗口`)
     } else {
       setStatus((result && result.detail) || '打开失败', true)
     }

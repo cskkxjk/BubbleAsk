@@ -24,14 +24,14 @@ namespace BubbleAsk
         /// <summary>释放占位。</summary>
         void End();
 
-        /// <summary>注入并发送（走网页版 CDP），返回是否确认发出。</summary>
-        Task<bool> SendAsync(string prompt);
+        /// <summary>注入并发送（走网页版 CDP），返回是否确认发出。providerId 为空表示默认服务方。</summary>
+        Task<bool> SendAsync(string prompt, string providerId, string providerUrl);
 
         /// <summary>注入截图提问并发送。</summary>
-        Task<bool> SendImageAsync(string imagePath, string prompt);
+        Task<bool> SendImageAsync(string imagePath, string prompt, string providerId, string providerUrl);
 
         /// <summary>唤起 / 收起窗口；返回 true 表示这次是「收起」。</summary>
-        Task<bool> ToggleAsync();
+        Task<bool> ToggleAsync(string providerId, string providerUrl);
 
         /// <summary>按当前配置应用窗口置顶。</summary>
         void ApplyTopMost();
@@ -39,11 +39,14 @@ namespace BubbleAsk
         /// <summary>丢弃现有连接与窗口，下次操作重新拉起浏览器。</summary>
         void Restart();
 
-        /// <summary>当前状态快照（浏览器、端口、profile、模式等）。</summary>
+        /// <summary>当前状态快照（浏览器、端口、profile、模式、服务方等）。</summary>
         Dictionary<string, object> Health();
 
         /// <summary>最近一次 Send 的阶段标签。</summary>
         string LastStatus { get; }
+
+        /// <summary>最近一次操作实际使用的网页版服务方 id。</summary>
+        string LastProvider { get; }
     }
 
     /// <summary>
@@ -55,6 +58,9 @@ namespace BubbleAsk
     /// 不需要任何注销逻辑。
     ///
     /// 命令：ping / health / send / send-image / toggle / topmost / restart / attach。
+    /// 网页版服务方是可选增量字段（协议 v2 不变）：send / send-image / toggle 可带
+    /// `provider`（deepseek/qwen/doubao/chatgpt/gemini/grok/custom）和 custom 用的
+    /// `providerUrl`；不带就按 DeepSeek 处理，旧客户端（DSH 插件）无需改动。
     ///
     /// 管道名与发现信息由 <see cref="IpcContract"/> 写到 %APPDATA%\BubbleAsk\ipc.json，
     /// 让对端不必猜测管道名，也能读到协议版本与本进程 pid。
@@ -389,11 +395,19 @@ namespace BubbleAsk
 
             if (command == "toggle")
             {
+                string toggleProvider = ReadProvider(request);
+                string toggleProviderUrl = ReadProviderUrl(request);
+                DispatchResult invalidToggle = ValidateProvider(toggleProvider);
+                if (invalidToggle != null)
+                {
+                    return invalidToggle;
+                }
                 return await RunExclusive("管道唤起/收起", async delegate
                 {
-                    bool closed = await _host.ToggleAsync().ConfigureAwait(false);
+                    bool closed = await _host.ToggleAsync(toggleProvider, toggleProviderUrl).ConfigureAwait(false);
                     Dictionary<string, object> result = Ok();
                     result["closed"] = closed;
+                    result["provider"] = _host.LastProvider;
                     result["detail"] = closed ? "已收起窗口" : "窗口已在前台";
                     return result;
                 }).ConfigureAwait(false);
@@ -428,20 +442,53 @@ namespace BubbleAsk
                 {
                     return Reply(Fail("fill", "imagePath 为空"));
                 }
+                // 网页版服务方是可选字段（协议 v2 增量）：不传就等于 DeepSeek，旧插件无需改动。
+                string provider = ReadProvider(request);
+                string providerUrl = ReadProviderUrl(request);
+                DispatchResult invalidProvider = ValidateProvider(provider);
+                if (invalidProvider != null)
+                {
+                    return invalidProvider;
+                }
                 return await RunExclusive("管道发送", async delegate
                 {
                     bool sent = command == "send-image"
-                        ? await _host.SendImageAsync(imagePath, prompt).ConfigureAwait(false)
-                        : await _host.SendAsync(prompt).ConfigureAwait(false);
+                        ? await _host.SendImageAsync(imagePath, prompt, provider, providerUrl).ConfigureAwait(false)
+                        : await _host.SendAsync(prompt, provider, providerUrl).ConfigureAwait(false);
                     Dictionary<string, object> result = Ok();
                     result["ok"] = sent;
                     result["stage"] = _host.LastStatus;
+                    result["provider"] = _host.LastProvider;
                     result["detail"] = sent ? "已发送到网页版" : "未能确认发送，请在窗口里手动回车";
                     return result;
                 }).ConfigureAwait(false);
             }
 
             return Reply(Fail("unknown-cmd", "不认识的命令: " + command));
+        }
+
+        /// <summary>请求里的可选网页版服务方 id（空 = 默认 DeepSeek）。</summary>
+        private static string ReadProvider(Dictionary<string, object> request)
+        {
+            return Json.GetString(request, "provider", "").Trim();
+        }
+
+        /// <summary>请求里的可选服务方地址：只有 custom 需要（服务端配置可能滞后，客户端带上最新地址）。</summary>
+        private static string ReadProviderUrl(Dictionary<string, object> request)
+        {
+            return Json.GetString(request, "providerUrl", "").Trim();
+        }
+
+        /// <summary>校验 provider 字段；未知 id 明确报错（stage=provider），不能静默换成别的站点。</summary>
+        private static DispatchResult ValidateProvider(string providerId)
+        {
+            if (providerId.Length == 0 || WebProviders.IsKnown(providerId))
+            {
+                return null;
+            }
+            Dictionary<string, object> mismatch = Fail("provider", "未知的网页版服务方: " + providerId);
+            mismatch["providers"] = WebProviders.Ids();
+            return Reply(mismatch);
         }
 
         private static Dictionary<string, object> Ok()

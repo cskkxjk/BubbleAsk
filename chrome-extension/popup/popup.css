@@ -72,6 +72,34 @@ section {
   margin-bottom: 4px;
 }
 
+/* 服务方选择：一行放「发送到」+ 下拉框 */
+.provider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.provider-row .label {
+  flex: none;
+  margin-bottom: 0;
+}
+
+select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: inherit;
+  font: inherit;
+}
+
+select:disabled {
+  opacity: 0.55;
+}
+
 #selection {
   margin: 0;
   max-height: 92px;

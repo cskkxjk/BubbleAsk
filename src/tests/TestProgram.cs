@@ -50,6 +50,13 @@ namespace BubbleAsk
         [STAThread]
         private static int Main(string[] args)
         {
+            // 开发用：用真实浏览器打开某个网页版服务方，输出候选 composer/发送按钮信息（JSON）。
+            //   BubbleAsk.Tests.exe --probe deepseek
+            if (args != null && args.Length > 0 && string.Equals(args[0], "--probe", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunProbe(args.Length > 1 ? args[1] : WebProviders.DefaultId);
+            }
+
             // 开发用：单独跑一次截图遮罩，把结果打到标准输出，方便脚本化验证。
             //   BubbleAsk.Tests.exe --capture
             if (args != null && args.Length > 0 && string.Equals(args[0], "--capture", StringComparison.OrdinalIgnoreCase))
@@ -73,6 +80,7 @@ namespace BubbleAsk
             TestBrowsers();
             TestConfigRoundTrip();
             TestProviders();
+            TestWebProviders();
             TestEndpoints();
             TestPayload(outDir);
             TestDeltaParsing();
@@ -101,6 +109,41 @@ namespace BubbleAsk
             {
                 _failures++;
                 Console.WriteLine("FAIL " + name + (detail == null ? "" : " :: " + detail));
+            }
+        }
+
+        /// <summary>
+        /// --probe &lt;providerId&gt;：用真实浏览器打开该网页版服务方，把候选 composer/发送按钮信息
+        /// 以 JSON 打到标准输出，供实机校准 WebProviders 里的选择器（不注入、不发送、不要求已登录）。
+        /// 退出码：0 成功、1 浏览器/页面失败、2 参数错误。
+        /// </summary>
+        private static int RunProbe(string providerId)
+        {
+            string id = (providerId == null ? "" : providerId).Trim();
+            if (!WebProviders.IsKnown(id))
+            {
+                Console.WriteLine("ERROR 未知的网页版服务方: " + id);
+                Console.WriteLine("可用: " + string.Join(", ", WebProviders.Ids()));
+                return 2;
+            }
+            AppConfig config = AppConfig.Load();
+            WebProvider provider = WebProviders.Resolve(id, config.ChatUrl);
+            Console.WriteLine("PROBE " + provider.Id + " " + provider.Url);
+            ChatDriver driver = new ChatDriver(config);
+            try
+            {
+                string json = driver.ProbeAsync(provider).GetAwaiter().GetResult();
+                Console.WriteLine(json);
+                return json != null && json.StartsWith("ERR:", StringComparison.Ordinal) ? 1 : 0;
+            }
+            catch (Exception error)
+            {
+                Console.WriteLine("ERROR " + error.Message);
+                return 1;
+            }
+            finally
+            {
+                driver.Dispose();
             }
         }
 
@@ -234,6 +277,7 @@ namespace BubbleAsk
             source.CdpPort = 9444;
             source.ApiKey = "sk-test";
             source.Mode = "api";
+            source.WebProvider = "gemini";
             source.ShotPrompt = "看图说话";
             source.ApiProvider = "ollama";
             source.ApiSystemPrompt = "你是测试助手";
@@ -256,12 +300,31 @@ namespace BubbleAsk
                 loaded.BubbleWidth + "/" + loaded.BubbleMaxHeight);
             Check("config defaults kept", loaded.HotkeySummon == "Ctrl+Alt+D", loaded.HotkeySummon);
             Check("config browser path", loaded.BrowserPath == @"C:\Browsers\chrome.exe", loaded.BrowserPath);
+            Check("config web provider", loaded.WebProvider == "gemini", loaded.WebProvider);
 
             // 老配置里只有 EdgePath，读的时候要能迁移到 BrowserPath。
             string legacy = Path.Combine(dir, "legacy.json");
             File.WriteAllText(legacy, "{\"EdgePath\":\"C:\\\\Old\\\\msedge.exe\"}");
             Check("config legacy edge path migrates", AppConfig.LoadFrom(legacy).BrowserPath == @"C:\Old\msedge.exe",
                 AppConfig.LoadFrom(legacy).BrowserPath);
+
+            // 老配置没有 WebProvider：能对上预设域名就算那家，否则算自定义（地址仍用 ChatUrl）。
+            string legacyProvider = Path.Combine(dir, "legacy-provider.json");
+            File.WriteAllText(legacyProvider, "{\"ChatUrl\":\"https://example.com/chat\"}");
+            AppConfig migrated = AppConfig.LoadFrom(legacyProvider);
+            Check("config web provider migrates custom",
+                migrated.WebProvider == "custom" && migrated.ChatUrl == "https://example.com/chat",
+                migrated.WebProvider + " / " + migrated.ChatUrl);
+
+            string legacyDefault = Path.Combine(dir, "legacy-default.json");
+            File.WriteAllText(legacyDefault, "{\"ChatUrl\":\"https://chat.deepseek.com/\"}");
+            Check("config web provider migrates deepseek", AppConfig.LoadFrom(legacyDefault).WebProvider == "deepseek",
+                AppConfig.LoadFrom(legacyDefault).WebProvider);
+
+            string unknownProvider = Path.Combine(dir, "unknown-provider.json");
+            File.WriteAllText(unknownProvider, "{\"WebProvider\":\"nope\"}");
+            Check("config web provider unknown -> custom", AppConfig.LoadFrom(unknownProvider).WebProvider == "custom",
+                AppConfig.LoadFrom(unknownProvider).WebProvider);
 
             try
             {
@@ -283,6 +346,117 @@ namespace BubbleAsk
             Check("provider empty -> deepseek", ApiProviders.Resolve("").Id == "deepseek", ApiProviders.Resolve("").Id);
             Check("provider index", ApiProviders.IndexOf("openai") == 1, ApiProviders.IndexOf("openai").ToString());
             Check("provider names", ApiProviders.DisplayNames().Length == ApiProviders.All.Count, null);
+        }
+
+        /// <summary>网页版服务方注册表：6 家预设 + 自定义解析 + 配置迁移 + 脚本生成。</summary>
+        private static void TestWebProviders()
+        {
+            Check("web providers count", WebProviders.All.Count == 6, WebProviders.All.Count.ToString());
+            Check("web provider default", WebProviders.DefaultProvider.Id == "deepseek"
+                && WebProviders.DefaultId == "deepseek", WebProviders.DefaultProvider.Id);
+
+            List<string> ids = new List<string>();
+            bool complete = true;
+            bool unique = true;
+            for (int i = 0; i < WebProviders.All.Count; i++)
+            {
+                WebProvider item = WebProviders.All[i];
+                complete = complete && item.Id.Length > 0 && item.Name.Length > 0
+                    && item.Url.Length > 0 && item.Origins.Length > 0;
+                unique = unique && ids.IndexOf(item.Id) < 0;
+                ids.Add(item.Id);
+            }
+            Check("web providers complete", complete, string.Join(",", ids.ToArray()));
+            Check("web providers unique", unique, null);
+            Check("web providers ids", string.Join(",", ids.ToArray()) == "deepseek,qwen,doubao,chatgpt,gemini,grok",
+                string.Join(",", ids.ToArray()));
+            Check("web providers known", WebProviders.IsKnown("qwen") && WebProviders.IsKnown("custom")
+                && !WebProviders.IsKnown("nope") && !WebProviders.IsKnown(""), null);
+
+            WebProvider deepseek = WebProviders.Get("deepseek");
+            Check("web provider deepseek url", deepseek != null && deepseek.Url == "https://chat.deepseek.com/",
+                deepseek == null ? "null" : deepseek.Url);
+            Check("web provider deepseek selectors", deepseek != null
+                && Array.IndexOf(deepseek.SendClassHints, "ds-button--primary") >= 0
+                && Array.IndexOf(deepseek.SendClassHints, "ds-button--circle") >= 0
+                && Array.IndexOf(deepseek.ComposerSelectors, "textarea[name=\"search\"]") >= 0, null);
+            Check("web provider deepseek prefill", deepseek != null && deepseek.PrefillParam == "q"
+                && deepseek.BuildAskUrl("你好").StartsWith("https://chat.deepseek.com/?q=", StringComparison.Ordinal)
+                && deepseek.BuildAskUrl("你好").IndexOf("%E4%BD%A0%E5%A5%BD", StringComparison.Ordinal) >= 0, null);
+            Check("web provider login markers are url fragments", deepseek != null
+                && deepseek.IsLoginUrl("https://chat.deepseek.com/sign_in")
+                && !deepseek.IsLoginUrl("https://chat.deepseek.com/a/chat/s/1"), null);
+
+            // 站点专属选择器按「最佳猜测」实现，这里锁住「不能被误删」。
+            WebProvider chatgpt = WebProviders.Get("chatgpt");
+            WebProvider gemini = WebProviders.Get("gemini");
+            WebProvider grok = WebProviders.Get("grok");
+            Check("web provider chatgpt selectors", chatgpt != null
+                && Array.IndexOf(chatgpt.ComposerSelectors, "#prompt-textarea") >= 0
+                && Array.IndexOf(chatgpt.SendSelectors, "button[data-testid=\"send-button\"]") >= 0, null);
+            Check("web provider gemini selectors", gemini != null
+                && Array.IndexOf(gemini.ComposerSelectors, "rich-textarea .ql-editor") >= 0
+                && Array.IndexOf(gemini.SendSelectors, "button[aria-label*=\"Send\"]") >= 0, null);
+            Check("web provider grok selectors", grok != null
+                && Array.IndexOf(grok.ComposerSelectors, "textarea[aria-label]") >= 0
+                && Array.IndexOf(grok.SendSelectors, "button[aria-label=\"Submit\"]") >= 0, null);
+            Check("web provider qwen origins", WebProviders.Get("qwen") != null
+                && WebProviders.Get("qwen").MatchesUrl("https://chat.qwen.ai/")
+                && WebProviders.Get("qwen").MatchesUrl("https://www.qianwen.com/"), null);
+            Check("web provider origins mismatch", WebProviders.Get("qwen") != null
+                && !WebProviders.Get("qwen").MatchesUrl("https://chat.deepseek.com/"), null);
+
+            // 解析：默认 / 预设 / 未知回退 / 自定义地址 / 大小写。
+            Check("web provider empty -> default", WebProviders.Resolve("", "").Id == "deepseek", null);
+            Check("web provider case -> preset", WebProviders.Resolve("DeepSeek", "").Id == "deepseek", null);
+            Check("web provider unknown -> custom", WebProviders.Resolve("nope", "https://example.com/chat").Id == "custom",
+                WebProviders.Resolve("nope", "https://example.com/chat").Id);
+            WebProvider custom = WebProviders.Resolve("custom", "https://example.com/chat");
+            Check("web provider custom url", custom.Url == "https://example.com/chat" && custom.IsCustom, custom.Url);
+            Check("web provider custom matches", custom.MatchesUrl("https://example.com/chat/1")
+                && !custom.MatchesUrl("https://other.example.org/"), null);
+            Check("web provider custom enter off", !custom.EnterSends && !custom.Upload, null);
+            Check("web provider custom invalid url", WebProviders.Resolve("custom", "not-a-url").Url == WebProviders.DefaultUrl,
+                WebProviders.Resolve("custom", "not-a-url").Url);
+            Check("web provider custom no prefill", custom.BuildAskUrl("x") == custom.Url, custom.BuildAskUrl("x"));
+
+            // 旧配置迁移：没有 WebProvider 字段时按 ChatUrl 推断。
+            Check("web provider infer default", WebProviders.InferLegacyProvider("https://chat.deepseek.com/") == "deepseek", null);
+            Check("web provider infer same site", WebProviders.InferLegacyProvider("https://chat.deepseek.com") == "deepseek", null);
+            Check("web provider infer custom", WebProviders.InferLegacyProvider("https://example.com/chat") == "custom", null);
+            Check("web provider infer empty", WebProviders.InferLegacyProvider("") == "deepseek", null);
+            Check("web provider infer qwen", WebProviders.InferLegacyProvider("https://chat.qwen.ai/") == "qwen", null);
+
+            // 管道请求不带 provider 时按本机配置解析（旧版插件不传字段，行为与升级前一致）。
+            AppConfig qwenConfig = new AppConfig();
+            qwenConfig.WebProvider = "qwen";
+            Check("web provider from config qwen", WebProviders.FromConfig(qwenConfig).Id == "qwen",
+                WebProviders.FromConfig(qwenConfig).Id);
+            AppConfig customConfig = new AppConfig();
+            customConfig.WebProvider = "custom";
+            customConfig.ChatUrl = "https://example.com/chat";
+            Check("web provider from config custom", WebProviders.FromConfig(customConfig).Id == "custom"
+                && WebProviders.FromConfig(customConfig).Url == "https://example.com/chat",
+                WebProviders.FromConfig(customConfig).Url);
+
+            // 脚本生成：必须带上 provider 的选择器/发送特征（页面改版后靠这些断言防止误删）。
+            string fillDeepseek = PageScripts.BuildFillScript(WebProviders.Get("deepseek"), "测试");
+            string fillChatgpt = PageScripts.BuildFillScript(WebProviders.Get("chatgpt"), "测试");
+            string sendDeepseek = PageScripts.BuildSendScript(WebProviders.Get("deepseek"));
+            string sendGemini = PageScripts.BuildSendScript(WebProviders.Get("gemini"));
+            string stateGrok = PageScripts.BuildComposerStateScript(WebProviders.Get("grok"));
+            Check("web script deepseek composer", fillDeepseek.IndexOf("textarea[name=\"search\"]", StringComparison.Ordinal) >= 0, null);
+            Check("web script deepseek class hints", sendDeepseek.IndexOf("ds-button--primary", StringComparison.Ordinal) >= 0, null);
+            Check("web script chatgpt composer", fillChatgpt.IndexOf("#prompt-textarea", StringComparison.Ordinal) >= 0, null);
+            Check("web script chatgpt send", PageScripts.BuildSendScript(WebProviders.Get("chatgpt"))
+                .IndexOf("data-testid=\"send-button\"", StringComparison.Ordinal) >= 0, null);
+            Check("web script gemini send", sendGemini.IndexOf("aria-label*=", StringComparison.Ordinal) >= 0, null);
+            Check("web script grok composer", stateGrok.IndexOf("textarea[aria-label]", StringComparison.Ordinal) >= 0, null);
+            Check("web script fill prompt", fillDeepseek.IndexOf("测试", StringComparison.Ordinal) >= 0, null);
+            Check("web script generic fallback", PageScripts.BuildComposerStateScript(WebProviders.Resolve("custom", "https://x.test/"))
+                .IndexOf("[role=\"textbox\"]", StringComparison.Ordinal) >= 0, null);
+            Check("web script probe login markers", PageScripts.BuildProbeScript(WebProviders.Get("gemini"))
+                .IndexOf("accounts.google.com", StringComparison.Ordinal) >= 0, null);
         }
 
         private static void TestEndpoints()

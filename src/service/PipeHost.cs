@@ -79,19 +79,39 @@ namespace BubbleAsk
             }
         }
 
-        public async Task<bool> SendAsync(string prompt)
+        public async Task<bool> SendAsync(string prompt, string providerId, string providerUrl)
         {
-            return await _driver.AskAsync(prompt);
+            return await _driver.AskAsync(prompt, ResolveProvider(providerId, providerUrl));
         }
 
-        public async Task<bool> SendImageAsync(string imagePath, string prompt)
+        public async Task<bool> SendImageAsync(string imagePath, string prompt, string providerId, string providerUrl)
         {
-            return await _driver.AskWithImageAsync(imagePath, prompt);
+            return await _driver.AskWithImageAsync(imagePath, prompt, ResolveProvider(providerId, providerUrl));
         }
 
-        public async Task<bool> ToggleAsync()
+        public async Task<bool> ToggleAsync(string providerId, string providerUrl)
         {
-            return await _driver.ToggleAsync();
+            return await _driver.ToggleAsync(ResolveProvider(providerId, providerUrl));
+        }
+
+        /// <summary>
+        /// 把 IPC 请求里的 provider 字段解析成实际服务方。
+        /// 不传 → 本机配置的默认服务方（旧版 DSH 插件 2.1.1 不传字段，行为与升级前一致：
+        /// 仍按 config.WebProvider / ChatUrl 的入口发送；新版插件总是显式带 provider）。
+        /// custom 的地址优先用请求里带的 providerUrl（服务端配置可能滞后），否则用本机配置的 ChatUrl。
+        /// </summary>
+        private WebProvider ResolveProvider(string providerId, string providerUrl)
+        {
+            if (string.IsNullOrEmpty(providerId))
+            {
+                return WebProviders.FromConfig(_config);
+            }
+            string url = providerUrl;
+            if (string.IsNullOrEmpty(url))
+            {
+                url = _config.ChatUrl;
+            }
+            return WebProviders.Resolve(providerId, url);
         }
 
         public void ApplyTopMost()
@@ -125,6 +145,12 @@ namespace BubbleAsk
             get { return _driver.LastStatus; }
         }
 
+        /// <summary>最近一次操作实际使用的服务方 id（IPC 响应里回传给调用方）。</summary>
+        public string LastProvider
+        {
+            get { return _driver.LastProvider; }
+        }
+
         public Dictionary<string, object> Health()
         {
             Dictionary<string, object> health = new Dictionary<string, object>();
@@ -141,12 +167,19 @@ namespace BubbleAsk
                 health["running"] = false;
                 health["error"] = error.Message;
             }
+            WebProvider current = _driver.CurrentProvider;
             health["apiMode"] = string.Equals(_config.Mode, "api", StringComparison.OrdinalIgnoreCase);
             health["mode"] = _config.Mode;
             health["autoSend"] = _config.AutoSend;
             health["cdpPort"] = _config.CdpPort;
-            health["chatUrl"] = _config.ChatUrl;
+            // 网页版服务方：当前生效的、配置里的默认值、以及支持的全部 id。
+            health["currentProvider"] = current == null ? "" : current.Id;
+            health["currentProviderName"] = current == null ? "" : current.Name;
+            health["webProvider"] = WebProviders.NormalizeId(_config.WebProvider);
+            health["providers"] = WebProviders.Ids();
+            health["chatUrl"] = current == null ? _config.ChatUrl : current.Url;
             health["lastStatus"] = _driver.LastStatus ?? "";
+            health["lastProvider"] = _driver.LastProvider ?? "";
             return health;
         }
 

@@ -148,6 +148,8 @@
     pill.dataset.tone = ''
     pill.dataset.busy = 'false'
     label.textContent = '问这段'
+    // 清掉上一次失败留下的 title，否则成功后悬停仍会显示旧错误
+    pill.title = ''
     place(found.rect)
   }
 
@@ -233,10 +235,7 @@
       'no-composer': '找不到输入框',
       'no-button': '找不到发送键',
       unverified: '发送未确认',
-      busy: '忙',
-      version: '版本不符',
-      ipc: '服务不通',
-      module: '模块未就绪',
+      filled: '已填入未确认',
       fill: '没填进去',
       error: '失败',
     }

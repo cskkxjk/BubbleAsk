@@ -7,7 +7,12 @@ namespace BubbleAsk
     /// <summary>应用配置。字段全部有默认值，缺字段的旧配置也能正常加载。</summary>
     public class AppConfig
     {
-        public string ChatUrl = "https://chat.deepseek.com/";
+        public string ChatUrl = WebProviders.DefaultUrl;
+        /// <summary>
+        /// 网页版服务方 id（见 WebProviders）：deepseek / qwen / doubao / chatgpt / gemini / grok / custom。
+        /// 选 custom 时实际地址用 ChatUrl；预设服务方的地址由程序固定。
+        /// </summary>
+        public string WebProvider = WebProviders.DefaultId;
         public string PromptTemplate = "什么是%s";
         public bool AutoSend = true;
         public int MaxChars = 2000;
@@ -109,6 +114,18 @@ namespace BubbleAsk
                     return config;
                 }
                 config.ChatUrl = Json.GetString(data, "ChatUrl", config.ChatUrl);
+                // 网页版服务方：旧配置没有这个字段，按 ChatUrl 推断（能对上某家预设的域名就算那家，
+                // 否则算 custom，地址仍用 ChatUrl）。这比一律当 DeepSeek 更安全，也不会丢用户自定义地址。
+                config.WebProvider = Json.GetString(data, "WebProvider", "");
+                if (string.IsNullOrEmpty(config.WebProvider) || config.WebProvider.Trim().Length == 0)
+                {
+                    config.WebProvider = WebProviders.InferLegacyProvider(config.ChatUrl);
+                }
+                else
+                {
+                    // 未知 id 一律回退 custom，不静默换成别的站点。
+                    config.WebProvider = WebProviders.NormalizeId(config.WebProvider);
+                }
                 config.PromptTemplate = Json.GetString(data, "PromptTemplate", config.PromptTemplate);
                 config.AutoSend = Json.GetBool(data, "AutoSend", config.AutoSend);
                 config.MaxChars = Json.GetInt(data, "MaxChars", config.MaxChars);
@@ -158,6 +175,7 @@ namespace BubbleAsk
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 Dictionary<string, object> data = new Dictionary<string, object>();
                 data["ChatUrl"] = ChatUrl;
+                data["WebProvider"] = WebProvider;
                 data["PromptTemplate"] = PromptTemplate;
                 data["AutoSend"] = AutoSend;
                 data["MaxChars"] = MaxChars;

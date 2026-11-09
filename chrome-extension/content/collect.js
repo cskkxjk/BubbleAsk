@@ -1,12 +1,13 @@
 /**
  * 页面上下文采集器。
  *
- * 由 background 通过 chrome.scripting 注入到当前标签页的隔离世界（isolated world）里执行，
+ * 作为声明式内容脚本随普通页面加载（也在 background 的兜底路径里被
+ * chrome.scripting 注入），运行在扩展的隔离世界（isolated world）中，
  * 因此既能自由读取 DOM，又不受页面自身 CSP 限制。
  *
  * 设计取舍：一个页面轻松上万节点，**不可能全量塞进提问**。这里按「结构 → 文字 →
  * 交互元素 → 表单 → 选中文字」分层提取，再各自限流；调用方（lib/prompt.js）负责
- * 最终字符预算与版式。
+ * 最终字符预算与版式。AI 服务方页面不在本脚本的注入范围内（见 manifest）。
  */
 ;(() => {
   /** 元素是否实际可见（display/visibility/尺寸都算）。 */

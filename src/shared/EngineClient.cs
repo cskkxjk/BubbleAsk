@@ -351,10 +351,20 @@ namespace BubbleAsk
 
         //#region 对外的操作面（与 ChatDriver 同名，便于替换）
 
-        public async Task<bool> AskAsync(string prompt)
+        public Task<bool> AskAsync(string prompt)
+        {
+            return AskAsync(prompt, null, null);
+        }
+
+        /// <summary>
+        /// 发送提问。providerId 为空表示由服务端按默认服务方（DeepSeek）处理；
+        /// providerUrl 只在 custom 服务方时需要（服务端配置可能滞后，客户端带上最新地址）。
+        /// </summary>
+        public async Task<bool> AskAsync(string prompt, string providerId, string providerUrl)
         {
             Dictionary<string, object> payload = new Dictionary<string, object>();
             payload["prompt"] = prompt ?? "";
+            AddProvider(payload, providerId, providerUrl);
             Dictionary<string, object> response = await Task.Run(delegate
             {
                 return Call("send", payload, SendTimeoutMs);
@@ -362,11 +372,17 @@ namespace BubbleAsk
             return IsOk(response);
         }
 
-        public async Task<bool> AskWithImageAsync(string imagePath, string prompt)
+        public Task<bool> AskWithImageAsync(string imagePath, string prompt)
+        {
+            return AskWithImageAsync(imagePath, prompt, null, null);
+        }
+
+        public async Task<bool> AskWithImageAsync(string imagePath, string prompt, string providerId, string providerUrl)
         {
             Dictionary<string, object> payload = new Dictionary<string, object>();
             payload["prompt"] = prompt ?? "";
             payload["imagePath"] = imagePath ?? "";
+            AddProvider(payload, providerId, providerUrl);
             Dictionary<string, object> response = await Task.Run(delegate
             {
                 return Call("send-image", payload, SendTimeoutMs);
@@ -375,13 +391,33 @@ namespace BubbleAsk
         }
 
         /// <summary>唤起 / 收起；返回 true 表示这次是「收起」。</summary>
-        public async Task<bool> ToggleAsync()
+        public Task<bool> ToggleAsync()
         {
+            return ToggleAsync(null, null);
+        }
+
+        public async Task<bool> ToggleAsync(string providerId, string providerUrl)
+        {
+            Dictionary<string, object> payload = new Dictionary<string, object>();
+            AddProvider(payload, providerId, providerUrl);
             Dictionary<string, object> response = await Task.Run(delegate
             {
-                return Call("toggle", null, QuickTimeoutMs);
+                return Call("toggle", payload, QuickTimeoutMs);
             });
             return Json.GetBool(response, "closed", false);
+        }
+
+        /// <summary>可选字段：服务方 id / custom 的地址；空值不写进请求（缺省语义交给服务端）。</summary>
+        private static void AddProvider(Dictionary<string, object> payload, string providerId, string providerUrl)
+        {
+            if (!string.IsNullOrEmpty(providerId))
+            {
+                payload["provider"] = providerId;
+            }
+            if (!string.IsNullOrEmpty(providerUrl))
+            {
+                payload["providerUrl"] = providerUrl;
+            }
         }
 
         public void ApplyTopMost()

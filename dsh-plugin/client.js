@@ -4,7 +4,8 @@
  * 两件事：
  *   1. 在会话里盯住文字选区（鼠标松开 / 键盘选择都算）；
  *   2. 在选区旁边浮出一个小气泡，点下去把「精简会话轨迹 + 选中文字 + 你的问题」
- *      交给 Host 拼好，再由托盘应用注入 DeepSeek 网页版并发送。
+ *      交给 Host 拼好，再由托盘应用按所选服务方（默认 DeepSeek，可选千问/豆包/
+ *      ChatGPT/Gemini/Grok）注入网页版并发送。
  *
  * 刻意**不**在右侧栏渲染任何东西：
  *   - 装 DeepSeek 页面做不到（Electron guest 的分区不持久，每次重启要重新登录，
@@ -22,6 +23,36 @@ window.__ModuleLoader__.load({
     const useState = React.useState
     const useEffect = React.useEffect
     const useRef = React.useRef
+
+    /**
+     * 网页版服务方列表：与 Host（index.js 的 PROVIDERS）和桌面端注册表保持一致。
+     * Host 的 /health 若返回桌面端实际支持的 id 列表，会与这里取交集。
+     */
+    const PROVIDERS = [
+      { id: 'deepseek', name: 'DeepSeek' },
+      { id: 'qwen', name: '千问 Qwen' },
+      { id: 'doubao', name: '豆包 Doubao' },
+      { id: 'chatgpt', name: 'ChatGPT' },
+      { id: 'gemini', name: 'Gemini' },
+      { id: 'grok', name: 'Grok' },
+    ]
+    /** 上次在气泡里选的服务方，跨页面刷新记住。 */
+    const PROVIDER_STORAGE_KEY = 'bubble-ask.provider'
+    function readStoredProvider() {
+      try {
+        const value = window.localStorage.getItem(PROVIDER_STORAGE_KEY) || ''
+        return PROVIDERS.some((provider) => provider.id === value) ? value : ''
+      } catch {
+        return ''
+      }
+    }
+    function storeProvider(id) {
+      try {
+        window.localStorage.setItem(PROVIDER_STORAGE_KEY, id)
+      } catch {
+        /* 隐身模式等写不进去，忽略 */
+      }
+    }
 
     /** 当前会话 id：由会话作用域的探针登记，浮层再读它。 */
     const sessionCounts = new Map()
@@ -86,6 +117,12 @@ window.__ModuleLoader__.load({
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:var(--dsw-alias-bg-layer-1,#fff);',
       'color:var(--dsw-alias-label-primary,#111);font:inherit;outline:none}',
       '.dba-input:focus{border-color:var(--dsw-alias-label-accent,#247bbf)}',
+      '.dba-pick{display:flex;align-items:center;gap:6px}',
+      '.dba-pick-label{color:var(--dsw-alias-label-tertiary,#888);white-space:nowrap}',
+      '.dba-select{flex:auto;min-width:0;height:28px;border-radius:8px;padding:0 6px;',
+      'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:var(--dsw-alias-bg-layer-1,#fff);',
+      'color:var(--dsw-alias-label-primary,#111);font:inherit;outline:none}',
+      '.dba-select:disabled{opacity:.55;cursor:default}',
       '.dba-foot{display:flex;align-items:center;gap:8px;padding:0 10px 10px;flex-wrap:wrap}',
       '.dba-btn{pointer-events:auto;height:30px;padding:0 12px;border-radius:8px;cursor:pointer;font:inherit;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
@@ -176,10 +213,14 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       /** 失败时留着完整提问，给「复制全文」兜底。 */
       const [failedPrompt, setFailedPrompt] = useState('')
+      /** 当前要发到的网页版服务方；默认沿用上次选择，其次是插件默认（DeepSeek）。 */
+      const [provider, setProvider] = useState(() => readStoredProvider() || 'deepseek')
+      const [providers, setProviders] = useState(PROVIDERS)
       /** 抑制选区重算的截止时间戳：点了气泡按钮后，同一次手势的 mouseup 不该把卡片打回去。 */
       const suppressRef = useRef(0)
       const bubbleRef = useRef(bubble)
       bubbleRef.current = bubble
+      const providerInfo = providers.find((item) => item.id === provider) || providers[0] || PROVIDERS[0]
 
       useEffect(() => {
         /** 最近一次显示气泡的时间：拖选文字常伴随滚动，刚弹出时不要被滚动藏掉。 */
@@ -243,6 +284,48 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      /**
+       * 与 Host 同步服务方列表/默认值（只同步一次，失败不影响使用）：
+       *   - 桌面端 < 2.1.0（health.app.providerSwitchable=false）会忽略 provider 字段，
+       *     下拉框只保留 DeepSeek，避免选了别家到发送时才被拒；
+       *   - 新桌面端按它支持的 id 列表取交集；
+       *   - 没手动选过服务方时，沿用 Host 配置的默认值。
+       */
+      useEffect(() => {
+        let cancelled = false
+        void (async () => {
+          try {
+            const response = await fetch('/bubble-ask/health')
+            if (!response.ok) return
+            const payload = await response.json()
+            if (cancelled || !payload || payload.ok !== true) return
+            const app = payload.app || {}
+            const switchable = app.providerSwitchable === true
+            const ids = switchable && Array.isArray(app.providers) ? app.providers : []
+            const known = switchable
+              ? (ids.length > 0 ? PROVIDERS.filter((item) => ids.includes(item.id)) : PROVIDERS)
+              : PROVIDERS.filter((item) => item.id === 'deepseek')
+            if (known.length > 0) setProviders(known)
+            const configured = payload.settings && typeof payload.settings.provider === 'string'
+              ? payload.settings.provider
+              : ''
+            if (!readStoredProvider() && known.some((item) => item.id === configured)) setProvider(configured)
+          } catch {
+            /* health 不可用：保留内置列表与本地选择 */
+          }
+        })()
+        return () => { cancelled = true }
+      }, [])
+
+      // 桌面端不支持当前选择时（例如从新版本回退），自动落到第一项，避免下拉框显示空白。
+      useEffect(() => {
+        if (providers.length > 0 && !providers.some((item) => item.id === provider)) {
+          const fallback = providers[0].id
+          setProvider(fallback)
+          storeProvider(fallback)
+        }
+      }, [providers, provider])
+
       function closeBubble() {
         setBubble({ visible: false, expanded: false, text: '', x: 0, y: 0 })
         setFailedPrompt('')
@@ -255,43 +338,49 @@ window.__ModuleLoader__.load({
        */
       async function runAsk(send) {
         const selection = bubbleRef.current.text
+        // 本次请求用哪家服务方：用点击时的选择，避免异步期间下拉被改。
+        const providerId = provider
+        const providerName = providerInfo.name
         setBusy(true)
-        setStatus(send ? '正在整理轨迹并发送…' : '正在整理会话轨迹…')
+        setStatus(send ? `正在整理轨迹并发送到 ${providerName}…` : `正在整理会话轨迹（发到 ${providerName}）…`)
         setFailedPrompt('')
         report(send ? 'action-send-start' : 'action-copy-start', {
           sessionId: currentSessionId,
           selectionChars: selection.length,
+          provider: providerId,
         })
         try {
           const payload = await postJson(send ? '/bubble-ask/send' : '/bubble-ask/prompt', {
             sessionId: currentSessionId,
             selection,
             question,
+            provider: providerId,
           })
           const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
+          const actualName = typeof payload.providerName === 'string' && payload.providerName ? payload.providerName : providerName
 
           if (send) {
             if (payload.ok) {
-              report('action-send-done', { stage: payload.stage, promptChars: prompt.length })
+              report('action-send-done', { stage: payload.stage, promptChars: prompt.length, provider: payload.provider || providerId })
               closeBubble()
               return
             }
-            report('action-send-failed', { stage: payload.stage, detail: payload.detail })
+            report('action-send-failed', { stage: payload.stage, detail: payload.detail, provider: providerId })
             setFailedPrompt(prompt)
-            setStatus(`没能发送（${payload.stage || '失败'}）：${payload.detail || ''} 可复制全文后到窗口里粘贴。`)
+            setStatus(`没能发送到 ${actualName}（${payload.stage || '失败'}）：${payload.detail || ''} 可复制全文后到窗口里粘贴。`)
             return
           }
 
           const copied = await copyText(prompt)
-          report('action-copy-done', { copied, promptChars: prompt.length })
+          report('action-copy-done', { copied, promptChars: prompt.length, provider: providerId })
           if (copied) {
-            setStatus(`已复制 ${prompt.length} 字，去 DeepSeek 窗口按 Ctrl+V 粘贴。`)
+            setStatus(`已复制 ${prompt.length} 字，去 ${actualName} 窗口按 Ctrl+V 粘贴。`)
             return
           }
           setFailedPrompt(prompt)
           setStatus(`复制失败（共 ${prompt.length} 字），可点「复制全文」重试。`)
         } catch (error) {
-          report('action-error', { send, message: errorText(error) })
+          report('action-error', { send, message: errorText(error), provider: providerId })
           setStatus('失败：' + errorText(error))
         } finally {
           setBusy(false)
@@ -318,7 +407,7 @@ window.__ModuleLoader__.load({
             key: 'pill',
             className: 'dba-pill',
             style: { left: bubble.x + 'px', top: bubble.y + 'px' },
-            title: '把这段文字和会话轨迹一起问 DeepSeek 网页版',
+            title: `把这段文字和会话轨迹一起问 ${providerInfo.name} 网页版`,
             onMouseDown: (event) => event.preventDefault(),
             onClick: () => {
               // 先立起抑制窗口，再展开：同一次点击的 mouseup 会把 expanded 覆盖回 false。
@@ -342,10 +431,24 @@ window.__ModuleLoader__.load({
           onMouseDown: () => { suppressRef.current = Date.now() + 600 },
         },
           h('div', { className: 'dba-head' },
-            h('span', { className: 'dba-title' }, 'Bubble Ask · 带上会话上下文问网页版'),
+            h('span', { className: 'dba-title' }, `Bubble Ask · 带上会话上下文问 ${providerInfo.name}`),
             h('button', { className: 'dba-x', title: '关闭', onClick: closeBubble }, '✕')),
           h('div', { className: 'dba-body' },
             h('div', { className: 'dba-quote' }, quote),
+            h('div', { className: 'dba-pick' },
+              h('span', { className: 'dba-pick-label' }, '发到'),
+              h('select', {
+                className: 'dba-select',
+                value: provider,
+                disabled: busy,
+                title: '选择要发送到的网页版服务方（由桌面端窗口打开并发送）',
+                onChange: (event) => {
+                  const next = event.currentTarget.value
+                  setProvider(next)
+                  storeProvider(next)
+                  report('provider-change', { provider: next })
+                },
+              }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
             h('input', {
               className: 'dba-input',
               placeholder: '想问什么？（留空＝解释它在当前上下文中是什么意思）',
@@ -362,13 +465,13 @@ window.__ModuleLoader__.load({
             h('button', {
               className: 'dba-btn dba-primary',
               disabled: busy,
-              title: '原生窗口注入并自动发送（带完整上下文）',
+              title: `原生窗口注入并自动发送到 ${providerInfo.name}（带完整上下文）`,
               onClick: () => { void runAsk(true) },
-            }, busy ? '处理中…' : '发送到 DeepSeek'),
+            }, busy ? '处理中…' : `发送到 ${providerInfo.name}`),
             h('button', {
               className: 'dba-btn',
               disabled: busy,
-              title: '只整理上下文并复制完整提问，自己去窗口里粘贴',
+              title: `只整理上下文并复制完整提问，自己去 ${providerInfo.name} 窗口里粘贴`,
               onClick: () => { void runAsk(false) },
             }, '复制提问'),
             failedPrompt

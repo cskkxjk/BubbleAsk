@@ -1,20 +1,22 @@
 # 接手说明（Handover）
 
 > 面向新维护者的交接文档：项目定位、构建与自测流程、编码约定、架构地图、已核实的实现事实、上一轮修复记录与遗留事项。
-> 更新：2026-11-02。基线：`main` 位于 `6e45d98`；桌面端自测约 104 项通过（运行方式见 §2.1）；`build.ps1` 编译零警告。
+> 更新：2026-11-10。基线：`main` 位于 `e6d0f60`（v2.0.0 后的 5 个修复）；桌面端自测 146 项通过（运行方式见 §2.1）；`build.ps1` 编译零警告。
+> 2026-11-09 增补：桌面端、Chrome 扩展与 DSH 插件都支持 6 家网页版服务方（桌面端与扩展见 §4.2；插件默认 DeepSeek、气泡可切换，见 §4.3）。
 
 ---
 
 ## 1. 项目定位
 
-Windows 平台的划词问答助手：选中文本（或框选屏幕区域）→ 触发全局热键 → 在鼠标位置弹出窗口 → 将内容提交给 DeepSeek。
+Windows 平台的划词问答助手：选中文本（或框选屏幕区域）→ 触发全局热键 → 在鼠标位置弹出窗口 → 将内容提交给所选网页版 AI（默认 DeepSeek）。
 
-仓库包含两个相互独立的交付物：
+仓库包含三个相互独立的交付物：
 
 | 交付物 | 位置 | 说明 |
 | --- | --- | --- |
 | 桌面端 | `src/`、`build.ps1`、`dist/` | 本文档主要描述的对象 |
 | DSH 插件 | `dsh-plugin/` | 独立 Node 包，与桌面端代码无共享，文档见 `dsh-plugin/README.md` |
+| Chrome 扩展 | `chrome-extension/` | 独立 MV3 扩展，不依赖桌面端，文档见 `chrome-extension/README.md` |
 
 桌面端支持两种运行模式：
 
@@ -36,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Clean   # 先清理 dist
 ```
 
 - 编译器：`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`，选项为 `/langversion:5 /warn:4 /codepage:65001`。
-- 产物：`dist\BubbleAsk.exe`（26 个源文件：shared + engine + service + ui 一起编译）、`dist\BubbleAsk.Tests.exe`（27 个源文件：再加 tests）、`dist\selftest\*.png`。
+- 产物：`dist\BubbleAsk.exe`（28 个源文件：shared + engine + service + ui 一起编译）、`dist\BubbleAsk.Tests.exe`（29 个源文件：再加 tests）、`dist\selftest\*.png`。
 - 一个 `BubbleAsk.exe` 承担两种身份：无参启动是托盘界面，`--service` 启动是无界面后台服务。单实例不靠文件名而靠互斥锁 `BubbleAsk.Service.SingleInstance.4C81`。
 - `build.ps1` 末尾有一道 Lint：若 `src/ui/*.cs` 出现 `ChatDriver` / `CdpClient` / `EdgeHost` 字样即失败。原因是一个 exe 之后编译器不再天然阻止 ui 直接 new 引擎对象，改用这条静态检查兜底。
 
@@ -163,7 +165,38 @@ src/tests/
 
 客户端崩溃/被杀不需要注销：连接断开即租约消失。
 
+### 4.2 网页版多服务方（provider 注册表，2026-11）
 
+网页版从「只能 DeepSeek」扩展为多服务方：DeepSeek / 千问 Qwen / 豆包 Doubao / ChatGPT / Gemini / Grok / 自定义。
+**站点差异全部是数据，不是分支**：新增站点或页面改版校准选择器只改 `src/shared/WebProviders.cs`。
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/shared/WebProviders.cs` | 注册表：`WebProvider` 数据模型 + 6 家预设 + `custom`；`Resolve(id, chatUrl)`、`IsKnown`、`NormalizeId`、`InferLegacyProvider`、`MatchesUrl`、`IsLoginUrl`、`BuildAskUrl`（URL 预填） |
+| `src/engine/PageScripts.cs` | 把 provider 的选择器拼成注入页面的 JS：输入框（provider CSS → 可见通用兜底）、发送按钮（provider CSS → class 特征 → aria/文案 → 输入框附近最后一个纯图标按钮 → 历史兜底）、注入/回读/聚焦、`--probe` 诊断脚本 |
+| `src/engine/ChatDriver.cs` | 窗口单实例（同一 profile、同一个 `--app` 窗口）；换服务方时用 CDP 导航到 `provider.Url`，登录 cookie 保留；所有 URL/选择器/预填/Enter 兜底从 provider 取 |
+| `src/shared/AppConfig.cs` | 新增 `WebProvider`（默认 `deepseek`）；`ChatUrl` 仅 custom 使用；老配置没有该字段时按 ChatUrl 推断（能对上预设域名算那家，否则 custom） |
+| `src/ui/SettingsForm.cs` | 「窗口与网页」页新增「网页版服务方」下拉；选预设回填并锁住地址框，选自定义可编辑 |
+| `src/tests/TestProgram.cs` | provider 注册表/解析/迁移/脚本生成断言；`--probe <id>` 实机诊断 |
+
+- **IPC 增量（协议 v2 不变）**：`send` / `send-image` / `toggle` 新增可选 `provider` 字段；不带时服务端按本机配置的当前服务方解析（旧 DSH 插件 / 旧 CLI 不发该字段，行为与升级前一致）；custom 可再带 `providerUrl`，避免服务端配置滞后。未知 provider 返回 `stage:"provider"`；`health` 增加 `currentProvider` / `currentProviderName` / `webProvider` / `providers` / `lastProvider`。
+- **Enter 兜底**：`EnterSends=true` 的服务方在发送按钮不可用时退回 CDP 可信 Enter；`custom` 为 false（未知站点不猜回车语义），DeepSeek 仍是点击为主、Enter 兜底（行为不变）。
+- **登录检测**：`LoginMarkers` 是 URL 片段（`login` / `signin` / `accounts.google.com` 等），命中时日志提示「先登录一次」；不做 DOM 登录态判断。
+- **实机校准**：`dist\BubbleAsk.Tests.exe --probe qwen` 会真实打开该站点并输出候选 composer/发送按钮 JSON（`loginLikely`、`composerCandidates`、`sendCandidates`、`buttons`），照着输出改 `WebProviders.cs` 即可。
+
+### 4.3 DSH 插件多服务方（2026-11，插件 2.2.0）
+
+插件不再固定 DeepSeek：气泡里新增「发到」下拉，可切换 6 家（默认 DeepSeek）。实现只做**选择与解析**，导航/登录检测/注入/发送仍复用桌面端：
+
+| 文件 | 职责 |
+| --- | --- |
+| `dsh-plugin/index.js` | `PROVIDERS`（id/name/url，deepseek 带 `prefillParam: 'q'`）、`PROVIDER_IDS`、`resolveProvider(requested, settings)`、`checkProviderSupport`（每次发送前查 `health.app` 版本 >= 2.1.0，不缓存，升级桌面端无需重启 DSH）、`versionAtLeast`；`prepareAsk` 返回 provider/providerName 与兜底 URL；`send` 路由总是显式带 `provider`（含 DeepSeek，避免被桌面端配置带偏），未知 id 回 `stage:"provider"`，旧桌面端回 `stage:"old-app"` 并保留 prompt；`health` 暴露 `providers`/`provider` 与 `app.*Provider*`、`app.providerSwitchable` |
+| `dsh-plugin/client.js` | 内置 id/name 列表（展示用）、`bubble-ask.provider` localStorage 记忆、气泡「发到」下拉、按钮/状态文案随服务方名变化；挂载时读 `/health`：`app.providerSwitchable` 为 true 才用 `app.providers` 取交集，否则只保留 DeepSeek 并把记忆的非 DeepSeek 选择纠正回去 |
+| `dsh-plugin/lib/ask-client.mjs` | `sendPrompt` 的 payload 带 `provider` / `providerUrl`（Host 总是传当前选择，旧桌面端忽略未知字段） |
+
+- 配置：`provider` 默认 `deepseek`；`chatUrl` 只影响 DeepSeek 的兜底地址，其余服务方用注册表 URL。`custom` 不提供（桌面端设置里配）。
+- 兼容：插件 2.2.0 仍兼容桌面端 2.1.x；桌面端 < 2.1.0 时插件下拉只提供 DeepSeek（旧桌面端忽略 `provider` 字段、按本机配置入口发送），若仍构造出非 DeepSeek 请求则 `old-app` 拒绝并给「复制全文」逃生，不会静默发到 DeepSeek。
+- 测试：`node --check` 三文件；离线断言 `.tmp-selftest/provider-test.mjs` 10 项 ALL PASS（含与 `WebProviders.cs` id 列表一致性）。真实站点仍未实测。
 
 ---
 
@@ -204,7 +237,7 @@ src/tests/
 
 ## 6. 上一轮修复内容（已核实）
 
-> 指产出基线 `5147d99` 的那一轮改动（上一轮；当前基线为 `6e45d98`）。
+> 指产出基线 `5147d99` 的那一轮改动（上一轮；当前基线为 `e6d0f60`）。
 
 ### 6.1 网页版（web）
 
@@ -261,6 +294,7 @@ src/tests/
 6. **气泡高度按 100% DPI 估算**：manifest 声明 PerMonitorV2，高 DPI 下可能遮挡最后一行。本机 96 DPI 渲染正常。
 7. **`EdgeHost.Hide()`、`Handle` 无调用方**（保留作为 API，不影响功能；`IsRunning` 有调用方，`PipeHost.Health` 用它回传 `running`）。
 8. **`ChatDriver` 中部分 JS 由字符串拼接生成**，修改时容易引入语法错误。建议修改后通过反射取出脚本，在真实页面执行一次（本轮验证即采用此方式，思路见 §5.1）。
+9. **DSH 插件多服务方未实机验证**：真实站点选择器与旧桌面端拦截路径只在离线断言层面覆盖（§4.3）；需按 `docs/web-providers.md` §4.1 第 7 条在装有桌面端 2.1.0+ 的环境里逐家实测。
 
 ---
 
@@ -274,7 +308,7 @@ src/tests/
 | .NET Framework | 4.8.1（Release 534296） |
 | csc.exe | 14.8.10001.0 |
 | 浏览器 | Edge 156.0.4314.58（`Program Files (x86)`）、Chrome 156.0.8078.48（`Program Files`） |
-| git | `main` 跟踪 `origin`（地址以 `git remote -v` 为准），基线 commit `6e45d98` |
-| 源码规模 | 桌面端 27 个 `.cs`（shared 8 / engine 3 / service 3 / ui 12 / tests 1），构建为 `BubbleAsk.exe`（托盘 / `--service` 两种身份）与 `BubbleAsk.Tests.exe`；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`） |
+| git | `main` 跟踪 `origin`（地址以 `git remote -v` 为准），基线 commit `e6d0f60` |
+| 源码规模 | 桌面端 29 个 `.cs`（shared 9 / engine 4 / service 3 / ui 12 / tests 1），构建为 `BubbleAsk.exe`（托盘 / `--service` 两种身份）与 `BubbleAsk.Tests.exe`；DSH 插件 3 个 JS 模块（`index.js`、`client.js`、`lib/ask-client.mjs`，含 6 家 provider 注册表）；Chrome 扩展 15 个文件（MV3，含 6 家 provider 注册表） |
 
 **已验证的事实**：`BubbleAsk.exe` 可启动，三个热键注册成功，自动检测到 Edge；将 `BrowserPath` 指向 Chrome 会改用 Chrome 并使用 `profile-chrome`；指向不存在的路径会回退自动检测。（测试过程中产生的 `%AppData%\BubbleAsk` 已清空，首次运行是全新状态。）

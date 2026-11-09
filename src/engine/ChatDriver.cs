@@ -5,17 +5,25 @@ using System.Threading.Tasks;
 
 namespace BubbleAsk
 {
-    /// <summary>把问题送进 Edge 里的聊天页面：优先 DOM 注入，失败退回 ?q= 链接。</summary>
+    /// <summary>
+    /// 把问题送进浏览器里的网页版聊天页面：优先 DOM 注入，失败退回 URL 预填。
+    ///
+    /// 站点差异（URL、输入框/发送按钮选择器、能否预填、要不要 Enter 兜底）全部来自
+    /// <see cref="WebProvider"/>；窗口仍是单实例（同一个浏览器 app 窗口、同一个 profile），
+    /// 换服务方时通过 CDP 导航到目标地址，登录 cookie 保留在 profile 里。
+    /// </summary>
     public class ChatDriver : IDisposable
     {
         private readonly AppConfig _config;
         private readonly EdgeHost _edge;
         private CdpClient _cdp;
+        private WebProvider _provider;
 
         public ChatDriver(AppConfig config)
         {
             _config = config;
             _edge = new EdgeHost(config);
+            _provider = WebProviders.FromConfig(config);
         }
 
         public EdgeHost Edge
@@ -23,9 +31,22 @@ namespace BubbleAsk
             get { return _edge; }
         }
 
+        /// <summary>当前使用的网页版服务方（最近一次操作传入/配置解析出来的）。</summary>
+        public WebProvider CurrentProvider
+        {
+            get { return _provider == null ? WebProviders.DefaultProvider : _provider; }
+        }
+
+        /// <summary>当前服务方 id，供 IPC 响应带回给调用方。</summary>
+        public string LastProvider
+        {
+            get { return CurrentProvider.Id; }
+        }
+
         /// <summary>
         /// 最近一次 AskAsync 的阶段标签，供管道对端报告失败原因。
-        /// 取值与插件原有词汇一致：sent / filled / prefilled / error 等。
+        /// 取值与插件原有词汇一致：sent / filled / prefilled / error 等（不拼接服务方，
+        /// 服务方信息走 IPC 响应里的 provider 字段，避免破坏插件对 stage 的判断）。
         /// </summary>
         public string LastStatus { get; private set; }
 
@@ -35,6 +56,11 @@ namespace BubbleAsk
         }
 
         public async Task<bool> AskAsync(string prompt)
+        {
+            return await AskAsync(prompt, _provider);
+        }
+
+        public async Task<bool> AskAsync(string prompt, WebProvider provider)
         {
             LastStatus = "idle";
             if (string.IsNullOrEmpty(prompt))
@@ -47,11 +73,11 @@ namespace BubbleAsk
                 bool retry = false;
                 try
                 {
-                    await EnsureConnectedAsync();
+                    await EnsureConnectedAsync(provider);
                     EnsureWindow();
                     await WaitForComposerAsync(25000);
                     string filled = await FillWithRetryAsync(prompt);
-                    Log.Info("注入输入框结果: " + filled);
+                    Log.Info("[" + CurrentProvider.Id + "] 注入输入框结果: " + filled);
                     if (filled == "none")
                     {
                         Log.Warn("注入失败：页面上没找到输入框（composer）");
@@ -70,7 +96,7 @@ namespace BubbleAsk
                     }
                     await Task.Delay(250);
                     string status = await SendAndVerifyAsync(true, 2000);
-                    Log.Info("发送校验结果: " + status);
+                    Log.Info("[" + CurrentProvider.Id + "] 发送校验结果: " + status);
                     if (status == "sent")
                     {
                         LastStatus = "sent";
@@ -78,7 +104,7 @@ namespace BubbleAsk
                     }
                     if (NeedsPrefillFallback(status))
                     {
-                        Log.Warn("发送没能触发（" + status + "），改走 ?q= 预填链接");
+                        Log.Warn("发送没能触发（" + status + "），改走 URL 预填");
                         return await FallbackNavigateAsync(prompt);
                     }
                     // 已经点过发送但没能确认：别再导航（会丢掉当前会话，也可能其实已经发出去了），
@@ -108,9 +134,20 @@ namespace BubbleAsk
 
         public async Task<bool> AskWithImageAsync(string imagePath, string prompt)
         {
+            return await AskWithImageAsync(imagePath, prompt, _provider);
+        }
+
+        public async Task<bool> AskWithImageAsync(string imagePath, string prompt, WebProvider provider)
+        {
+            LastStatus = "idle";
             try
             {
-                await EnsureConnectedAsync();
+                await EnsureConnectedAsync(provider);
+                if (!provider.Upload)
+                {
+                    Log.Info("[" + CurrentProvider.Id + "] 该服务方未启用图片上传，退化为纯文本提问");
+                    return await AskAsync(prompt, provider);
+                }
                 EnsureWindow();
                 await WaitForComposerAsync(25000);
 
@@ -124,7 +161,7 @@ namespace BubbleAsk
                 if (!attached)
                 {
                     Log.Warn("图片没能送进页面，退化为纯文本提问");
-                    return await AskAsync(prompt);
+                    return await AskAsync(prompt, provider);
                 }
 
                 await Task.Delay(700);
@@ -132,10 +169,11 @@ namespace BubbleAsk
                 if (!string.IsNullOrEmpty(prompt))
                 {
                     string filled = await FillWithRetryAsync(prompt);
-                    Log.Info("截图后注入文本: " + filled);
+                    Log.Info("[" + CurrentProvider.Id + "] 截图后注入文本: " + filled);
                     if (filled == "none" || filled == null || filled.StartsWith("failed", StringComparison.Ordinal))
                     {
                         Log.Warn("图文：文本没能写进输入框（" + filled + "），判定为未发送");
+                        LastStatus = "fill";
                         return false;
                     }
                     await Task.Delay(250);
@@ -144,21 +182,25 @@ namespace BubbleAsk
                 if (!_config.AutoSend)
                 {
                     Log.Info("自动发送已关闭，图文只贴上不发送");
+                    LastStatus = "filled";
                     return true;
                 }
 
                 string status = await SendAndVerifyAsync(!string.IsNullOrEmpty(prompt), 2000);
-                Log.Info("图文发送校验结果: " + status);
+                Log.Info("[" + CurrentProvider.Id + "] 图文发送校验结果: " + status);
                 if (status == "sent")
                 {
+                    LastStatus = "sent";
                     return true;
                 }
+                LastStatus = status;
                 Log.Warn("图文发送未确认成功（" + status + "），不当作成功");
                 return false;
             }
             catch (Exception error)
             {
                 Log.Error("图文发送失败", error);
+                LastStatus = "error";
                 Reset();
                 return false;
             }
@@ -169,13 +211,13 @@ namespace BubbleAsk
         {
             try
             {
-                string objectId = await _cdp.EvaluateHandleAsync(BuildFileInputScript(), 5000);
+                string objectId = await _cdp.EvaluateHandleAsync(PageScripts.BuildFileInputScript(), 5000);
                 if (string.IsNullOrEmpty(objectId))
                 {
-                    string opened = await _cdp.EvaluateAsync(BuildOpenUploadScript(), 4000);
+                    string opened = await _cdp.EvaluateAsync(PageScripts.BuildOpenUploadScript(), 4000);
                     Log.Info("打开上传入口: " + opened);
                     await Task.Delay(800);
-                    objectId = await _cdp.EvaluateHandleAsync(BuildFileInputScript(), 5000);
+                    objectId = await _cdp.EvaluateHandleAsync(PageScripts.BuildFileInputScript(), 5000);
                 }
                 if (string.IsNullOrEmpty(objectId))
                 {
@@ -204,7 +246,7 @@ namespace BubbleAsk
             {
                 return false;
             }
-            await _cdp.EvaluateAsync(BuildFocusScript(), 5000);
+            await _cdp.EvaluateAsync(PageScripts.BuildFocusScript(CurrentProvider), 5000);
             await Task.Delay(200);
             ClipboardCapture.SendPaste();
             Log.Info("已向页面粘贴截图");
@@ -214,9 +256,14 @@ namespace BubbleAsk
 
         public async Task<bool> OpenAsync()
         {
+            return await OpenAsync(_provider);
+        }
+
+        public async Task<bool> OpenAsync(WebProvider provider)
+        {
             try
             {
-                await EnsureConnectedAsync();
+                await EnsureConnectedAsync(provider);
                 EnsureWindow();
                 await WaitForComposerAsync(10000);
                 return true;
@@ -230,9 +277,15 @@ namespace BubbleAsk
 
         /// <summary>
         /// 唤起/收起。已在前台就关掉，否则拉到前台；窗口不存在就启动。
+        /// 若当前页面不是目标服务方，先 CDP 导航过去（同一个 app 窗口里换页面）。
         /// 返回值：true 表示这次是「关掉」。
         /// </summary>
         public async Task<bool> ToggleAsync()
+        {
+            return await ToggleAsync(_provider);
+        }
+
+        public async Task<bool> ToggleAsync(WebProvider provider)
         {
             if (_edge.IsVisible)
             {
@@ -243,11 +296,20 @@ namespace BubbleAsk
                     _edge.CloseWindow();
                     return true;
                 }
+                if (_cdp == null || !_cdp.IsConnected || !provider.MatchesUrl(_cdp.TargetUrl))
+                {
+                    // 窗口开着但页面不是目标服务方：先切页面，再拉到前台。
+                    await EnsureConnectedAsync(provider);
+                }
+                else
+                {
+                    _provider = provider;
+                }
                 Log.Info("窗口在，拉到前台");
                 _edge.ShowAndFocus();
                 return false;
             }
-            await OpenAsync();
+            await OpenAsync(provider);
             return false;
         }
 
@@ -255,8 +317,8 @@ namespace BubbleAsk
         {
             try
             {
-                await EnsureConnectedAsync();
-                return await _cdp.EvaluateAsync(BuildStateScript(), 5000);
+                await EnsureConnectedAsync(_provider);
+                return await _cdp.EvaluateAsync(PageScripts.BuildStateScript(CurrentProvider), 5000);
             }
             catch (Exception error)
             {
@@ -267,27 +329,80 @@ namespace BubbleAsk
         /// <summary>在页面里求值，返回字符串结果。排查页面结构时用。</summary>
         public async Task<string> EvaluateAsync(string script)
         {
-            await EnsureConnectedAsync();
+            await EnsureConnectedAsync(_provider);
             return await _cdp.EvaluateAsync(script, 8000);
         }
 
-        private async Task EnsureConnectedAsync()
+        /// <summary>
+        /// 连上（必要时先拉起浏览器）并确保当前页面就是目标服务方：
+        /// 不在同一个站点时用 CDP 导航过去，登录态仍复用同一个浏览器 profile。
+        /// </summary>
+        private async Task EnsureConnectedAsync(WebProvider provider)
         {
+            if (provider == null)
+            {
+                provider = WebProviders.DefaultProvider;
+            }
+            bool switched = _provider == null
+                || !string.Equals(_provider.Id, provider.Id, StringComparison.OrdinalIgnoreCase);
+            _provider = provider;
             if (_cdp != null && _cdp.IsConnected)
             {
+                if (!provider.MatchesUrl(_cdp.TargetUrl))
+                {
+                    await NavigateToProviderAsync(provider);
+                }
+                WarnIfLoginPage(provider);
                 return;
             }
             Reset();
-            // 启动 Edge 可能要等十几秒，放到后台线程，别冻住界面。
-            await Task.Run(new Action(delegate { _edge.EnsureStarted(); }));
-            string origin = ChatOrigin();
+            // 启动浏览器可能要等十几秒，放到后台线程，别冻住界面。
+            WebProvider target = provider;
+            await Task.Run(new Action(delegate { _edge.EnsureStarted(target.Url); }));
             _cdp = new CdpClient();
-            await _cdp.ConnectAsync(_config.CdpPort, origin, 20000);
-            if (!_cdp.TargetUrl.StartsWith(origin, StringComparison.OrdinalIgnoreCase))
+            await _cdp.ConnectAsync(_config.CdpPort, provider.PrimaryAuthority, 20000);
+            if (!provider.MatchesUrl(_cdp.TargetUrl))
             {
-                Log.Info("当前页面不是聊天页，导航到 " + _config.ChatUrl);
-                await _cdp.NavigateAsync(_config.ChatUrl, 10000);
-                await Task.Delay(1200);
+                await NavigateToProviderAsync(provider);
+            }
+            else if (switched)
+            {
+                Log.Info("已连接网页版服务方: " + provider.Name);
+            }
+            WarnIfLoginPage(provider);
+        }
+
+        /// <summary>当前停在登录页时提示用户先登录（登录态会保存在浏览器 profile 里，只需一次）。</summary>
+        private void WarnIfLoginPage(WebProvider provider)
+        {
+            if (_cdp == null || !provider.IsLoginUrl(_cdp.TargetUrl))
+            {
+                return;
+            }
+            Log.Warn("页面停在 " + provider.Name + " 的登录页（" + _cdp.TargetUrl
+                + "），请先在窗口里登录一次；登录态保存在浏览器 profile 里，之后长期有效");
+        }
+
+        /// <summary>导航到服务方入口地址，并按 VerifyUrlRegex 记一条日志（只告警，不阻断流程）。</summary>
+        private async Task NavigateToProviderAsync(WebProvider provider)
+        {
+            Log.Info("切换网页版服务方: " + provider.Name + "（" + provider.Url + "）");
+            await _cdp.NavigateAsync(provider.Url, 10000);
+            await Task.Delay(1200);
+            if (string.IsNullOrEmpty(provider.VerifyUrlRegex))
+            {
+                return;
+            }
+            try
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(_cdp.TargetUrl, provider.VerifyUrlRegex))
+                {
+                    Log.Warn("当前地址与 " + provider.Id + " 的预期不符: " + _cdp.TargetUrl);
+                }
+            }
+            catch (Exception error)
+            {
+                Log.Warn("校验服务方地址失败: " + error.Message);
             }
         }
 
@@ -329,11 +444,11 @@ namespace BubbleAsk
 
         /// <summary>
         /// 注入文本；没找到输入框时再等一小会儿重试一次（页面可能刚渲染完）。
-        /// 返回 BuildFillScript 的原始结果（'textarea' / 'editable' / 'none' / 'failed:*'）。
+        /// 返回 PageScripts.BuildFillScript 的原始结果（'textarea' / 'editable' / 'none' / 'failed:*'）。
         /// </summary>
         private async Task<string> FillWithRetryAsync(string prompt)
         {
-            string filled = await _cdp.EvaluateAsync(BuildFillScript(prompt), 8000);
+            string filled = await _cdp.EvaluateAsync(PageScripts.BuildFillScript(CurrentProvider, prompt), 8000);
             if (filled != null && filled != "none")
             {
                 return filled;
@@ -345,7 +460,7 @@ namespace BubbleAsk
             }
             Log.Warn("第一次注入没找到输入框，等 1.5 秒重试");
             await Task.Delay(1500);
-            return await _cdp.EvaluateAsync(BuildFillScript(prompt), 8000);
+            return await _cdp.EvaluateAsync(PageScripts.BuildFillScript(CurrentProvider, prompt), 8000);
         }
 
         /// <summary>
@@ -370,7 +485,7 @@ namespace BubbleAsk
             string action = null;
             try
             {
-                action = await _cdp.EvaluateAsync(BuildSendScript(), 5000);
+                action = await _cdp.EvaluateAsync(PageScripts.BuildSendScript(CurrentProvider), 5000);
             }
             catch (Exception error)
             {
@@ -381,6 +496,12 @@ namespace BubbleAsk
             bool triggered = action != null && action.StartsWith("clicked", StringComparison.Ordinal);
             if (!triggered)
             {
+                if (!CurrentProvider.EnterSends)
+                {
+                    Log.Warn("发送按钮不可用（" + (action == null ? "null" : action)
+                        + "），且该服务方未启用 Enter 兜底，判定为未发送");
+                    return "noaction";
+                }
                 Log.Warn("发送按钮不可用（" + (action == null ? "null" : action) + "），改用 CDP 可信 Enter");
                 await FocusComposerAsync();
                 triggered = await DispatchEnterAsync();
@@ -407,6 +528,11 @@ namespace BubbleAsk
             }
 
             await FocusComposerAsync();
+            if (!CurrentProvider.EnterSends)
+            {
+                // 该站点没有启用 Enter 兜底：不能靠回车补发，直接把未确认状态交回去。
+                return verdict;
+            }
             bool enterOk = await DispatchEnterAsync();
             Log.Info("补发可信 Enter 结果: " + enterOk);
             if (!enterOk)
@@ -510,7 +636,7 @@ namespace BubbleAsk
             string raw;
             try
             {
-                raw = await _cdp.EvaluateAsync(BuildComposerStateScript(), 3000);
+                raw = await _cdp.EvaluateAsync(PageScripts.BuildComposerStateScript(CurrentProvider), 3000);
             }
             catch (Exception error)
             {
@@ -524,7 +650,7 @@ namespace BubbleAsk
         {
             try
             {
-                await _cdp.EvaluateAsync(BuildFocusScript(), 4000);
+                await _cdp.EvaluateAsync(PageScripts.BuildFocusScript(CurrentProvider), 4000);
             }
             catch (Exception error)
             {
@@ -550,259 +676,56 @@ namespace BubbleAsk
         }
 
         /// <summary>
-        /// 退路：?q= 预填链接。DeepSeek 会把问题填进输入框，但不会自动发送（autosend 不是它认的参数），
-        /// 所以这里一律返回 false，不能再假装成功。
+        /// 退路：URL 预填链接。只有 provider 配置了 PrefillParam 才走这条（目前仅 DeepSeek 的 q）。
+        /// 预填不会自动发送，所以这里一律返回 false，不能假装成功。
         /// </summary>
         private async Task<bool> FallbackNavigateAsync(string prompt)
         {
-            if (_cdp == null || !_cdp.IsConnected)
+            WebProvider provider = CurrentProvider;
+            if (string.IsNullOrEmpty(provider.PrefillParam))
             {
-                Log.Warn("退路：CDP 已断开，连 ?q= 预填链接都打不开，判定为未发送");
+                Log.Warn("[" + provider.Id + "] 该服务方不支持 URL 预填，判定为未发送");
                 return false;
             }
-            string url = BuildAskUrl(prompt);
-            Log.Warn("退路：已用 ?q= 链接预填，但从预期来看不会自动发送: " + url);
+            if (_cdp == null || !_cdp.IsConnected)
+            {
+                Log.Warn("退路：CDP 已断开，连预填链接都打不开，判定为未发送");
+                return false;
+            }
+            string url = provider.BuildAskUrl(prompt);
+            Log.Warn("退路：已用预填链接，但从预期来看不会自动发送: " + url);
             try
             {
                 await _cdp.NavigateAsync(url, 8000);
-                Log.Warn("已导航到 ?q= 预填链接，问题在输入框里，需要用户手动按 Enter 才会发出");
+                Log.Warn("已导航到预填链接，问题在输入框里，需要用户手动按 Enter 才会发出");
             }
             catch (Exception error)
             {
-                Log.Warn("?q= 预填链接也没打开成功: " + error.Message);
+                Log.Warn("预填链接也没打开成功: " + error.Message);
             }
             return false;
         }
 
-        private string BuildAskUrl(string prompt)
+        /// <summary>
+        /// 诊断用（BubbleAsk.Tests.exe --probe &lt;providerId&gt;）：
+        /// 用真实浏览器打开该服务方，把输入框/发送按钮的候选元素信息导成 JSON，供实机校准选择器。
+        /// 只读页面，注入和发送都不做。失败时返回 "ERR: ..."。
+        /// </summary>
+        public async Task<string> ProbeAsync(WebProvider provider)
         {
-            string baseUrl = _config.ChatUrl;
-            string separator = baseUrl.IndexOf('?') >= 0 ? "&" : "?";
-            // 只保留 q：DeepSeek 的 chat_url_prefill 只认 q/prompt/mode/search/thinking，autosend=1 无效，已删。
-            return baseUrl + separator + "q=" + Uri.EscapeDataString(prompt);
-        }
-
-        private string ChatOrigin()
-        {
-            Uri uri;
-            if (Uri.TryCreate(_config.ChatUrl, UriKind.Absolute, out uri))
+            try
             {
-                return uri.GetLeftPart(UriPartial.Authority);
+                await EnsureConnectedAsync(provider);
+                // SPA 首屏可能还在渲染，给它一点时间，免得采集到空壳。
+                await Task.Delay(2500);
+                return await _cdp.EvaluateAsync(PageScripts.BuildProbeScript(CurrentProvider), 15000);
             }
-            return "https://chat.deepseek.com";
+            catch (Exception error)
+            {
+                Log.Error("探测页面失败", error);
+                return "ERR: " + error.Message;
+            }
         }
-
-        /// <summary>诊断用：页面里输入框/发送按钮的存在与状态，GetStateAsync 直接把它返回给用户。</summary>
-        private static string BuildStateScript()
-        {
-            return
-                "(function(){" +
-                SendButtonFuncs() +
-                "var el=" + ComposerExpr() + ";" +
-                "var btn=findSend();" +
-                "var tag=el?String(el.tagName||'').toUpperCase():'';" +
-                "var boxType=(tag==='TEXTAREA'||tag==='INPUT')?'textarea':(el?'editable':'none');" +
-                "return JSON.stringify({hasBox:!!el,boxType:boxType,hasSend:!!btn,sendEnabled:!!(btn&&isEnabled(btn)),url:location.href,title:document.title});" +
-                "})()";
-        }
-
-        private static string BuildFileInputScript()
-        {
-            return
-                "(function(){" +
-                "var inputs=document.querySelectorAll('input[type=\"file\"]');" +
-                "for(var i=0;i<inputs.length;i++){return inputs[i];}" +
-                "return null;" +
-                "})()";
-        }
-
-        /// <summary>页面上的上传按钮通常只带图标，用 aria-label / title / data-testid 去认它。</summary>
-        private static string BuildOpenUploadScript()
-        {
-            return
-                "(function(){" +
-                "var nodes=document.querySelectorAll('button,div[role=\"button\"],span[role=\"button\"],label');" +
-                "for(var i=0;i<nodes.length;i++){" +
-                "var n=nodes[i];" +
-                "var label=(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('title')||'')+' '+(n.getAttribute('data-testid')||'');" +
-                "if(/上传|附件|图片|文件|attach|upload|image|photo|file/i.test(label)){n.click();return 'clicked:'+label;}" +
-                "}" +
-                "return 'none';" +
-                "})()";
-        }
-
-        /// <summary>
-        /// composer（输入框）的查找表达式，越往前优先级越高：保持原来的 textarea[name=search] → textarea
-        /// → div[contenteditable] 顺序，再往后面补 p[contenteditable]、通用 contenteditable、
-        /// role=textbox 以及常见的 data-testid，页面改版时尽量还能命中。
-        /// </summary>
-        private static string ComposerExpr()
-        {
-            return
-                "(document.querySelector('textarea[name=\"search\"]')" +
-                "||document.querySelector('textarea')" +
-                "||document.querySelector('div[contenteditable=\"true\"]')" +
-                "||document.querySelector('p[contenteditable=\"true\"]')" +
-                "||document.querySelector('[contenteditable=\"true\"]')" +
-                "||document.querySelector('[role=\"textbox\"]')" +
-                "||document.querySelector('[data-testid=\"chat-input\"] textarea')" +
-                "||document.querySelector('[data-testid=\"chat-input\"] [contenteditable=\"true\"]')" +
-                "||document.querySelector('textarea[data-testid]')" +
-                "||document.querySelector('[data-testid*=\"input\"] textarea')" +
-                "||document.querySelector('[data-testid*=\"input\"] [contenteditable=\"true\"]')" +
-                "||document.querySelector('[data-testid=\"chat-input\"]'))";
-        }
-
-        /// <summary>
-        /// 页面里共用的发送按钮工具函数。查找顺序：
-        /// 0) 结构化特征：输入框附近、role=button 且 class 同时含 ds-button--primary 与 ds-button--circle
-        ///    —— 实测（Edge 156 + chat.deepseek.com 2026-11）页面上唯一命中，且不依赖图标长什么样；
-        /// 1) aria-label / title / data-testid 命中 /发送|send|submit/i；
-        /// 2) 含 svg 图标 + 语义提示（class 里写着 send 的图标按钮）；
-        /// 3) 只看 className 的语义；
-        /// 4) 最后才用过窄的 svg path 兜底（历史上漂移过，留着当保底）。
-        /// 每一轮都在候选里取 DOM 最深的那个，避免点到包着真按钮的容器（点了不冒泡到按钮）。
-        /// </summary>
-        private static string SendButtonFuncs()
-        {
-            return
-                "function attrLabel(n){if(!n||!n.getAttribute){return '';}" +
-                "var a=n.getAttribute('aria-label')||'';" +
-                "var t=n.getAttribute('title')||'';" +
-                "var d=n.getAttribute('data-testid')||'';" +
-                "return (a+' '+t+' '+d);}" +
-                "function labelOf(n){return attrLabel(n)+' '+String((n&&n.className)||'');}" +
-                "function visible(n){if(!n){return false;}" +
-                "return !!(n.offsetWidth||n.offsetHeight||(n.getClientRects&&n.getClientRects().length));}" +
-                "function isEnabled(n){if(!n){return false;}" +
-                "if(n.disabled){return false;}" +
-                "if(n.getAttribute&&n.getAttribute('aria-disabled')==='true'){return false;}" +
-                "var cls=String(n.className||'');" +
-                "if(/disabled/i.test(cls)){return false;}" +
-                "return true;}" +
-                "function depthOf(n){var d=0;while(n&&n.parentElement){d++;n=n.parentElement;}return d;}" +
-                "function pick(nodes,test){" +
-                "var best=null,bestDepth=-1,i,n,d;" +
-                "for(i=0;i<nodes.length;i++){n=nodes[i];" +
-                "if(!visible(n)){continue;}" +
-                "if(!test(n)){continue;}" +
-                "d=depthOf(n);" +
-                "if(d>bestDepth){best=n;bestDepth=d;}}" +
-                "return best;}" +
-                // 结构化：composer 往上是几层，只在这块区域里找主按钮（避免命中顶部工具栏的 primary 按钮）。
-                "function findSendStructural(){" +
-                "var box=" + ComposerExpr() + ";" +
-                "if(!box){return null;}" +
-                "var scope=box;" +
-                "for(var up=0;up<4&&scope;up++){scope=scope.parentElement;}" +
-                "if(!scope){return null;}" +
-                "return pick(scope.querySelectorAll('[role=\"button\"]'),function(n){" +
-                "var c=String(n.className||'');" +
-                "return c.indexOf('ds-button--primary')>=0&&c.indexOf('ds-button--circle')>=0;});}" +
-                "function findSend(){" +
-                "var t=findSendStructural();" +
-                "if(t){return t;}" +
-                "var nodes=document.querySelectorAll('button,[role=\"button\"],[data-testid],div,span');" +
-                "t=pick(nodes,function(n){return /发送|send|submit/i.test(attrLabel(n));});" +
-                "if(t){return t;}" +
-                "t=pick(nodes,function(n){return !!(n.querySelector&&n.querySelector('svg')&&/send|submit|arrow|paper|plane/i.test(labelOf(n)));});" +
-                "if(t){return t;}" +
-                "t=pick(nodes,function(n){return /发送|send|submit/i.test(String(n.className||''));});" +
-                "if(t){return t;}" +
-                "t=pick(nodes,function(n){return !!(n.querySelector&&n.querySelector('svg path[d^=\"M8.3125\"]'));});" +
-                "if(t){return t;}" +
-                "return null;}";
-        }
-
-        /// <summary>输入框状态的回读脚本：文本长度、是否有图片附件、发送按钮是否可用。</summary>
-        private static string BuildComposerStateScript()
-        {
-            return
-                "(function(){" +
-                SendButtonFuncs() +
-                "function textOf(el){" +
-                "var tag=(el.tagName||'').toUpperCase();" +
-                "var t=(tag==='TEXTAREA'||tag==='INPUT')?(el.value||''):(el.innerText||el.textContent||'');" +
-                "return String(t).replace(/[\\s\\u200b\\u00a0\\ufeff]/g,'');}" +
-                "var el=" + ComposerExpr() + ";" +
-                "if(!el){return JSON.stringify({box:'none',len:0,text:false,img:false,send:false,url:location.href});}" +
-                "var tag=(el.tagName||'').toUpperCase();" +
-                "var box=(tag==='TEXTAREA'||tag==='INPUT')?'textarea':'editable';" +
-                "var plain=textOf(el);" +
-                "var hasImg=!!(el.querySelector&&el.querySelector('img,image'));" +
-                "var btn=findSend();" +
-                "return JSON.stringify({box:box,len:plain.length,text:plain.length>0,img:hasImg,send:!!(btn&&isEnabled(btn)),url:location.href});" +
-                "})()";
-        }
-
-        private static string BuildFocusScript()
-        {
-            return
-                "(function(){" +
-                "var el=" + ComposerExpr() + ";" +
-                "if(!el){return 'none';}" +
-                "try{el.focus();}catch(e){return 'failed:focus';}" +
-                "return 'ok';" +
-                "})()";
-        }
-
-        private static string BuildFillScript(string prompt)
-        {
-            string literal = Json.Stringify(prompt);
-            return
-                "(function(){" +
-                "var text=" + literal + ";" +
-                "function fire(el){" +
-                "el.dispatchEvent(new Event('input',{bubbles:true}));" +
-                "el.dispatchEvent(new Event('change',{bubbles:true}));" +
-                "}" +
-                "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\r?\\n/g,'<br>');}" +
-                "var el=" + ComposerExpr() + ";" +
-                "if(!el){return 'none';}" +
-                "var tag=(el.tagName||'').toUpperCase();" +
-                "if(tag==='TEXTAREA'||tag==='INPUT'){" +
-                "var proto=(tag==='INPUT')?window.HTMLInputElement.prototype:window.HTMLTextAreaElement.prototype;" +
-                "var desc=Object.getOwnPropertyDescriptor(proto,'value');" +
-                "var setter=desc?desc.set:null;" +
-                "if(!setter){return 'failed:nosetter';}" +
-                "try{setter.call(el,text);}catch(e){return 'failed:setter';}" +
-                "if(el.value!==text){return 'failed:readback';}" +
-                "fire(el);" +
-                "try{el.focus();}catch(e){}" +
-                "if(el.value!==text){return 'failed:reverted';}" +
-                "return 'textarea';" +
-                "}" +
-                "try{el.focus();}catch(e){}" +
-                "try{document.execCommand('selectAll',false,null);}catch(e){}" +
-                "var ok=false;" +
-                "try{ok=document.execCommand('insertText',false,text);}catch(e){ok=false;}" +
-                "if(!ok){try{ok=document.execCommand('insertHTML',false,esc(text));}catch(e){ok=false;}}" +
-                "if(!ok){return 'failed:execCommand';}" +
-                "fire(el);" +
-                "var got=String(el.innerText||el.textContent||'').replace(/[\\s\\u200b\\u00a0]+/g,'');" +
-                "if(!got){return 'failed:empty';}" +
-                "return 'editable';" +
-                "})()";
-        }
-
-        /// <summary>
-        /// 只负责「点」发送按钮，不再在页面里伪造 KeyboardEvent（isTrusted:false，React 会忽略）；
-        /// Enter 退路由 C# 侧走 CDP 的 Input.dispatchKeyEvent。
-        /// </summary>
-        private static string BuildSendScript()
-        {
-            return
-                "(function(){" +
-                SendButtonFuncs() +
-                "var target=findSend();" +
-                "if(!target){return 'nobutton';}" +
-                "var label=labelOf(target);" +
-                "if(!isEnabled(target)){return 'disabled:'+label;}" +
-                "try{target.click();}catch(e){return 'failed:click';}" +
-                "return 'clicked:'+label;" +
-                "})()";
-        }
-
         /// <summary>发送后回读用的输入框快照。</summary>
         private sealed class ComposerState
         {

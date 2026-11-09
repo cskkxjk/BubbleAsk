@@ -1,6 +1,6 @@
 # Bubble Ask（DSH 插件）
 
-将 [Bubble Ask](../README.md) 的划词提问能力移植到 DeepSeek Harness：在会话中选中文本并点击气泡后，插件将「精简会话轨迹 + 选中文本 + 问题」注入 DeepSeek 网页版，由其解释该文本在当前会话上下文中的含义。
+将 [Bubble Ask](../README.md) 的划词提问能力移植到 DeepSeek Harness：在会话中选中文本并点击气泡后，插件将「精简会话轨迹 + 选中文本 + 问题」注入所选网页版（默认 DeepSeek，也可在气泡里切到千问 / 豆包 / ChatGPT / Gemini / Grok），由其解释该文本在当前会话上下文中的含义。导航、登录检测、注入与发送仍由桌面端完成，插件只负责整理上下文与选择服务方。
 
 与桌面端的主要差异：
 
@@ -18,7 +18,7 @@
    - 启动后它会写 `%APPDATA%\BubbleAsk\ipc.json`，其中记录了管道名与 exe 路径，插件据此找到它。
 2. 再安装本插件并重启 DSH。
 
-托盘应用没安装或没启动时，插件仍可整理上下文、复制全文，但「发送到 DeepSeek」会明确报错而不会静默失败。插件发现对端不在跑时会尝试用 `ipc.json` 里记录的路径自动拉起一次（最多等 25 秒）。
+托盘应用没安装或没启动时，插件仍可整理上下文、复制全文，但「发送到 <服务方>」会明确报错而不会静默失败。插件发现对端不在跑时会尝试用 `ipc.json` 里记录的路径自动拉起一次（最多等 25 秒）。
 
 ## 安装
 
@@ -42,21 +42,23 @@ github:<owner>/<repo>#path:/dsh-plugin
 
 ```powershell
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
-# {"ok":true,"cdpReady":true,"app":{"connected":true,...},...}   未安装时返回 404
+# {"ok":true,"cdpReady":true,"providers":[...],"app":{"connected":true,"app":"2.1.0",
+#  "providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}   未安装时返回 404
 ```
 
-`cdpReady` 现在表示「托盘应用已连通且协议版本一致」。
+`cdpReady` 表示「托盘应用已连通且协议版本一致」；`app.providerSwitchable` 为 `true` 时气泡「发到」下拉可切换 6 家，否则（桌面端 < 2.1.0）只提供 DeepSeek。真实站点是否已登录仍需按 `docs/web-providers.md` §4.1 逐家验证。
 
 ## 用法
 
 1. 在会话中选中任意一段文本（回答、工具输出或自行输入的内容均可）。
 2. 选区下方出现「💬 问这段」气泡。
 3. 气泡内可填写自定义问题；留空时注入的默认问题为「请解释这段文字在当前会话上下文中的含义。」（输入框占位符的措辞为「解释它在当前上下文中是什么意思」，与注入内容含义一致）。
-4. 点击气泡中的按钮：
-   - **发送到 DeepSeek**（默认，回车同效）：Host 经本地管道让托盘应用注入完整提问并点击发送；是否自动点发送由托盘应用的 `AutoSend` 配置决定，仅当回读确认输入框被清空时判定发送成功。成功即收起气泡，失败则在气泡内显示原因。
+4. **「发到」下拉框**选择服务方：默认沿用上次选择（本机 localStorage 记忆），首次使用取插件 `provider` 配置（默认 DeepSeek）；下拉只列当前桌面端真能发送的服务方（新桌面端从 `/bubble-ask/health` 的 `app.providers` 读取；桌面端低于 2.1.0 会忽略 `provider` 字段，因此只保留 DeepSeek）。
+5. 点击气泡中的按钮：
+   - **发送到 <服务方>**（回车同效）：Host 经本地管道让托盘应用按同一个 provider 导航、注入完整提问并点击发送；是否自动点发送由托盘应用的 `AutoSend` 配置决定，仅当回读确认输入框被清空时判定发送成功。成功即收起气泡，失败则在气泡内显示原因。
    - **复制提问**：只整理上下文、不发送，把完整提问复制到剪贴板，你自己到窗口里按 `Ctrl+V` 粘贴。
 
-发送失败时气泡会留在原地，并多出一个「复制全文」按钮 —— 那是唯一的兜底出口，不必重新划词。
+发送失败时气泡会留在原地，并多出一个「复制全文」按钮 —— 那是唯一的兜底出口，不必重新划词。切换服务方不需要重开气泡：改下拉后直接再点发送即可。
 
 ## 注入内容
 
@@ -104,9 +106,9 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ## 结构
 
 ```text
-index.js               Host 端：HTTP 路由、轨迹精简、prompt 拼装
-client.js              Client 端：选区气泡（shell.overlay）、会话 id 探针（conversation.input.dock）
-lib/ask-client.mjs     与托盘应用的通信（Windows 命名管道客户端 + 自动拉起，惰性加载）
+index.js               Host 端：HTTP 路由、轨迹精简、prompt 拼装、服务方注册表
+client.js              Client 端：选区气泡（shell.overlay，含「发到」下拉）、会话 id 探针（conversation.input.dock）
+lib/ask-client.mjs     与托盘应用的通信（Windows 命名管道客户端 + 自动拉起 + 可选 provider，惰性加载）
 cordis.patch.yml       插入 bubble-ask 条目
 ```
 
@@ -132,6 +134,7 @@ CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service
 - 租约：插件在 Host 加载时发 `attach` 持有一条长期连接，DSH 运行期间一直挂着。服务靠租约数量判断「还有没有入口」，最后一个断开后等 8 秒宽限期再退出。DSH 退出时进程消失，连接自动断开，无需任何注销。
 - 协议 `v2`：命令 `ping` / `health` / `attach` / `toggle` / `send` / `send-image` / `topmost` / `restart`。版本字段必须与 `IpcContract.ProtocolVersion` 一致，不一致直接报「版本过旧」而不是静默失败。
   插件目前只用到 `ping` / `health` / `send` / `attach`；其余命令保留在契约里供托盘与将来的客户端（CLI、其他 IDE 插件）使用。
+- 服务方：`send` 新增可选 `provider`（`deepseek` / `qwen` / `doubao` / `chatgpt` / `gemini` / `grok`）。插件总是显式带上当前选择（包括 DeepSeek），保证用户明确选了 DeepSeek 时不会因为桌面端配置了别家默认值而发错站点；桌面端低于 2.1.0 会忽略该字段、按本机配置的入口发送，插件对旧桌面端只提供 DeepSeek，选择非 DeepSeek 时也会提前拦截（不会静默发错站点）。
 - 登录态：所有客户端共用同一份持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效。
 
 ## HTTP 路由
@@ -140,9 +143,9 @@ CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service
 
 | 路由 | 作用 |
 | --- | --- |
-| `POST /bubble-ask/prompt` | `{sessionId, selection, question}` → `{prompt, url, stats}` |
-| `POST /bubble-ask/send` | 同上，但会经管道让托盘应用实际注入网页版并发送 |
-| 任意方法 `/bubble-ask/health` | 自检：托盘应用是否连通（`cdpReady`）、协议版本、profile 目录、最近的自检记录（该路由不校验方法） |
+| `POST /bubble-ask/prompt` | `{sessionId, selection, question, provider?}` → `{ok, provider, providerName, mode, prompt, url, stats}` |
+| `POST /bubble-ask/send` | 同上，但会经管道让托盘应用实际注入网页版并发送；非 DeepSeek 时先校验桌面端版本，旧版返回可复制的错误 |
+| 任意方法 `/bubble-ask/health` | 自检：托盘应用是否连通（`cdpReady`）、协议版本、profile 目录、最近的自检记录、当前/可选服务方（`provider`、`providers`、`app.*Provider*`）（该路由不校验方法） |
 | `POST /bubble-ask/diag` | Client 端上报自检记录（最多保留 40 条），可通过 `/health` 的 `diag` 字段读取 |
 
 ## 配置
@@ -151,7 +154,8 @@ CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `chatUrl` | `https://chat.deepseek.com/` | 网页版地址（仅用于展示与 `?q=` 参考；实际导航由托盘应用自己的配置决定） |
+| `provider` | `deepseek` | 默认服务方：`deepseek` / `qwen` / `doubao` / `chatgpt` / `gemini` / `grok`。气泡里的下拉框会覆盖它并按本机记忆保持 |
+| `chatUrl` | `https://chat.deepseek.com/` | 仅 DeepSeek 的入口地址覆盖（镜像/自定义入口的老配置）；其余服务方用内置注册表地址。实际导航仍由托盘应用按 provider 决定 |
 | `maxMessages` | `12` | 轨迹包含的消息条数上限 |
 | `maxCharsPerMessage` | `240` | 单条消息的截断长度 |
 | `maxTraceChars` | `2600` | 整段轨迹的字数上限 |
@@ -166,7 +170,7 @@ CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service
 | `minAssistantChars` | `60` | 助手正文短于该长度且不含路径、错误或决策时，视为过程性叙述，不进入轨迹 |
 | `appPath` | 空 | 托盘应用 exe 路径；留空时用 `%APPDATA%\BubbleAsk\ipc.json` 里记录的路径 |
 
-浏览器、CDP 端口、登录 profile、是否自动发送这些设置归属托盘应用的 `config.json`，插件不再重复配置 —— 一处配置、一处生效，避免两边漂移。
+浏览器、CDP 端口、登录 profile、是否自动发送这些设置归属托盘应用的 `config.json`，插件不再重复配置 —— 一处配置、一处生效，避免两边漂移。插件只决定「默认发到哪家 / 本次发到哪家」，不会改动桌面端的服务方设置；新桌面端（2.1.0+）下两边的可用服务方以桌面端注册表为准（插件从 `/health` 读 id 列表），旧桌面端下插件只提供 DeepSeek。
 
 ## 已知限制
 
@@ -189,10 +193,13 @@ DSH 桌面端右侧栏的 Browser（`Ctrl+T`）看起来是更省事的位置，
 
 ### 其他
 
-- **必须同时安装托盘应用**。插件自身不驱动浏览器；`BubbleAsk.exe` 未安装或未启动时，「发送到 DeepSeek」会失败并说明原因，「复制提问」仍然可用。
+- **必须同时安装托盘应用**。插件自身不驱动浏览器；`BubbleAsk.exe` 未安装或未启动时，「发送到 <服务方>」会失败并说明原因，「复制提问」仍然可用。
+- **切换服务方需要桌面端 2.1.0+**。更旧的桌面端会忽略 `send` 里的 `provider` 字段、按本机配置的入口发送（旧版插件的行为，不会静默换成 DeepSeek）；插件的下拉在旧桌面端下只显示 DeepSeek，选不到非 DeepSeek。升级桌面端后无需重启 DSH：下一次发送前会重新校验版本。
+- **旧桌面端 + 自定义入口**：桌面端 2.0.0 配置过自定义 `ChatUrl` 时，气泡标着 DeepSeek 但实际仍会发到那个自定义入口（旧行为）。需要按服务方切换时请把桌面端升级到 2.1.0+。
+- **`custom`（自定义服务方）不在插件提供**。需要自定义入口时在桌面端「设置 → 窗口与网页 → 网页版服务方」里配置，插件侧没有对应下拉项。
 - **平台限定 Windows**。通信走 Windows 命名管道，托盘应用是 WinForms 程序。macOS/Linux 上的 DSH 可以装本插件，但自动发送不可用。
 - 原生窗口是独立 OS 窗口，不会嵌入 DSH 窗口内部；它需要与 DSH 并排摆放。
-- `?q=` 传参不可靠（实测）：请求行超过 8KB 时返回 `414`（纯 ASCII 8029 字节通过，8329 字节失败）；长 prompt 生成的约 7K URL 还会稳定返回 `429`。插件因此不依赖 URL 传参（预填退路由托盘应用内部处理）。
+- `?q=` 传参不可靠（实测）：请求行超过 8KB 时返回 `414`（纯 ASCII 8029 字节通过，8329 字节失败）；长 prompt 生成的约 7K URL 还会稳定返回 `429`。插件因此不依赖 URL 传参（预填退路由托盘应用内部处理）。目前只有 DeepSeek 提供 `prefillParam`，且中文 prompt 百分号编码后通常超过 3000 的预算，所以 `prepareAsk` 实际几乎总是走 `clipboard` 兜底；真正的自动发送走管道注入，不受此影响。
 - 选区取自 DSH 页面；插件无法读取外部窗口内的选区（跨进程）。
-- 若 `lib/ask-client.mjs` 缺失，「发送到 DeepSeek」会明确报模块未就绪，「复制提问」仍然可用。
+- 若 `lib/ask-client.mjs` 缺失，「发送到 <服务方>」会明确报模块未就绪，「复制提问」仍然可用。
 - 同一时刻只允许一个操作：插件的发送与托盘自身的全局热键共用同一把 `TryBeginOperation` 锁，并发请求会被拒绝并提示稍后重试。

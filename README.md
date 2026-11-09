@@ -2,13 +2,13 @@
 
 <img src="assets/brand-256.png" width="96" align="right" alt="Bubble Ask">
 
-Windows 平台的划词问答工具。在任意程序中选中文本（或框选屏幕区域）并触发全局热键，程序在鼠标位置显示问答窗口，将内容直接提交给 DeepSeek。
+Windows 平台的划词问答工具。在任意程序中选中文本（或框选屏幕区域）并触发全局热键，程序在鼠标位置显示问答窗口，将内容直接提交给所选网页版 AI（默认 DeepSeek，也支持千问、豆包、ChatGPT、Gemini、Grok），或经 API 模式直连模型。
 
 支持两种运行模式，安装后可在设置中切换：
 
 | 模式 | 实现方式 | 适用场景 |
 | --- | --- | --- |
-| **网页版**（默认） | 驱动本机 Chromium 内核浏览器打开 chat.deepseek.com，复用已有登录状态 | 不希望消耗 API 额度；需要网页版能力 |
+| **网页版**（默认） | 驱动本机 Chromium 内核浏览器打开所选服务方（DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok），复用登录状态 | 不希望消耗 API 额度；需要网页版能力 |
 | **API** | 直连 OpenAI 兼容接口，回答以流式方式显示在自绘窗口 | 非浏览器场景；需要更换模型；需要多轮追问 |
 
 ## 项目组成
@@ -21,13 +21,13 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 | 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 | Chrome / Edge 浏览器 |
 | 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 | 任意网页划词弹出的「问这段」气泡；或工具栏图标、`Ctrl+Shift+Y` |
 | 上下文 | 选中的文字 / 截图 | 精简会话轨迹 | 当前网页的结构与文字 |
-| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端 | 无（复用浏览器自身的 DeepSeek 登录） |
+| 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端（切到非 DeepSeek 需桌面端 2.1.0+） | 无（复用浏览器自身的网页版登录） |
 
 桌面端是本仓库唯一的 CDP 实现（`ChatDriver.cs` / `CdpClient.cs`）。插件不再移植一份，而是通过本地命名管道调用桌面端，两边共用同一份持久化登录 profile —— 装一次、登一次即可。
 
 因此使用插件需要先装桌面端：**先构建并启动 `BubbleAsk.exe`，再安装插件。** 仅使用桌面端时无需安装插件；插件在桌面端未运行时仍可整理上下文与复制全文，只是无法自动发送。
 
-Chrome 扩展是唯一的例外：它不依赖桌面端，也不依赖任何本地服务 —— 它在自己的沙箱里采集页面，再把提问交给一个真实打开的 chat.deepseek.com 标签页（所以直接用你浏览器里已登录的账号）。为什么不能像普通侧边栏那样用 iframe 内嵌，见 [chrome-extension/README.md](chrome-extension/README.md#为什么要单开窗口而不是在页面里嵌一个-iframe)。
+Chrome 扩展是唯一的例外：它不依赖桌面端，也不依赖任何本地服务 —— 它在自己的沙箱里采集页面，再把提问交给一个真实打开的所选服务方标签页（默认 DeepSeek，也可选千问 / 豆包 / ChatGPT / Gemini / Grok；所以直接用你浏览器里已登录的账号）。为什么不能像普通侧边栏那样用 iframe 内嵌，见 [chrome-extension/README.md](chrome-extension/README.md#为什么要单开窗口而不是在页面里嵌一个-iframe)。
 
 ## 功能
 
@@ -46,8 +46,10 @@ Chrome 扩展是唯一的例外：它不依赖桌面端，也不依赖任何本�
 
 ### 网页版
 
-- 以 `--app` 模式启动无地址栏窗口，使用独立 profile，登录状态长期有效。
-- 通过 CDP 写入输入框、派发事件并点击发送，不依赖页面 CSP，也无需安装扩展。
+- 支持 6 家网页版服务方：DeepSeek、千问（Qwen）、豆包（Doubao）、ChatGPT、Gemini、Grok；在设置中切换，默认 DeepSeek。
+- 以 `--app` 模式启动无地址栏窗口，使用独立 profile；每家服务方首次使用登录一次，之后长期有效。
+- 通过 CDP 写入输入框、派发事件并点击发送，不依赖页面 CSP，也无需安装扩展；普通 `textarea` 与富文本编辑器（contenteditable）都支持。
+- 国际服务方（ChatGPT / Gemini / Grok）需要本机网络能访问对应站点；千问、豆包大陆可直连。
 - 截图通过文件上传通道处理：使用 CDP 将 PNG 直接写入页面的 `input[type=file]`，不经过剪贴板，且不要求窗口具有焦点；未找到上传入口时回退为剪贴板粘贴。
 - 浏览器按 Edge → Chrome → Brave → Vivaldi → Opera → Chromium 的顺序自动检测，也可在设置中指定。
 
@@ -59,7 +61,7 @@ Chrome 扩展是唯一的例外：它不依赖桌面端，也不依赖任何本�
 
 ### 设置
 
-- 设置窗口由左侧导航与右侧表单组成，覆盖模板、运行模式、截图提示词、自动发送、字数上限、窗口与气泡尺寸、置顶、热键、浏览器与 profile、调试端口及 API 参数。
+- 设置窗口由左侧导航与右侧表单组成，覆盖模板、运行模式、网页版服务方、截图提示词、自动发送、字数上限、窗口与气泡尺寸、置顶、热键、浏览器与 profile、调试端口及 API 参数。
 
 ## 构建与运行
 
@@ -88,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 首次启动后的配置步骤：
 
 1. 托盘区域出现「问」图标。
-2. **网页版**：按 `Ctrl+Alt+D` 启动浏览器窗口并打开 chat.deepseek.com，在其中完成一次登录，此后长期有效。
+2. **网页版**：在设置 →「窗口与网页」选择服务方（默认 DeepSeek），按 `Ctrl+Alt+D` 启动浏览器窗口并完成一次登录，此后长期有效；切换服务方后各自登录一次即可。
 3. **API**：托盘菜单 →「设置…」→ API 页签，选择服务方、填写 Key 并确认模型名。
 4. 在任意程序中选中文本后按 `Ctrl+Alt+Q`，或按 `Ctrl+Alt+A` 框选屏幕区域。
 
@@ -106,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
 ## DSH 插件：安装与验证
 
-插件将划词提问能力引入 DeepSeek Harness：在会话中选中文本并点击「💬 问这段」后，插件将「精简会话轨迹 + 选中文本 + 问题」注入 DeepSeek 网页版。注入内容、与桌面端的差异及限制见 [dsh-plugin/README.md](dsh-plugin/README.md)。
+插件将划词提问能力引入 DeepSeek Harness：在会话中选中文本并点击「💬 问这段」后，插件将「精简会话轨迹 + 选中文本 + 问题」注入所选网页版（气泡里的「发到」下拉可选 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok，默认 DeepSeek，并记忆上次选择）。服务方的导航、注入与发送仍由桌面端按同一个 provider 完成；选择非 DeepSeek 需要桌面端 2.1.0 或更高版本，旧桌面端下下拉只提供 DeepSeek。注入内容、与桌面端的差异及限制见 [dsh-plugin/README.md](dsh-plugin/README.md)。
 
 `dsh-plugin/` 为标准 DSH 组合包，`package.json` 同时声明：
 
@@ -118,7 +120,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ### 前置条件
 
 - 已安装 DSH，且其 Web 界面可正常打开（侧栏存在「插件」入口）。
-- 「发送到 DeepSeek」路径要求：本机已安装 Chromium 内核浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），并已登录 chat.deepseek.com。仅使用「复制提问」时无此要求。
+- 「发送到 <服务方>」路径要求：本机已安装 Chromium 内核浏览器（Edge / Chrome / Brave / Vivaldi / Opera / Chromium），并已在对应服务方网页版登录（默认 DeepSeek，可在气泡「发到」下拉切换到千问 / 豆包 / ChatGPT / Gemini / Grok）。选择非 DeepSeek 需要桌面端为 2.1.0+；旧桌面端会忽略 `provider` 字段，插件下拉只提供 DeepSeek（不会把内容发到非 DeepSeek 站点）。仅使用「复制提问」时无此要求。
 
 ### 方式一：界面安装（桌面版推荐）
 
@@ -178,14 +180,15 @@ error: profile "desktop" is managed exclusively by the Electron application
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ```
 
-安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,...}}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示托盘应用已连通且协议版本一致。
+安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.1.0","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示托盘应用已连通且协议版本一致；`providerSwitchable` 为 `true` 时气泡「发到」下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
 
-**功能验证**：在会话中选中一段回答，选区下方出现「💬 问这段」气泡；点击「复制提问」后，完整提问应已复制到剪贴板，气泡里显示「已复制 N 字」。
+**功能验证**：在会话中选中一段回答，选区下方出现「💬 问这段」气泡；点击「复制提问」后，完整提问应已复制到剪贴板，气泡里显示「已复制 N 字」。桌面端 2.1.0+ 时，气泡「发到」下拉应列出 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok；选一家发送后桌面端日志应出现对应 provider 名称与导航目标。
 
 ### 安装排查
 
 - 插件页存在条目但未生效：检查 profile 的 `cordis.patch.yml`，该条目的启用状态记录于此（插件页开关写入该文件）。
 - `health` 返回 `cdpReady:false`：托盘应用未连通。检查它是否在运行（托盘是否有图标）、`%APPDATA%\BubbleAsk\ipc.json` 是否存在，以及插件与桌面端的协议版本是否一致（版本不一致时 `app.stage` 为 `version`）。
+- `app.providers` 缺失/为 `null` 或 `providerSwitchable:false`：桌面端仍是 2.0.x（或未启动）。升级到 2.1.0+ 后无需重启 DSH，下一次发送前会自动重新校验；旧桌面端下气泡下拉只显示 DeepSeek。
 
 ### 卸载与更新
 
@@ -228,26 +231,27 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 ## Chrome 扩展：安装与使用
 
-把**当前网页**当作上下文，在右侧独立窗口里用 DeepSeek 网页版提问，复用浏览器已有的登录态，不需要 API Key，也不依赖桌面端。
+把**当前网页**当作上下文，在右侧独立窗口里用所选服务方网页版提问（DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok，默认 DeepSeek），复用浏览器已有的登录态，不需要 API Key，也不依赖桌面端。
 
 ### 安装
 
 1. 打开 `chrome://extensions`（Edge 为 `edge://extensions`），开启「开发者模式」。
 2. 点「加载已解压的扩展程序」，选择本仓库的 `chrome-extension/` 目录（或解压后的分发包目录）。
-3. 首次使用时右侧窗口会打开 chat.deepseek.com，登录一次即可长期有效。
+3. 首次使用时右侧窗口会打开所选服务方（默认 DeepSeek），登录一次即可长期有效；浏览器里已登录的服务方无需再次登录。
 
 ### 使用
 
-- **划词提问**（主用法）：任意网页选中一段文字 → 选区旁浮出「问这段」气泡 → 点它即把「页面上下文 + 这段文字 + 默认问题」发到右侧 DeepSeek 窗口。
-- 点工具栏图标：弹窗显示页面规模与选中文字，填问题后「发送到 DeepSeek」。
+- **选择服务方**：在工具栏弹窗里选 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok，记住选择并作为气泡的默认服务方。
+- **划词提问**（主用法）：任意网页选中一段文字 → 选区旁浮出「问这段」气泡 → 点它即把「页面上下文 + 这段文字 + 默认问题」发到当前所选服务方的右侧窗口。
+- 点工具栏图标：弹窗显示页面规模与选中文字，填问题后「发送到服务方」。
 - 快捷键 `Ctrl+Shift+Y`：直接以默认问题提问。
 - 「复制提问」把含完整上下文的提问复制到剪贴板。
 
-> 1.0 → 1.1 新增了划词气泡，因此多了 `<all_urls>` 主机权限：Chrome 出于安全会自动禁用扩展并要求确认，在 `chrome://extensions` 重新启用即可。气泡只在选中文字后出现，点它才读页面，不点不读。
+> 1.0 → 1.1 新增了划词气泡，因此多了 `<all_urls>` 主机权限：Chrome 出于安全会自动禁用扩展并要求确认，在 `chrome://extensions` 重新启用即可。气泡只在选中文字后出现，点它才读页面，不点不读。1.2 起支持多服务方，未新增主机权限。
 
 ### 为什么不是页内 iframe 侧栏
 
-`chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，且登录 cookie 是 `SameSite=Strict` —— 跨站 iframe 既渲染不出来、也带不上登录态。所以侧边窗口是真实的 DeepSeek 标签页（无地址栏弹窗，贴屏幕右侧），这也正是它能"免登录"的原因。细节与采集范围见 [chrome-extension/README.md](chrome-extension/README.md)。
+`chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，且登录 cookie 是 `SameSite=Strict` —— 跨站 iframe 既渲染不出来、也带不上登录态。所以侧边窗口是真实的所选服务方标签页（无地址栏弹窗，贴屏幕右侧；以 DeepSeek 为例，其他服务方同理），这也正是它能"免登录"的原因。细节与采集范围见 [chrome-extension/README.md](chrome-extension/README.md)。
 
 ## 打包分发包
 
@@ -273,12 +277,13 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `Mode` | `web` | `web` 网页版 / `api` 直连接口 |
+| `WebProvider` | `deepseek` | 网页版服务方：`deepseek` / `qwen` / `doubao` / `chatgpt` / `gemini` / `grok` / `custom` |
 | `PromptTemplate` | `什么是%s` | `%s` 为选中的文本 |
 | `ShotPrompt` | 这张截图里是什么？请解释一下。 | 截图提问时附带的问题，不使用 `%s` |
 | `AutoSend` | `true` | 关闭后仅填入不发送（网页版）/ 仅粘贴截图不发送 |
 | `MaxChars` | `2000` | 超长内容从中部省略 |
 | `HotkeySummon` / `HotkeyAsk` / `HotkeyShot` | Ctrl+Alt+D / Q / A | 格式如 `Ctrl+Shift+F2` |
-| `ChatUrl` | chat.deepseek.com | 网页版打开的地址 |
+| `ChatUrl` | chat.deepseek.com | 自定义服务方（`WebProvider=custom`）时打开的地址；预设服务方忽略此项 |
 | `WindowWidth` / `WindowHeight` | 480×720 | 网页版窗口尺寸 |
 | `TopMost` | `true` | 网页版窗口置顶 |
 | `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera → Chromium） |
@@ -298,9 +303,9 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 
 ```text
 热键 → 取词 / 截图
-  ├─ 网页版
-  │    浏览器 --app（独立 profile，已登录）
-  │    └ CDP：写入输入框 → 点击发送
+  ├─ 网页版（DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok，设置中切换）
+  │    浏览器 --app（独立 profile，每家首次登录一次）
+  │    └ CDP：写入输入框 → 按服务方规则点击发送 / 回车兜底
   │          截图：setFileInputFiles 写入 file input（无上传入口时回退剪贴板粘贴）
   │          发送未获确认 → 回退为 ?q= 预填链接（仅填入不发送；仅当填入/点击本身失败才回退）
   └─ API
@@ -346,10 +351,12 @@ src/
     Logger.cs / Json.cs
     IpcContract.cs    命名管道契约：协议版本、管道名、发现文件、连接与存活判断
     EngineClient.cs   客户端侧：按需拉起服务、发命令、持有租约
+    WebProviders.cs   网页版服务方注册表（URL / 选择器 / 发送与校验规则）
   engine/             网页版驱动（只编译进服务身份，ui 不得引用）
+    PageScripts.cs    把服务方选择器拼成注入页面的 JS（查找/填充/发送/诊断）
     EdgeHost.cs       启动、定位与置顶浏览器窗口（Edge / Chrome / Brave 等）
     CdpClient.cs      WebSocket 与 CDP
-    ChatDriver.cs     网页版：注入、发送、图文、回退路径
+    ChatDriver.cs     网页版：按服务方注入、发送、图文、回退路径
   service/            --service 身份：唯一持有引擎的进程
     Program.cs        静默单实例、租约驱动退出、宽限期
     PipeServer.cs     管道协议：命令分发、并发闸门、进程内鉴权
@@ -370,19 +377,21 @@ src/
   app.manifest        DPI 感知与管理员权限声明
 build.ps1             构建脚本（csc，无需 SDK）
 pack.ps1              打包脚本（三个交付物各一个 zip）
+docs/web-providers.md 网页版多服务方矩阵、架构与实机验证清单
 
 dsh-plugin/           DSH 插件（Node 包）
-  index.js            Host 端：轨迹精简、prompt 拼装、HTTP 路由
-  client.js           Client 端：选区气泡与会话探针
-  lib/ask-client.mjs  与桌面端服务的命名管道通信
+  index.js            Host 端：轨迹精简、prompt 拼装、HTTP 路由、服务方注册表
+  client.js           Client 端：选区气泡（「发到」下拉）与会话探针
+  lib/ask-client.mjs  与桌面端服务的命名管道通信（可带 provider）
 
 chrome-extension/     Chrome / Edge 扩展（MV3）
   manifest.json       权限与入口声明
-  background.js       调度：采集 → 拼提问 → 交给 DeepSeek 侧边窗口
+  background.js       调度：采集 → 拼提问 → 交给所选服务方侧边窗口
+  lib/providers.js    服务方注册表（DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok）
   lib/prompt.js       页面上下文 → 提问文本（纯函数）
   content/collect.js  页面结构与文字采集（隔离世界执行）
-  content/deepseek-bridge.js  在 chat.deepseek.com 内填入并发送、回读确认
-  popup/              工具栏弹窗（预览 + 提问 + 复制）
+  content/chat-bridge.js  在所选服务方页面内填入并发送、回读确认
+  popup/              工具栏弹窗（服务方选择 + 预览 + 提问 + 复制）
 ```
 
 ## 测试
@@ -390,6 +399,7 @@ chrome-extension/     Chrome / Edge 扩展（MV3）
 `build.ps1 -Test` 返回 0 表示全部通过。覆盖范围：
 
 - JSON 解析、模板拼装（含截图模板）、热键解析（含「无修饰键必须拒绝」）、配置往返（含 `BrowserPath` 与旧 `EdgePath` 迁移）
+- 网页版服务方注册表：6 家 provider 完整性、默认/自定义解析、未知回退、配置往返（含 `WebProvider`）、脚本生成含服务方选择器
 - 浏览器自动检测：本机识别、可执行文件名反查 id、显式路径 / 空路径的解析、按浏览器隔离 profile 目录（「不存在的路径」断言仅在未检测到任何浏览器时执行）
 - 服务方预设解析、接口地址补全、请求体结构（文本 / 图片 data URL）、图片等比缩小
 - SSE 增量解析、推理字段、`[DONE]`、非流式回退、HTTP 错误翻译（401 / 404 有断言，400 / 402 / 403 / 413 / 422 / 429 的分支实现存在但未被测试覆盖）
@@ -404,12 +414,21 @@ chrome-extension/     Chrome / Edge 扩展（MV3）
 .\dist\BubbleAsk.Tests.exe --capture   # 框选后输出 SAVED <png>；Esc 或单击取消输出 CANCELLED
 ```
 
+网页版选择器实机校准（会打开对应服务方页面，需要已登录）：
+
+```powershell
+.\dist\BubbleAsk.Tests.exe --probe qwen   # 输出候选输入框/发送按钮信息；providerId 见 docs/web-providers.md
+```
+
 ## 已知限制
 
 - 桌面端仅支持 Windows，依赖 Win32 热键、剪贴板与 Chromium 内核浏览器。
-- 网页版依赖 Chromium 的 `--app` 与 CDP；浏览器大版本更新或 chat.deepseek.com 改版后可能需要调整选择器。
+- 网页版依赖 Chromium 的 `--app` 与 CDP；浏览器大版本更新或各服务方页面改版后可能需要调整选择器。
+- 网页版 6 家服务方中，除 DeepSeek 外均未在本仓库开发环境实机登录验证：选择器按公开页面特征 + 通用兜底实现，改版/风控失败时会如实报告阶段（不会谎报成功），可按 [docs/web-providers.md](docs/web-providers.md) 的清单校准。
+- ChatGPT / Gemini / Grok 需本机网络可达对应站点；消费级网页版自动化可能违反服务条款、账号有被限制风险，建议仅人工触发、单次使用，重活走 API。
 - 网页版取词依赖目标程序支持 `Ctrl+C`；截图上传依赖页面存在 `input[type=file]` 或可识别的上传按钮。
 - Chrome 扩展只支持 Chromium 内核浏览器；`chrome://` 等内置页面、PDF 预览页与跨域 iframe 内的内容读不到。
-- 三个交付物都要面对 chat.deepseek.com 改版：发送按钮按 `ds-button--primary` + `ds-button--circle` 结构化匹配，改版后可能需要调整；失败时会如实报告阶段，不会谎报成功。
+- 三个交付物都要面对各服务方改版：DeepSeek 发送按钮按 `ds-button--primary` + `ds-button--circle` 结构化匹配，其它服务方按 provider 配置的按钮/文案规则匹配，改版后可能需要调整；失败时会如实报告阶段，不会谎报成功。
+- 旧桌面端（< 2.1.0）不识别 IPC 的 `provider` 字段：DSH 插件在旧桌面端下只提供 DeepSeek；若旧桌面端配置了自定义 `ChatUrl`，气泡显示 DeepSeek 但实际仍按那个自定义入口发送（升级桌面端到 2.1.0+ 即可按服务方切换）。
 - API 模式将图片重新编码为 PNG 并将长边压缩至 1400px，超长截图会损失细节。
 - 沙箱或远程桌面环境可能拦截浏览器调试端口；纯 API 模式不受影响。

@@ -84,7 +84,7 @@ namespace BubbleAsk
             menu.Items.Add(new ToolStripMenuItem("截图提问  (" + _config.HotkeyShot + ")", null,
                 delegate { AskScreenshot(); }));
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("重启 Edge 会话", null, delegate { RestartSession(); }));
+            menu.Items.Add(new ToolStripMenuItem("重启浏览器会话", null, delegate { RestartSession(); }));
             menu.Items.Add(new ToolStripMenuItem("打开日志", null, delegate { OpenLog(); }));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("退出", null, delegate { ExitApp(); }));
@@ -139,6 +139,8 @@ namespace BubbleAsk
                     return;
                 }
                 Log.Info("服务使用的浏览器: " + browser + "，profile: " + Json.GetString(health, "profileDir", ""));
+                Log.Info("网页版服务方: " + Json.GetString(health, "currentProviderName", "")
+                    + "（" + Json.GetString(health, "currentProvider", "") + "）");
             }
             catch (Exception error)
             {
@@ -215,7 +217,7 @@ namespace BubbleAsk
                 }
                 try
                 {
-                    bool closed = await _engine.ToggleAsync();
+                    bool closed = await _engine.ToggleAsync(_config.WebProvider, CustomUrlOrNull());
                     if (closed)
                     {
                         Log.Info("网页版窗口已收起");
@@ -271,7 +273,7 @@ namespace BubbleAsk
 
                 try
                 {
-                    bool ok = await _engine.AskAsync(prompt);
+                    bool ok = await _engine.AskAsync(prompt, _config.WebProvider, CustomUrlOrNull());
                     if (!ok)
                     {
                         Balloon("没能自动发送",
@@ -328,7 +330,7 @@ namespace BubbleAsk
 
                 try
                 {
-                    bool ok = await _engine.AskWithImageAsync(path, prompt);
+                    bool ok = await _engine.AskWithImageAsync(path, prompt, _config.WebProvider, CustomUrlOrNull());
                     if (!ok)
                     {
                         Balloon("截图没能自动发出",
@@ -354,6 +356,20 @@ namespace BubbleAsk
         private bool IsApiMode()
         {
             return string.Equals(_config.Mode, "api", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 「自定义」服务方的地址要随请求带给服务端（服务端进程里的配置可能还没重载，见 HANDOVER 已知项）；
+        /// 预设服务方的入口地址由服务端按 id 解析，返回 null 即可。
+        /// 这样设置页切服务方后，下一次热键立即生效，不依赖服务端重读配置。
+        /// </summary>
+        private string CustomUrlOrNull()
+        {
+            if (string.Equals(_config.WebProvider, WebProviders.CustomId, StringComparison.OrdinalIgnoreCase))
+            {
+                return _config.ChatUrl;
+            }
+            return null;
         }
 
         private static void TryDelete(string path)
@@ -386,8 +402,12 @@ namespace BubbleAsk
                     _config.Save();
                     RebindHotkeys();
                     _engine.ApplyTopMost();
+                    // 服务端进程里的配置只在启动时读一次，切换服务方靠 IPC 的 provider 字段即时生效；
+                    // 这里记一行日志，排查「设置改了没生效」时能看到当时的配置值。
+                    WebProvider selected = WebProviders.FromConfig(_config);
+                    Log.Info("设置已保存：网页版服务方=" + selected.Id + "（" + selected.Name + "），地址=" + selected.Url);
                     // 窗口尺寸/调试端口/浏览器 这些要等下次拉起浏览器才生效，别一律说"已生效"。
-                    Balloon("设置已保存", "热键立即生效；窗口尺寸、调试端口、浏览器改动会在下次打开网页窗口时生效。");
+                    Balloon("设置已保存", "热键立即生效；网页版服务方会在下次打开网页窗口时切换；窗口尺寸、调试端口、浏览器改动会在下次拉起浏览器时生效。");
                 }
             }
             _settingsForm = null;
@@ -398,7 +418,7 @@ namespace BubbleAsk
             try
             {
                 _engine.Restart();
-                Balloon("会话已重启", "下次提问会重新拉起 Edge。");
+                Balloon("会话已重启", "下次提问会重新拉起浏览器。");
             }
             catch (Exception error)
             {

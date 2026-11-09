@@ -16,8 +16,8 @@ namespace BubbleAsk
         /// <summary>协议版本。任一端不一致就明确报错，不要"尽量兼容"。</summary>
         public const int ProtocolVersion = 2;
 
-        /// <summary>服务版本。</summary>
-        public const string AppVersion = "2.0.0";
+        /// <summary>服务版本（桌面端功能版本；pack.ps1 从这里读分发包版本号）。</summary>
+        public const string AppVersion = "2.1.0";
 
         /// <summary>服务模式的命令行开关：同一个 exe，带这个参数就不进界面。</summary>
         public const string ServiceSwitch = "--service";

@@ -14,6 +14,11 @@
       </div>
     </header>
 
+    <section class="provider-row">
+      <label class="label" for="provider">发送到</label>
+      <select id="provider"></select>
+    </section>
+
     <section id="summary-row" class="muted" hidden>
       <span id="summary"></span>
     </section>
@@ -29,18 +34,18 @@
     </section>
 
     <section class="actions">
-      <button id="send" class="primary">发送到 DeepSeek</button>
+      <button id="send" class="primary">发送到选中的服务方</button>
       <button id="copy">复制提问</button>
     </section>
 
     <section class="actions secondary">
-      <button id="open-window">打开 DeepSeek 窗口</button>
+      <button id="open-window">打开该服务方窗口</button>
     </section>
 
     <p id="status" class="muted"></p>
 
     <footer class="muted">
-      侧边窗口是真实的 chat.deepseek.com 标签页，直接复用浏览器已登录的账号。关掉它之后，再发送或点上面的按钮都会重新打开。
+      每家服务方一个独立的右侧窗口，只复用它自己开的窗口，不会占用你已有的标签页。关掉窗口后再发送或点上面的按钮都会重新打开；某家首次使用需在窗口里登录一次。
     </footer>
 
     <script type="module" src="popup.js"></script>
