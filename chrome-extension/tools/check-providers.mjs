@@ -66,8 +66,20 @@ const manifestPath = path.join(extRoot, 'manifest.json')
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 record('manifest.json 可解析', `version=${manifest.version}`)
 assert.equal(manifest.manifest_version, 3, 'manifest_version 必须是 3')
-assert.equal(manifest.version, '1.2.0', '版本应为 1.2.0（多服务方）')
+assert.match(manifest.version, /^\d+\.\d+\.\d+$/, `manifest 版本应是 x.y.z，实际 ${manifest.version}`)
 assert.ok(!/deepseek-bridge\.js/.test(readFileSync(manifestPath, 'utf8')), 'manifest 不应再引用 deepseek-bridge.js')
+
+// 三件产物统一版本号：扩展 manifest / 插件 package.json / 桌面端 IpcContract.AppVersion 必须一致。
+// 以前三个号各自演进，用户要记三套；统一后由这条断言守住，忘了同步会直接失败。
+const repoRootForVersion = path.resolve(extRoot, '..')
+const pluginPkg = JSON.parse(readFileSync(path.join(repoRootForVersion, 'dsh-plugin', 'package.json'), 'utf8'))
+const ipcSource = readFileSync(path.join(repoRootForVersion, 'src', 'shared', 'IpcContract.cs'), 'utf8')
+const appVersionMatch = /AppVersion\s*=\s*"([^"]+)"/.exec(ipcSource)
+assert.ok(appVersionMatch, '没找到 IpcContract.AppVersion')
+const appVersion = appVersionMatch[1]
+assert.equal(manifest.version, pluginPkg.version, `版本不一致：扩展 ${manifest.version} vs 插件 ${pluginPkg.version}`)
+assert.equal(manifest.version, appVersion, `版本不一致：扩展 ${manifest.version} vs 桌面端 ${appVersion}`)
+record('三端版本一致', `统一为 ${manifest.version}`)
 
 // 0) 生成物必须与唯一真源一致（漂移检查）
 const repoRoot = path.resolve(extRoot, '..')

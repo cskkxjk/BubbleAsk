@@ -196,7 +196,7 @@ src/tests/
 - **登录检测**：`LoginMarkers` 是 URL 片段（`login` / `signin` / `accounts.google.com` 等），命中时日志提示「先登录一次」；不做 DOM 登录态判断。
 - **实机校准**：`dist\BubbleAsk.Tests.exe --probe qwen` 会真实打开该站点并输出候选 composer/发送按钮 JSON（`loginLikely`、`composerCandidates`、`sendCandidates`、`buttons`），照着输出改 `shared/providers.json`（再跑生成器）即可。
 
-### 4.3 DSH 插件多服务方（2026-11，插件 2.2.0）
+### 4.3 DSH 插件多服务方（2026-11，插件 2.3.0）
 
 插件不再固定 DeepSeek：气泡里新增「发到」下拉，可切换 6 家（默认 DeepSeek）。实现只做**选择与解析**，导航/登录检测/注入/发送仍复用桌面端：
 
@@ -207,7 +207,7 @@ src/tests/
 | `dsh-plugin/lib/ask-client.mjs` | `sendPrompt` 的 payload 带 `provider` / `providerUrl`（Host 总是传当前选择，旧桌面端忽略未知字段） |
 
 - 配置：`provider` 默认 `deepseek`；`chatUrl` 只影响 DeepSeek 的兜底地址，其余服务方用注册表 URL。`custom` 不提供（桌面端设置里配）。
-- 兼容：插件 2.2.0 仍兼容桌面端 2.1.x；桌面端 < 2.1.0 时插件下拉只提供 DeepSeek（旧桌面端忽略 `provider` 字段、按本机配置入口发送），若仍构造出非 DeepSeek 请求则 `old-app` 拒绝并给「复制全文」逃生，不会静默发到 DeepSeek。
+- 兼容：插件 2.3.0 仍兼容桌面端 2.1.x；桌面端 < 2.1.0 时插件下拉只提供 DeepSeek（旧桌面端忽略 `provider` 字段、按本机配置入口发送），若仍构造出非 DeepSeek 请求则 `old-app` 拒绝并给「复制全文」逃生，不会静默发到 DeepSeek。
 - 测试：`node --check` 三文件；离线断言 `.tmp-selftest/provider-test.mjs` 10 项 ALL PASS（含与 `WebProviders.cs` id 列表一致性）。真实站点仍未实测。
   注册表已收敛到 `shared/providers.json` 单一真源：漂移由 `node tools/gen-providers.mjs --check` 与
   扩展 `tools/check-providers.mjs` 双处守卫，桌面端自测断言 `provider source loads/order` 与通用兜底来源。

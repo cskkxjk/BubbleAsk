@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-bubble-ask",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "description": "划词提问：把精简会话轨迹作为上下文注入网页版（默认 DeepSeek，可选千问/豆包/ChatGPT/Gemini/Grok），解释选中文字在当前会话中的含义",
