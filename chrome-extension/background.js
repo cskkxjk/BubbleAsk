@@ -373,7 +373,15 @@ async function ensureProviderWindow(provider, options) {
  * reject，catch 从未执行 —— 注入兜底是死代码。现在改为**显式判断 pong 为空**：
  * 第一次拿不到回复就注入 content/chat-bridge.js 再继续重试。
  */
-async function ensureBridge(tabId, provider, attempts = 60) {
+/**
+ * 确保服务方页面里有可用的执行器。
+ *
+ * 重试节奏（2026-11-10 调整）：以前是 60×250ms ≈ 15s + 再 24 次 ≈ 6s 才去重建窗口，
+ * 用户侧表现为「点了没反应、卡一会儿」后才好。现在 12 次（≈3s）就重建，
+ * 因为「页面缺执行器」几乎只有两种情况：页面还没加载完（3s 足够）、或标签页是
+ * 扩展更新前就开着的（内容脚本已失效，等再久也不会自己出现）。
+ */
+async function ensureBridge(tabId, provider, attempts = 12) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const pong = await sendToTab(tabId, { type: 'BA_PING', provider, generic: GENERIC_CONFIG }, 3000)
     if (pong && pong.ok) return true
@@ -382,8 +390,13 @@ async function ensureBridge(tabId, provider, attempts = 60) {
         log('当前浏览器不支持脚本注入（如 Maxthon），只能等页面自然加载内容脚本')
       } else {
         try {
-          await chrome.scripting.executeScript({ target: { tabId }, files: ['content/chat-bridge.js'] })
-          log('已注入执行器', provider.id, tabId)
+          // 必须连 driver.js 一起注入：chat-bridge 依赖它提供的 __bubbleAskDriver。
+          // 只注 chat-bridge 会得到「有执行器但没驱动」的僵尸状态，ping 永远不就绪。
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content/driver.js', 'content/chat-bridge.js'],
+          })
+          log('已注入执行器（driver + chat-bridge）', provider.id, tabId)
         } catch (error) {
           log('注入执行器失败', error && error.message ? error.message : error)
         }
@@ -472,7 +485,7 @@ async function ask(tabId, question, selectionOverride, providerParam) {
   if (!ready) {
     // 失败重试一次（页面可能还在加载），仍不行才重建窗口。
     log('执行器没就绪，重试一次', provider.id, target.tabId)
-    ready = await ensureBridge(target.tabId, provider, 24)
+    ready = await ensureBridge(target.tabId, provider, 8)
   }
   if (!ready) {
     log('执行器始终没就绪，重建窗口', provider.id)

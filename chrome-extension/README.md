@@ -115,6 +115,10 @@ AI 服务方站点本身不注入采集气泡（`manifest.json` 的 `exclude_mat
 
 16px 单独画一份不是洁癖：把细节多的图直接缩小必然糊成一团，小尺寸要的是**更粗的轮廓**而不是更多细节。
 
+![各尺寸一览](https://github.com/cskkxjk/BubbleAsk/raw/main/assets/brand-sizes.png)
+
+上图由 `tools/make-brand.py` 生成（`python tools/make-brand.py`，母图同上），浅灰行/深色行分别是工具栏与深色主题下的观感。仓库根 `assets/brand-256.png`（README 页头 logo）也出自同一脚本 —— 这两个文件以前是手工做的，换图标时忘了同步，现在可一键重出。这里用绝对链接是因为本文件会被打进扩展包，相对路径在包里会断。
+
 ## 与另外两个交付物的关系
 
 | | 桌面端 `BubbleAsk.exe` | DSH 插件 | 本扩展 |

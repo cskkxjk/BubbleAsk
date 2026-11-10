@@ -239,7 +239,7 @@
       fill: '没填进去',
       error: '失败',
     }
-    const label = labels[stage] || '失败'
+    const label = labels[stage] || (stage ? `失败(${stage})` : '失败')
     return { label, detail: detail ? `${stage || 'error'}：${detail}` : stage || '未知原因' }
   }
 
