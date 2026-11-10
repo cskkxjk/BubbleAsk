@@ -156,7 +156,6 @@ function main() {
     console.error(`找不到真源：${sourcePath}`)
     process.exit(2)
   }
-
   let raw
   try {
     raw = JSON.parse(readFileSync(sourcePath, 'utf8'))
@@ -179,6 +178,17 @@ function main() {
   targets.push({
     path: join(root, 'dsh-plugin', 'lib', 'providers.data.js'),
     content: buildPluginModule(raw),
+  })
+
+  // 页面驱动也是共享真源：桌面端走 CDP 内嵌注入，扩展需要它在自己包内当 content script。
+  const driverPath = join(root, 'shared', 'driver.js')
+  if (!existsSync(driverPath)) {
+    console.error(`找不到页面驱动真源：${driverPath}`)
+    process.exit(2)
+  }
+  targets.push({
+    path: join(root, 'chrome-extension', 'content', 'driver.js'),
+    content: `${BANNER('Chrome 扩展')}\n\n${readFileSync(driverPath, 'utf8')}`,
   })
 
   let drifted = 0

@@ -180,11 +180,13 @@ src/tests/
 | 文件 | 职责 |
 | --- | --- |
 | `shared/providers.json` | **唯一真源**：6 家定义 + 通用兜底 + `overrides.<host>` |
-| `tools/gen-providers.mjs` | 由真源生成扩展/插件的数据模块；`--check` 只校验漂移 |
+| `shared/driver.js` | **唯一页面驱动**：找输入框/填充/找发送键/点击/回读/诊断。桌面端 CDP 注入，扩展当 content script |
+| `tools/gen-providers.mjs` | 由真源生成扩展/插件的数据模块并同步 driver.js；`--check` 只校验漂移 |
 | `src/shared/ProviderData.cs` | 读取内嵌真源（`Json` 封装解析），应用 `overrides.desktop` |
+| `src/shared/DriverScript.cs` | 读取内嵌 `driver.js` |
 | `src/shared/WebProviders.cs` | 注册表**用法**：`WebProvider` 数据模型 + `custom`；`Resolve(id, chatUrl)`、`IsKnown`、`NormalizeId`、`InferLegacyProvider`、`MatchesUrl`、`IsLoginUrl`、`BuildAskUrl`（URL 预填） |
-| `src/engine/PageScripts.cs` | 把 provider 的选择器拼成注入页面的 JS：输入框（provider CSS → 可见通用兜底）、发送按钮（provider CSS → class 特征 → aria/文案 → 输入框附近最后一个纯图标按钮 → 历史兜底）、注入/回读/聚焦、`--probe` 诊断脚本；通用兜底与发送文案也取自真源 |
-| `src/engine/ChatDriver.cs` | 窗口单实例（同一 profile、同一个 `--app` 窗口）；换服务方时用 CDP 导航到 `provider.Url`，登录 cookie 保留；所有 URL/选择器/预填/Enter 兜底从 provider 取 |
+| `src/engine/PageScripts.cs` | 拼装注入脚本：driver 源码 + 服务方配置 JSON + 一次调用表达式（原 399 行拼字符串逻辑已删除） |
+| `src/engine/ChatDriver.cs` | 窗口单实例（同一 profile、同一个 `--app` 窗口）；换服务方时用 CDP 导航到 `provider.Url`，登录 cookie 保留；所有 URL/选择器/预填从 provider 取（Enter 兜底已全站关闭） |
 | `src/shared/AppConfig.cs` | 新增 `WebProvider`（默认 `deepseek`）；`ChatUrl` 仅 custom 使用；老配置没有该字段时按 ChatUrl 推断（能对上预设域名算那家，否则 custom） |
 | `src/ui/SettingsForm.cs` | 「窗口与网页」页新增「网页版服务方」下拉；选预设回填并锁住地址框，选自定义可编辑 |
 | `src/tests/TestProgram.cs` | provider 注册表/解析/迁移/脚本生成断言；`--probe <id>` 实机诊断 |

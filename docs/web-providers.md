@@ -89,9 +89,12 @@ src/shared/ProviderData.cs            ← 桌面端读取器：JSON 以**内嵌�
 ### 2.2 桌面端
 
 ```text
-src/shared/WebProviders.cs   注册表（6 家 + custom）；字段解析、旧配置迁移
-src/engine/PageScripts.cs    把 provider 选择器拼成注入页面的 JS（查找/填充/发送/诊断）
-src/engine/ChatDriver.cs     所有 URL/选择器/发送/校验/prefill 从 provider 取
+shared/providers.json        注册表真源（6 家 + custom 相关常量）；编译时内嵌
+shared/driver.js             页面驱动真源（找输入框/填充/找发送键/点击/回读/诊断）；编译时内嵌
+src/shared/ProviderData.cs   读取内嵌 providers.json（应用 overrides.desktop）
+src/shared/DriverScript.cs   读取内嵌 driver.js
+src/engine/PageScripts.cs    拼装：driver 源码 + cfg JSON + 一次调用表达式
+src/engine/ChatDriver.cs     窗口/导航/发送编排；所有 URL 与选择器从 provider 取
 src/engine/EdgeHost.cs       --app=<provider.url>，单窗口单 profile
 src/service/PipeServer.cs    send/send-image/toggle 接受可选 provider（不带时按本机配置的当前服务方）
 src/service/PipeHost.cs      按 provider 解析后调用 ChatDriver
@@ -99,7 +102,7 @@ src/shared/EngineClient.cs   客户端方法带 providerId / providerUrl
 src/shared/AppConfig.cs      WebProvider 字段（默认 deepseek；custom 时用 ChatUrl）
 src/ui/SettingsForm.cs       「网页版服务方」下拉
 src/ui/TrayContext.cs        热键/托盘操作传入当前 WebProvider
-src/tests/TestProgram.cs     provider 注册表/解析/脚本生成自测；--probe 诊断
+src/tests/TestProgram.cs     provider 注册表/解析/脚本拼装自测；--probe 诊断
 ```
 
 窗口策略：**同一 profile、同一 app 窗口**。切换服务方时通过 CDP 导航到目标 URL；登录 cookie 保留在 profile 中，所以每家只需首次登录一次。不支持同一时刻并行打开多家窗口（后续如需要再扩展）。
@@ -111,11 +114,18 @@ IPC 兼容：请求里 `provider` 为可选字段；不带时服务端按本机�
 ### 2.3 Chrome 扩展
 
 ```text
-chrome-extension/lib/providers.js   注册表（ES module）
-chrome-extension/content/chat-bridge.js  通用执行器（按消息里的 provider 配置工作）
-chrome-extension/background.js      按 provider 管理窗口/标签页、拼 prompt、发消息
+shared/driver.js                    页面驱动真源（与桌面端同一份）
+tools/gen-providers.mjs             生成注册表数据 + 把 driver.js 同步进扩展
+chrome-extension/lib/providers.js   注册表查询函数（数据见 providers.data.js）
+chrome-extension/content/driver.js  生成物：driver.js 的副本（content script，先于 chat-bridge 加载）
+chrome-extension/content/chat-bridge.js  适配层：消息收发 + 等待重试 + 阶段判定（约 150 行）
+chrome-extension/background.js      按 provider 管理窗口/标签页、拼 prompt、发消息（含通用兜底）
 chrome-extension/popup/*            服务方下拉 + 默认服务方
 ```
+
+**页面动作只有一份实现**：`shared/driver.js`。桌面端用 CDP 注入它，扩展把它当 content script；
+`chat-bridge.js` 只负责「等输入框 → 调 driver → 把结果翻成 stage」。
+合并前扩展有 390 行自己的 DOM 逻辑、C# 另有 399 行拼字符串的等价实现，两边并行维护。
 
 窗口策略：**每个服务方一个扩展自己创建的右侧弹窗**，窗口 id 记录在扩展存储里；只复用自己创建的窗口，**不会劫持用户自己打开的标签页**。首次使用某服务方时若未登录，气泡/弹窗会提示在该窗口内登录一次；登录态来自用户浏览器 profile，登录一次后长期有效。
 
@@ -138,11 +148,14 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 总是把当前选�
 ## 3. 新增/调整服务方
 
 1. 在 `shared/providers.json` 里加/改一条（id/name/url/origins/选择器），需要按宿主差异时用 `overrides`。
-2. 跑 `node tools/gen-providers.mjs` 生成扩展与插件的数据模块，再跑 `--check` 确认无漂移。
+2. 跑 `node tools/gen-providers.mjs` 生成扩展与插件的模块（同时同步 `shared/driver.js`），再跑 `--check` 确认无漂移。
 3. 若入口域名变化，同步改扩展 `manifest.json` 的 `host_permissions` / content script `matches`
    （`check-providers.mjs` 会断言二者覆盖注册表）。
 4. 跑桌面端 `--probe <id>` 与实机验证清单，按输出补选择器。
 5. 更新本文档矩阵与「验证日期」。
+
+若某个站点的页面结构特殊到通用驱动处理不了，改的是 `shared/driver.js` —— 改一处两端同时生效，
+不需要再分别改 C# 与扩展。
 
 > 2026 年改版很频繁：通义千问→千问（3 月）、百度文心三入口合并（6 月）、豆包上线付费版（6 月）、海螺转视频、跃问→阶跃 AI；入口与选择器要按数据驱动方式维护，不要写死在代码里。
 

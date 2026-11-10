@@ -15,10 +15,21 @@
 import { buildPrompt, DEFAULT_QUESTION, DEFAULT_QUESTION_NO_SELECTION, CONTEXT_BUDGET, describeContext } from './lib/prompt.js'
 import {
   DEFAULT_PROVIDER_ID,
+  GENERIC_COMPOSER_SELECTORS,
+  GENERIC_SEND_ARIA_LABELS,
   PROVIDER_STORAGE_KEY,
   isProviderUrl,
   resolveProvider,
 } from './lib/providers.js'
+
+/**
+ * 内容脚本不 import 任何模块（MV3 限制），通用兜底要随消息一起发过去。
+ * 数据同样来自真源 shared/providers.json（经 providers.data.js）。
+ */
+const GENERIC_CONFIG = {
+  composerSelectors: GENERIC_COMPOSER_SELECTORS,
+  sendAriaLabels: GENERIC_SEND_ARIA_LABELS,
+}
 
 const RESULT_KEY = 'lastResult'
 /** 各服务方窗口的记录：{ [providerId]: { windowId, tabId, at } }。 */
@@ -364,7 +375,7 @@ async function ensureProviderWindow(provider, options) {
  */
 async function ensureBridge(tabId, provider, attempts = 60) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const pong = await sendToTab(tabId, { type: 'BA_PING', provider }, 3000)
+    const pong = await sendToTab(tabId, { type: 'BA_PING', provider, generic: GENERIC_CONFIG }, 3000)
     if (pong && pong.ok) return true
     if (attempt === 0) {
       if (typeof chrome.scripting === 'undefined') {
@@ -478,7 +489,7 @@ async function ask(tabId, question, selectionOverride, providerParam) {
     }
   }
 
-  const reply = await sendToTab(target.tabId, { type: 'BA_ASK', prompt, provider }, 120000)
+  const reply = await sendToTab(target.tabId, { type: 'BA_ASK', prompt, provider, generic: GENERIC_CONFIG }, 120000)
   const result = reply || {
     ok: false,
     stage: 'unverified',

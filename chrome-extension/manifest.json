@@ -64,7 +64,7 @@
         "https://*.grok.com/*",
         "https://*.x.com/*"
       ],
-      "js": ["content/chat-bridge.js"],
+      "js": ["content/driver.js", "content/chat-bridge.js"],
       "run_at": "document_idle",
       "all_frames": false
     },

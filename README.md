@@ -353,8 +353,9 @@ src/
     EngineClient.cs   客户端侧：按需拉起服务、发命令、持有租约
     WebProviders.cs   网页版服务方注册表（数据模型 + 查询/解析；**数据来自 shared/providers.json**）
     ProviderData.cs   读取内嵌的 shared/providers.json（唯一真源，编译时 /resource 打入）
+    DriverScript.cs   读取内嵌的 shared/driver.js（页面驱动真源，同样 /resource 打入）
   engine/             网页版驱动（只编译进服务身份，ui 不得引用）
-    PageScripts.cs    把服务方选择器拼成注入页面的 JS（查找/填充/发送/诊断）
+    PageScripts.cs    拼装注入脚本：driver 源码 + 服务方配置 JSON + 一次调用表达式
     EdgeHost.cs       启动、定位与置顶浏览器窗口（Edge / Chrome / Brave 等）
     CdpClient.cs      WebSocket 与 CDP
     ChatDriver.cs     网页版：按服务方注入、发送、图文、回退路径
@@ -391,7 +392,8 @@ chrome-extension/     Chrome / Edge 扩展（MV3）
   lib/providers.js    服务方注册表的查询函数（数据见 lib/providers.data.js，由真源生成）
   lib/prompt.js       页面上下文 → 提问文本（纯函数）
   content/collect.js  页面结构与文字采集（隔离世界执行）
-  content/chat-bridge.js  在所选服务方页面内填入并发送、回读确认
+  content/driver.js   生成物：shared/driver.js 的副本（页面动作由它与桌面端共用）
+  content/chat-bridge.js  适配层：消息收发 + 等待重试 + 阶段判定
   popup/              工具栏弹窗（服务方选择 + 预览 + 提问 + 复制）
 ```
 

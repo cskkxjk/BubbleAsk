@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$Test,
     [switch]$Clean
 )
@@ -12,6 +12,11 @@ $manifest = Join-Path $srcDir 'app.manifest'
 $providerData = Join-Path $root 'shared\providers.json'
 if (-not (Test-Path $providerData)) {
     throw "Missing provider source: $providerData"
+}
+# 页面驱动（与 Chrome 扩展共用的唯一实现），同样内嵌进 exe。
+$driverScript = Join-Path $root 'shared\driver.js'
+if (-not (Test-Path $driverScript)) {
+    throw "Missing driver source: $driverScript"
 }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -110,6 +115,7 @@ function Build-Target {
     }
     # 内嵌真源：保持单 exe，运行时从 ManifestResourceStream 读，不额外落文件
     $lines.Add("/resource:`"$providerData`",BubbleAsk.providers.json")
+    $lines.Add("/resource:`"$driverScript`",BubbleAsk.driver.js")
     foreach ($source in $Sources) {
         $lines.Add("`"$source`"")
     }

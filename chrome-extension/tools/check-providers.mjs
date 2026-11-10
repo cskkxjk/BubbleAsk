@@ -91,7 +91,14 @@ assert.equal(
   generatedPlugin,
   'dsh-plugin/lib/providers.data.js 与真源不一致，请运行 node tools/gen-providers.mjs',
 )
-record('真源一致性', `${canonical.providers.length} 家服务方，两处生成物无漂移`)
+// 页面驱动同样是共享真源：扩展里的副本必须与 shared/driver.js 一致
+const sharedDriver = readFileSync(path.join(repoRoot, 'shared', 'driver.js'), 'utf8')
+const extDriver = readFileSync(path.join(extRoot, 'content', 'driver.js'), 'utf8')
+assert.ok(
+  extDriver.endsWith(sharedDriver),
+  'chrome-extension/content/driver.js 与 shared/driver.js 不一致，请运行 node tools/gen-providers.mjs',
+)
+record('真源一致性', `${canonical.providers.length} 家服务方 + 页面驱动，生成物无漂移`)
 
 const providersModule = await loadProvidersModule()
 const { PROVIDERS, DEFAULT_PROVIDER_ID, PROVIDER_MATCH_PATTERNS, PROVIDER_STORAGE_KEY, isProviderUrl, resolveProvider } =
@@ -164,6 +171,11 @@ const bridgeEntry = (manifest.content_scripts || []).find(
 )
 assert.ok(bridgeEntry, 'content_scripts 里应有 chat-bridge.js 条目')
 assert.ok(!('all_frames' in bridgeEntry) || bridgeEntry.all_frames === false, 'chat-bridge 应只在顶层 frame')
+// driver.js 必须排在 chat-bridge.js 之前：后者依赖前者的全局，顺序错了内容脚本会拿不到
+const driverIndex = bridgeEntry.js.indexOf('content/driver.js')
+const bridgeIndex = bridgeEntry.js.indexOf('content/chat-bridge.js')
+assert.ok(driverIndex >= 0, 'content_scripts 应先加载 content/driver.js（共享页面驱动）')
+assert.ok(driverIndex < bridgeIndex, 'driver.js 必须排在 chat-bridge.js 之前')
 for (const pattern of PROVIDER_MATCH_PATTERNS) {
   assert.ok(bridgeEntry.matches.includes(pattern), `chat-bridge.matches 缺少 ${pattern}`)
 }
@@ -188,6 +200,7 @@ const requiredFiles = [
   'lib/providers.js',
   'content/collect.js',
   'content/bubble.js',
+  'content/driver.js',
   'content/chat-bridge.js',
   'popup/popup.html',
   'popup/popup.js',

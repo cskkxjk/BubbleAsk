@@ -517,24 +517,40 @@ namespace BubbleAsk
                 && WebProviders.FromConfig(customConfig).Url == "https://example.com/chat",
                 WebProviders.FromConfig(customConfig).Url);
 
-            // 脚本生成：必须带上 provider 的选择器/发送特征（页面改版后靠这些断言防止误删）。
+            // 脚本生成：注入的内容 = 共享 driver 源码 + provider 配置 JSON。
+            // 配置里的字符串是 JSON 编码的（引号会变成 \"），所以用 Json.Stringify 出期望值再比对，
+            // 这样断言既精确又不依赖转义细节。
             string fillDeepseek = PageScripts.BuildFillScript(WebProviders.Get("deepseek"), "测试");
             string fillChatgpt = PageScripts.BuildFillScript(WebProviders.Get("chatgpt"), "测试");
             string sendDeepseek = PageScripts.BuildSendScript(WebProviders.Get("deepseek"));
             string sendGemini = PageScripts.BuildSendScript(WebProviders.Get("gemini"));
             string stateGrok = PageScripts.BuildComposerStateScript(WebProviders.Get("grok"));
-            Check("web script deepseek composer", fillDeepseek.IndexOf("textarea[name=\"search\"]", StringComparison.Ordinal) >= 0, null);
-            Check("web script deepseek class hints", sendDeepseek.IndexOf("ds-button--primary", StringComparison.Ordinal) >= 0, null);
-            Check("web script chatgpt composer", fillChatgpt.IndexOf("#prompt-textarea", StringComparison.Ordinal) >= 0, null);
+
+            Check("web driver embedded", fillDeepseek.IndexOf("__bubbleAskDriver", StringComparison.Ordinal) >= 0
+                && fillDeepseek.IndexOf("execCommand('insertText'", StringComparison.Ordinal) >= 0
+                && PageScripts.BuildOpenUploadScript().IndexOf("__bubbleAskDriver", StringComparison.Ordinal) >= 0,
+                "注入脚本里应带共享 driver 源码");
+            Check("web script deepseek composer",
+                fillDeepseek.IndexOf(Json.Stringify("textarea[name=\"search\"]"), StringComparison.Ordinal) >= 0, null);
+            Check("web script deepseek class hints",
+                sendDeepseek.IndexOf(Json.Stringify("ds-button--primary"), StringComparison.Ordinal) >= 0, null);
+            Check("web script chatgpt composer",
+                fillChatgpt.IndexOf(Json.Stringify("#prompt-textarea"), StringComparison.Ordinal) >= 0, null);
             Check("web script chatgpt send", PageScripts.BuildSendScript(WebProviders.Get("chatgpt"))
-                .IndexOf("data-testid=\"send-button\"", StringComparison.Ordinal) >= 0, null);
-            Check("web script gemini send", sendGemini.IndexOf("aria-label*=", StringComparison.Ordinal) >= 0, null);
-            Check("web script grok composer", stateGrok.IndexOf("textarea[aria-label]", StringComparison.Ordinal) >= 0, null);
-            Check("web script fill prompt", fillDeepseek.IndexOf("测试", StringComparison.Ordinal) >= 0, null);
+                .IndexOf(Json.Stringify("button[data-testid=\"send-button\"]"), StringComparison.Ordinal) >= 0, null);
+            Check("web script gemini send",
+                sendGemini.IndexOf(Json.Stringify("button[aria-label*=\"Send\"]"), StringComparison.Ordinal) >= 0, null);
+            Check("web script grok composer",
+                stateGrok.IndexOf(Json.Stringify("textarea[aria-label]"), StringComparison.Ordinal) >= 0, null);
+            Check("web script fill prompt", fillDeepseek.IndexOf(Json.Stringify("测试"), StringComparison.Ordinal) >= 0, null);
             Check("web script generic fallback", PageScripts.BuildComposerStateScript(WebProviders.Resolve("custom", "https://x.test/"))
-                .IndexOf("[role=\"textbox\"]", StringComparison.Ordinal) >= 0, null);
+                .IndexOf(Json.Stringify("[role=\"textbox\"]"), StringComparison.Ordinal) >= 0, null);
             Check("web script probe login markers", PageScripts.BuildProbeScript(WebProviders.Get("gemini"))
-                .IndexOf("accounts.google.com", StringComparison.Ordinal) >= 0, null);
+                .IndexOf(Json.Stringify("accounts.google.com"), StringComparison.Ordinal) >= 0, null);
+            // 配置里的通用兜底必须真的来自真源（换一家 provider 也应带上同样的 generic 列表）
+            Check("web script carries generic config",
+                sendDeepseek.IndexOf(Json.Stringify("[role=\"textbox\"]"), StringComparison.Ordinal) >= 0
+                && sendDeepseek.IndexOf(Json.Stringify("提交"), StringComparison.Ordinal) >= 0, null);
         }
 
         private static void TestEndpoints()
