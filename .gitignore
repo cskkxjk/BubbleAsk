@@ -24,3 +24,6 @@ packages/
 
 # Node（如果以后加脚本）
 node_modules/
+# Python 脚本互相 import 时自动生成
+__pycache__/
+*.pyc
