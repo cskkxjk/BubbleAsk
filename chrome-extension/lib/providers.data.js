@@ -92,7 +92,7 @@ export const PROVIDERS = [
       "Send",
       "Submit"
     ],
-    "enterSends": true,
+    "enterSends": false,
     "loginMarkers": [
       "login",
       "signin",
@@ -126,7 +126,7 @@ export const PROVIDERS = [
       "Send",
       "Submit"
     ],
-    "enterSends": true,
+    "enterSends": false,
     "loginMarkers": [
       "login",
       "signin",
@@ -161,7 +161,7 @@ export const PROVIDERS = [
       "Send message",
       "发送"
     ],
-    "enterSends": true,
+    "enterSends": false,
     "loginMarkers": [
       "/auth/",
       "auth0",
@@ -196,7 +196,7 @@ export const PROVIDERS = [
       "Send",
       "发送"
     ],
-    "enterSends": true,
+    "enterSends": false,
     "loginMarkers": [
       "accounts.google.com",
       "servicelogin",
@@ -230,7 +230,7 @@ export const PROVIDERS = [
       "Submit",
       "发送"
     ],
-    "enterSends": true,
+    "enterSends": false,
     "loginMarkers": [
       "login",
       "signin",

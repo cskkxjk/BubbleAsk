@@ -3,6 +3,8 @@
   "defaultId": "deepseek",
   "customId": "custom",
 
+  "_comment": "全站 enterSends=false：找不到发送按钮时如实失败，由用户自己按回车或点按钮。原因见 docs/web-providers.md §5 —— 桌面端能发可信按键、扩展端只能发不可信合成事件，同一开关两端含义不同，与其保留歧义不如统一关掉。字段保留只为将来某个「只能回车提交」的站点作显式逃生口。",
+
   "generic": {
     "composerSelectors": [
       "textarea",
@@ -39,17 +41,12 @@
       "sendClassHints": ["ds-button--primary", "ds-button--circle"],
       "sendSvgPaths": ["M8.3125"],
       "sendAriaLabels": [],
-      "enterSends": true,
+      "enterSends": false,
       "loginMarkers": ["sign_in", "signin", "login"],
       "verifyUrlRegex": "^https?://chat\\.deepseek\\.com/",
       "prefillParam": "q",
       "upload": true,
-      "overrides": {
-        "extension": {
-          "enterSends": false
-        }
-      },
-      "notes": "唯一实机验证过的站点。扩展端保持 1.1.x 行为：只点按钮，不用合成 Enter。原因不是「合成 Enter 一定坏」，而是不可信事件（isTrusted=false）的成败取决于站点是否愿意响应，属运气；已验证按钮可用时没必要在它身上引入不确定路径。"
+      "notes": "唯一实机验证过的站点。全站已关闭 Enter 兜底（见 schemaVersion 注释）：找不到发送按钮时如实失败，由用户自己回车或点按钮，不做猜测性提交。"
     },
     {
       "id": "qwen",
@@ -67,7 +64,7 @@
       "sendClassHints": [],
       "sendSvgPaths": [],
       "sendAriaLabels": ["发送", "Send", "Submit"],
-      "enterSends": true,
+      "enterSends": false,
       "loginMarkers": ["login", "signin", "passport", "sso"],
       "verifyUrlRegex": "^https?://((www\\.)?qianwen\\.com|qianwen\\.aliyun\\.com|chat\\.qwen\\.ai|tongyi\\.aliyun\\.com|(www\\.)?tongyi\\.com)/",
       "prefillParam": "",
@@ -91,7 +88,7 @@
       "sendClassHints": [],
       "sendSvgPaths": [],
       "sendAriaLabels": ["发送", "Send", "Submit"],
-      "enterSends": true,
+      "enterSends": false,
       "loginMarkers": ["login", "signin", "passport", "sso"],
       "verifyUrlRegex": "^https?://(www\\.)?doubao\\.com/",
       "prefillParam": "",
@@ -112,7 +109,7 @@
       "sendClassHints": [],
       "sendSvgPaths": [],
       "sendAriaLabels": ["Send prompt", "Send message", "发送"],
-      "enterSends": true,
+      "enterSends": false,
       "loginMarkers": ["/auth/", "auth0", "login", "signin"],
       "verifyUrlRegex": "^https?://(chatgpt\\.com|chat\\.openai\\.com)/",
       "prefillParam": "",
@@ -133,7 +130,7 @@
       "sendClassHints": [],
       "sendSvgPaths": [],
       "sendAriaLabels": ["Send message", "Send", "发送"],
-      "enterSends": true,
+      "enterSends": false,
       "loginMarkers": ["accounts.google.com", "servicelogin", "signin", "login"],
       "verifyUrlRegex": "^https?://gemini\\.google\\.com/",
       "prefillParam": "",
@@ -150,7 +147,7 @@
       "sendClassHints": [],
       "sendSvgPaths": [],
       "sendAriaLabels": ["Submit", "发送"],
-      "enterSends": true,
+      "enterSends": false,
       "loginMarkers": ["login", "signin", "i/flow"],
       "verifyUrlRegex": "^https?://(grok\\.com|x\\.com)/",
       "prefillParam": "",

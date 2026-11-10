@@ -394,16 +394,35 @@ namespace BubbleAsk
                 string.Join(",", sourceIds.ToArray()) == "deepseek,qwen,doubao,chatgpt,gemini,grok",
                 string.Join(",", sourceIds.ToArray()));
 
-            // 桌面端读基础定义：DeepSeek 允许回车兜底（真源 enterSends=true），
-            // 扩展端有 overrides.extension 把它关掉 —— 覆写不能漏到桌面端来。
-            WebProvider deepseekBase = WebProviders.Get("deepseek");
-            Check("provider desktop keeps base enterSends", deepseekBase != null && deepseekBase.EnterSends, null);
-            Dictionary<string, object> extensionView = ProviderData.Resolve(source[0], "extension");
-            Check("provider overrides apply per host",
-                ProviderData.Flag(extensionView, "enterSends", true) == false
-                && deepseekBase != null && deepseekBase.EnterSends, null);
+            // 全站关闭 Enter 兜底：找不到发送按钮就如实失败，交给用户自己回车或点按钮。
+            // 这样两端行为一致，也不再依赖「可信按键 vs 合成事件」的可靠性差异。
+            bool anyAutoEnter = false;
+            for (int i = 0; i < WebProviders.All.Count; i += 1)
+            {
+                anyAutoEnter = anyAutoEnter || WebProviders.All[i].EnterSends;
+            }
+            Check("provider no auto enter anywhere", !anyAutoEnter, null);
+
+            // overrides 机制本身仍要可用（将来某个「只能回车提交」的站点作逃生口），
+            // 用内存里造的数据验证合并语义，不依赖真源当前是否有覆写。
+            Dictionary<string, object> demoBase = new Dictionary<string, object>();
+            demoBase["id"] = "demo";
+            demoBase["enterSends"] = true;
+            demoBase["upload"] = true;
+            Dictionary<string, object> demoPatch = new Dictionary<string, object>();
+            demoPatch["enterSends"] = false;
+            Dictionary<string, object> demoOverrides = new Dictionary<string, object>();
+            demoOverrides["extension"] = demoPatch;
+            demoBase["overrides"] = demoOverrides;
+            Dictionary<string, object> extendedView = ProviderData.Resolve(demoBase, "extension");
+            Dictionary<string, object> plainView = ProviderData.Resolve(demoBase, "desktop");
+            Check("provider overrides merge per host",
+                ProviderData.Flag(extendedView, "enterSends", true) == false
+                && ProviderData.Flag(plainView, "enterSends", false) == true
+                && ProviderData.Flag(extendedView, "upload", false) == true, null);
 
             // 通用兜底也来自真源
+            WebProvider deepseekBase = WebProviders.Get("deepseek");
             string[] genericComposer = ProviderData.GenericComposerSelectors;
             Check("provider generic composer from source",
                 Array.IndexOf(genericComposer, "[role=\"textbox\"]") >= 0, string.Join(",", genericComposer));
