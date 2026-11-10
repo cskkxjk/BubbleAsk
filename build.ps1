@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$Test,
     [switch]$Clean
 )
@@ -17,6 +17,15 @@ if (-not (Test-Path $providerData)) {
 $driverScript = Join-Path $root 'shared\driver.js'
 if (-not (Test-Path $driverScript)) {
     throw "Missing driver source: $driverScript"
+}
+# 托盘图标（运行时读这张 PNG）与 exe 自身图标（/win32icon 的 ico）
+$iconPng = Join-Path $root 'assets\brand-256.png'
+if (-not (Test-Path $iconPng)) {
+    throw "Missing icon source: $iconPng"
+}
+$iconIco = Join-Path $root 'assets\bubble-ask.ico'
+if (-not (Test-Path $iconIco)) {
+    throw "Missing exe icon: $iconIco（运行 tools/make-ico.py 生成）"
 }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -116,6 +125,9 @@ function Build-Target {
     # 内嵌真源：保持单 exe，运行时从 ManifestResourceStream 读，不额外落文件
     $lines.Add("/resource:`"$providerData`",BubbleAsk.providers.json")
     $lines.Add("/resource:`"$driverScript`",BubbleAsk.driver.js")
+    $lines.Add("/resource:`"$iconPng`",BubbleAsk.icon.png")
+    # exe 自身的图标（资源管理器 / 任务栏 / 快捷方式）
+    $lines.Add("/win32icon:`"$iconIco`"")
     foreach ($source in $Sources) {
         $lines.Add("`"$source`"")
     }
