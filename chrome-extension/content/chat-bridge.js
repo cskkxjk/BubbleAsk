@@ -37,6 +37,39 @@ function normalizeProvider(raw) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * 把本页的 favicon 换成扩展自己的 PNG。
+ *
+ * 为什么要做：服务方站点普遍只提供 SVG favicon，DeepSeek 甚至把 rel 的 type 写成
+ * `image/x-icon` 而文件其实是 SVG —— 格式声明与实际不符，Chromium 在**窗口/任务栏**
+ * 这一层常常不认，于是退回系统默认的空白文档图标，用户看到的就是「一个文件图标」。
+ *
+ * 页面可以改自己的 `<link rel="icon">`，指向 web_accessible_resources 里的 PNG 即可；
+ * Chromium 会在 favicon 变化后更新窗口图标。拿不到扩展资源时静默保持站点原样。
+ */
+function applyFavicon() {
+  try {
+    const href = chrome.runtime.getURL('icons/icon48.png')
+    let link = document.querySelector('link[rel~="icon"]')
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      const head = document.head || document.documentElement
+      if (!head) return
+      head.appendChild(link)
+    }
+    if (link.href === href && link.type === 'image/png') return
+    link.type = 'image/png'
+    link.href = href
+  } catch (error) {
+    /* 扩展上下文失效或无权限时保持原样，不影响主流程 */
+  }
+}
+
+applyFavicon()
+// 单页应用路由切换时可能重建 <head>，隔一会儿再补一次；只补一次，避免持续占用
+setTimeout(applyFavicon, 2000)
+
 /** 等输入框出现（页面可能在加载或跳转）。 */
 async function waitForComposer(driver, cfg, timeoutMs) {
   const deadline = Date.now() + timeoutMs

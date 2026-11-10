@@ -109,7 +109,11 @@ AI 服务方站点本身不注入采集气泡（`manifest.json` 的 `exclude_mat
 
 ## 关于任务栏图标
 
-侧边窗口是真实的站点页面，**窗口图标由该站点的 favicon 决定**，扩展无法覆盖。DeepSeek 用的是 SVG favicon；Chrome / Edge 能渲染，部分第三方 Chromium 分支（如遨游）不渲染 SVG，任务栏就会显示系统默认的空白文档图标。这是浏览器差异，不是扩展的问题。
+侧边窗口是真实的站点页面，**窗口图标由该站点的 favicon 决定**。服务方站点普遍只给 SVG（DeepSeek 甚至把 `rel` 的 `type` 写成 `image/x-icon` 而文件其实是 SVG），格式声明与实际不符时 Chromium 在窗口/任务栏这层常常不认，就退回系统默认的**空白文档图标** —— 用户看到的就是「一个文件图标」。
+
+对此的处理：`content/chat-bridge.js` 会在服务方页面加载后，把页面的 `<link rel="icon">` 换成扩展自己的 `icons/icon48.png`（`web_accessible_resources` 已放行）。Chromium 在 favicon 变化后会更新窗口图标，于是任务栏显示小鲸鱼而不是空白文档。拿不到扩展资源时静默保持站点原样。
+
+> 这只影响「本扩展打的服务方页面的图标」，浏览器自身的标签栏/任务栏行为仍由浏览器决定；若某个内核分支连 PNG favicon 都不用于窗口图标，仍可能显示默认图标 —— 那是浏览器差异。
 
 扩展自己的图标（工具栏、扩展管理页）是一条小鲸鱼：`icons/icon16/32/48/128.png` 是实际使用的四张图；母图 `whale.png`（细节版，渲 32/48/128）与 `whale-small.png`（16px 专用简化版）在 `tools/art/`，由图像生成模型产出后用 `tools/make-icons-from-png.py` 处理（四角泛洪去白底 → 裁内容外接框 → 合成浅色圆角底板 → 导出各尺寸；16px 不铺底板、用裸剪影）。`tools/` 是构建素材，不进用户分发包。
 
