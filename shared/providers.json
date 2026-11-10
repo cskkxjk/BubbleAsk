@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "defaultId": "deepseek",
+  "customId": "custom",
+
+  "generic": {
+    "composerSelectors": [
+      "textarea",
+      "textarea[placeholder]",
+      "div[contenteditable=\"true\"]",
+      "p[contenteditable=\"true\"]",
+      "[contenteditable=\"true\"]",
+      "[role=\"textbox\"]"
+    ],
+    "sendAriaLabels": ["发送", "send", "submit", "提交"]
+  },
+
+  "providers": [
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "url": "https://chat.deepseek.com/",
+      "origins": ["chat.deepseek.com", "deepseek.com"],
+      "composerSelectors": [
+        "textarea[name=\"search\"]",
+        "textarea",
+        "div[contenteditable=\"true\"]",
+        "p[contenteditable=\"true\"]",
+        "[contenteditable=\"true\"]",
+        "[role=\"textbox\"]",
+        "[data-testid=\"chat-input\"] textarea",
+        "[data-testid=\"chat-input\"] [contenteditable=\"true\"]",
+        "textarea[data-testid]",
+        "[data-testid*=\"input\"] textarea",
+        "[data-testid*=\"input\"] [contenteditable=\"true\"]",
+        "[data-testid=\"chat-input\"]"
+      ],
+      "sendSelectors": [],
+      "sendClassHints": ["ds-button--primary", "ds-button--circle"],
+      "sendSvgPaths": ["M8.3125"],
+      "sendAriaLabels": [],
+      "enterSends": true,
+      "loginMarkers": ["sign_in", "signin", "login"],
+      "verifyUrlRegex": "^https?://chat\\.deepseek\\.com/",
+      "prefillParam": "q",
+      "upload": true,
+      "overrides": {
+        "extension": {
+          "enterSends": false
+        }
+      },
+      "notes": "唯一实机验证过的站点。扩展端保持 1.1.x 行为：只点按钮，不用合成 Enter（React 站点上合成按键可能只换行）。"
+    },
+    {
+      "id": "qwen",
+      "name": "千问 Qwen",
+      "url": "https://www.qianwen.com/",
+      "origins": ["qianwen.com", "qianwen.aliyun.com", "chat.qwen.ai", "tongyi.aliyun.com", "tongyi.com"],
+      "composerSelectors": [
+        "textarea[placeholder]",
+        "textarea",
+        "[contenteditable=\"true\"][role=\"textbox\"]",
+        "[contenteditable=\"true\"]",
+        "[role=\"textbox\"]"
+      ],
+      "sendSelectors": [],
+      "sendClassHints": [],
+      "sendSvgPaths": [],
+      "sendAriaLabels": ["发送", "Send", "Submit"],
+      "enterSends": true,
+      "loginMarkers": ["login", "signin", "passport", "sso"],
+      "verifyUrlRegex": "^https?://((www\\.)?qianwen\\.com|qianwen\\.aliyun\\.com|chat\\.qwen\\.ai|tongyi\\.aliyun\\.com|(www\\.)?tongyi\\.com)/",
+      "prefillParam": "",
+      "upload": true,
+      "notes": "选择器为推测值，未实机验证；失效时用 --probe qwen 校准。"
+    },
+    {
+      "id": "doubao",
+      "name": "豆包 Doubao",
+      "url": "https://www.doubao.com/chat/",
+      "origins": ["doubao.com"],
+      "composerSelectors": [
+        "[data-testid=\"chat_input_input\"]",
+        "textarea[placeholder]",
+        "textarea",
+        "[contenteditable=\"true\"][role=\"textbox\"]",
+        "[contenteditable=\"true\"]",
+        "[role=\"textbox\"]"
+      ],
+      "sendSelectors": [],
+      "sendClassHints": [],
+      "sendSvgPaths": [],
+      "sendAriaLabels": ["发送", "Send", "Submit"],
+      "enterSends": true,
+      "loginMarkers": ["login", "signin", "passport", "sso"],
+      "verifyUrlRegex": "^https?://(www\\.)?doubao\\.com/",
+      "prefillParam": "",
+      "upload": true,
+      "notes": "ProseMirror 富文本 + 风控，推测值，未实机验证。"
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "url": "https://chatgpt.com/",
+      "origins": ["chatgpt.com", "chat.openai.com"],
+      "composerSelectors": [
+        "#prompt-textarea",
+        "textarea#prompt-textarea",
+        "div#prompt-textarea[contenteditable=\"true\"]"
+      ],
+      "sendSelectors": ["button[data-testid=\"send-button\"]", "button#composer-submit-button"],
+      "sendClassHints": [],
+      "sendSvgPaths": [],
+      "sendAriaLabels": ["Send prompt", "Send message", "发送"],
+      "enterSends": true,
+      "loginMarkers": ["/auth/", "auth0", "login", "signin"],
+      "verifyUrlRegex": "^https?://(chatgpt\\.com|chat\\.openai\\.com)/",
+      "prefillParam": "",
+      "upload": true,
+      "notes": "Cloudflare / 账号风控可能导致 unverified，属预期失败。"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "url": "https://gemini.google.com/app",
+      "origins": ["gemini.google.com"],
+      "composerSelectors": [
+        "rich-textarea .ql-editor",
+        ".ql-editor[contenteditable=\"true\"]",
+        "rich-textarea [contenteditable=\"true\"]"
+      ],
+      "sendSelectors": ["button[aria-label*=\"Send\"]", "button.send-button", "[class*=\"send-button\"]"],
+      "sendClassHints": [],
+      "sendSvgPaths": [],
+      "sendAriaLabels": ["Send message", "Send", "发送"],
+      "enterSends": true,
+      "loginMarkers": ["accounts.google.com", "servicelogin", "signin", "login"],
+      "verifyUrlRegex": "^https?://gemini\\.google\\.com/",
+      "prefillParam": "",
+      "upload": true,
+      "notes": "未登录会被重定向到 accounts.google.com/ServiceLogin。"
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "url": "https://grok.com/",
+      "origins": ["grok.com", "x.com"],
+      "composerSelectors": ["textarea[aria-label]", "textarea"],
+      "sendSelectors": ["button[aria-label=\"Submit\"]", "button[type=\"submit\"]", "[aria-label=\"Submit\"]"],
+      "sendClassHints": [],
+      "sendSvgPaths": [],
+      "sendAriaLabels": ["Submit", "发送"],
+      "enterSends": true,
+      "loginMarkers": ["login", "signin", "i/flow"],
+      "verifyUrlRegex": "^https?://(grok\\.com|x\\.com)/",
+      "prefillParam": "",
+      "upload": true,
+      "notes": "x.com 的登录流程走 /i/flow。"
+    }
+  ]
+}

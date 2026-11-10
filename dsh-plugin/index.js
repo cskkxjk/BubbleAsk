@@ -93,20 +93,14 @@ const DEFAULTS = {
 /**
  * 网页版服务方注册表。
  *
- * 与桌面端 `src/shared/WebProviders.cs` 的 6 家预设保持一致（id 是跨进程契约，不能改）。
+ * **数据来自唯一真源**：`shared/providers.json` → `lib/providers.data.js`（生成物）。
  * 插件只当客户端：选择器、导航、登录态、发送都在桌面端；这里只需要 id/名称/入口地址
  * 用于气泡里的下拉框与「复制提问」的兜底地址。custom 不在插件里提供（桌面端设置里可配）。
  *
- * `prefillParam` 仅 DeepSeek 有：其余站点不支持 `?q=` 预填，直接走「复制提问」。
+ * 改服务方请改真源并运行 `node tools/gen-providers.mjs`，不要改生成物。
  */
-const PROVIDERS = [
-  { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', prefillParam: 'q' },
-  { id: 'qwen', name: '千问 Qwen', url: 'https://www.qianwen.com/' },
-  { id: 'doubao', name: '豆包 Doubao', url: 'https://www.doubao.com/chat/' },
-  { id: 'chatgpt', name: 'ChatGPT', url: 'https://chatgpt.com/' },
-  { id: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/app' },
-  { id: 'grok', name: 'Grok', url: 'https://grok.com/' },
-]
+import { PROVIDERS } from './lib/providers.data.js'
+
 const PROVIDER_IDS = PROVIDERS.map((provider) => provider.id)
 
 /** 按 id 找服务方；未知 id 返回 null。 */

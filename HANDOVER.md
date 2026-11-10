@@ -168,12 +168,22 @@ src/tests/
 ### 4.2 网页版多服务方（provider 注册表，2026-11）
 
 网页版从「只能 DeepSeek」扩展为多服务方：DeepSeek / 千问 Qwen / 豆包 Doubao / ChatGPT / Gemini / Grok / 自定义。
-**站点差异全部是数据，不是分支**：新增站点或页面改版校准选择器只改 `src/shared/WebProviders.cs`。
+**站点差异全部是数据，不是分支**：新增站点或页面改版校准选择器**只改 `shared/providers.json`**，
+再跑 `node tools/gen-providers.mjs` 生成扩展与插件的数据模块。
+
+> 2026-11-10 起注册表收敛为唯一真源：以前 `WebProviders.cs` / 扩展 `providers.js` / 插件 `index.js`
+> 三处各写一份、靠人工同步（`check-providers.mjs` 只校验扩展自己，另两处是裸奔的）。现在真源一份，
+> 生成物有 `--check` 漂移守卫，桌面端把 JSON 内嵌进 exe（`ProviderData.cs` + `csc /resource:`），
+> 仍是单 exe。宿主间**真实存在**的差异写在真源的 `overrides.<host>` 里（例：DeepSeek 的
+> `enterSends` 桌面端 true、扩展端 false），不再散落在两套实现中。
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/shared/WebProviders.cs` | 注册表：`WebProvider` 数据模型 + 6 家预设 + `custom`；`Resolve(id, chatUrl)`、`IsKnown`、`NormalizeId`、`InferLegacyProvider`、`MatchesUrl`、`IsLoginUrl`、`BuildAskUrl`（URL 预填） |
-| `src/engine/PageScripts.cs` | 把 provider 的选择器拼成注入页面的 JS：输入框（provider CSS → 可见通用兜底）、发送按钮（provider CSS → class 特征 → aria/文案 → 输入框附近最后一个纯图标按钮 → 历史兜底）、注入/回读/聚焦、`--probe` 诊断脚本 |
+| `shared/providers.json` | **唯一真源**：6 家定义 + 通用兜底 + `overrides.<host>` |
+| `tools/gen-providers.mjs` | 由真源生成扩展/插件的数据模块；`--check` 只校验漂移 |
+| `src/shared/ProviderData.cs` | 读取内嵌真源（`Json` 封装解析），应用 `overrides.desktop` |
+| `src/shared/WebProviders.cs` | 注册表**用法**：`WebProvider` 数据模型 + `custom`；`Resolve(id, chatUrl)`、`IsKnown`、`NormalizeId`、`InferLegacyProvider`、`MatchesUrl`、`IsLoginUrl`、`BuildAskUrl`（URL 预填） |
+| `src/engine/PageScripts.cs` | 把 provider 的选择器拼成注入页面的 JS：输入框（provider CSS → 可见通用兜底）、发送按钮（provider CSS → class 特征 → aria/文案 → 输入框附近最后一个纯图标按钮 → 历史兜底）、注入/回读/聚焦、`--probe` 诊断脚本；通用兜底与发送文案也取自真源 |
 | `src/engine/ChatDriver.cs` | 窗口单实例（同一 profile、同一个 `--app` 窗口）；换服务方时用 CDP 导航到 `provider.Url`，登录 cookie 保留；所有 URL/选择器/预填/Enter 兜底从 provider 取 |
 | `src/shared/AppConfig.cs` | 新增 `WebProvider`（默认 `deepseek`）；`ChatUrl` 仅 custom 使用；老配置没有该字段时按 ChatUrl 推断（能对上预设域名算那家，否则 custom） |
 | `src/ui/SettingsForm.cs` | 「窗口与网页」页新增「网页版服务方」下拉；选预设回填并锁住地址框，选自定义可编辑 |
@@ -182,7 +192,7 @@ src/tests/
 - **IPC 增量（协议 v2 不变）**：`send` / `send-image` / `toggle` 新增可选 `provider` 字段；不带时服务端按本机配置的当前服务方解析（旧 DSH 插件 / 旧 CLI 不发该字段，行为与升级前一致）；custom 可再带 `providerUrl`，避免服务端配置滞后。未知 provider 返回 `stage:"provider"`；`health` 增加 `currentProvider` / `currentProviderName` / `webProvider` / `providers` / `lastProvider`。
 - **Enter 兜底**：`EnterSends=true` 的服务方在发送按钮不可用时退回 CDP 可信 Enter；`custom` 为 false（未知站点不猜回车语义），DeepSeek 仍是点击为主、Enter 兜底（行为不变）。
 - **登录检测**：`LoginMarkers` 是 URL 片段（`login` / `signin` / `accounts.google.com` 等），命中时日志提示「先登录一次」；不做 DOM 登录态判断。
-- **实机校准**：`dist\BubbleAsk.Tests.exe --probe qwen` 会真实打开该站点并输出候选 composer/发送按钮 JSON（`loginLikely`、`composerCandidates`、`sendCandidates`、`buttons`），照着输出改 `WebProviders.cs` 即可。
+- **实机校准**：`dist\BubbleAsk.Tests.exe --probe qwen` 会真实打开该站点并输出候选 composer/发送按钮 JSON（`loginLikely`、`composerCandidates`、`sendCandidates`、`buttons`），照着输出改 `shared/providers.json`（再跑生成器）即可。
 
 ### 4.3 DSH 插件多服务方（2026-11，插件 2.2.0）
 
@@ -197,6 +207,8 @@ src/tests/
 - 配置：`provider` 默认 `deepseek`；`chatUrl` 只影响 DeepSeek 的兜底地址，其余服务方用注册表 URL。`custom` 不提供（桌面端设置里配）。
 - 兼容：插件 2.2.0 仍兼容桌面端 2.1.x；桌面端 < 2.1.0 时插件下拉只提供 DeepSeek（旧桌面端忽略 `provider` 字段、按本机配置入口发送），若仍构造出非 DeepSeek 请求则 `old-app` 拒绝并给「复制全文」逃生，不会静默发到 DeepSeek。
 - 测试：`node --check` 三文件；离线断言 `.tmp-selftest/provider-test.mjs` 10 项 ALL PASS（含与 `WebProviders.cs` id 列表一致性）。真实站点仍未实测。
+  注册表已收敛到 `shared/providers.json` 单一真源：漂移由 `node tools/gen-providers.mjs --check` 与
+  扩展 `tools/check-providers.mjs` 双处守卫，桌面端自测断言 `provider source loads/order` 与通用兜底来源。
 
 ---
 

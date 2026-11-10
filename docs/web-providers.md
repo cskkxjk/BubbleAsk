@@ -24,6 +24,32 @@
 
 ## 2. 实现结构
 
+### 2.0 唯一真源（2026-11-10 起）
+
+服务方数据**只有一份**：仓库根的 `shared/providers.json`。
+
+```text
+shared/providers.json                 ← 唯一真源：6 家定义 + 通用兜底 + per-host 覆写
+tools/gen-providers.mjs               ← 生成器（--check 只校验不写）
+chrome-extension/lib/providers.data.js  ← 生成物（ESM，已应用 overrides.extension）
+dsh-plugin/lib/providers.data.js        ← 生成物（ESM，只含下拉需要的字段）
+src/shared/ProviderData.cs            ← 桌面端读取器：JSON 以**内嵌资源**打进 exe
+```
+
+三条约束：
+
+1. **改服务方只改真源**，再跑 `node tools/gen-providers.mjs`。生成物顶部有「不要手改」的横幅。
+2. **桌面端不生成 C# 代码**：`shared/providers.json` 编译时用 `csc /resource:` 内嵌，
+   运行时由 `ProviderData` 用项目自带的 `Json` 封装解析 —— 仍然是单 exe，不额外落文件。
+3. **漂移有守卫**：`node tools/gen-providers.mjs --check` 与扩展的
+   `tools/check-providers.mjs` 都会比对生成物与真源，不一致直接失败；
+   桌面端自测断言「注册表确实来自真源」（`provider source loads/order`、通用兜底来自真源）。
+
+**per-host 覆写**：真源里每家可带 `overrides.<desktop|extension|plugin>`，只覆盖它列出的字段。
+目前唯一一处真实差异是 DeepSeek 的 `enterSends`：桌面端 `true`（点不到按钮时用可信 Enter 兜底），
+扩展端 `false`（合成 KeyboardEvent 在 React 站点上可能只换行）。这类差异**集中写在真源里**，
+而不是散落在两套实现中——以前正是这样漂移的。
+
 ### 2.1 统一 provider 定义
 
 两形态使用同一组字段（桌面端 `src/shared/WebProviders.cs`，扩展 `chrome-extension/lib/providers.js`）：
@@ -97,10 +123,12 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 总是把当前选�
 
 ## 3. 新增/调整服务方
 
-1. 在桌面端 `WebProviders.cs`、扩展 `lib/providers.js` 与 DSH 插件 `index.js` 的 `PROVIDERS` 各加一条配置（id/name/url 保持一致；插件列表用于解析与兜底地址，展示以桌面端 health 为准）。
-2. 若入口域名变化，同步改 `origins` 与扩展 `manifest.json` 的 `host_permissions` / content script `matches`。
-3. 跑桌面端 `--probe <id>` 与实机验证清单，按输出补选择器。
-4. 更新本文档矩阵与「验证日期」。
+1. 在 `shared/providers.json` 里加/改一条（id/name/url/origins/选择器），需要按宿主差异时用 `overrides`。
+2. 跑 `node tools/gen-providers.mjs` 生成扩展与插件的数据模块，再跑 `--check` 确认无漂移。
+3. 若入口域名变化，同步改扩展 `manifest.json` 的 `host_permissions` / content script `matches`
+   （`check-providers.mjs` 会断言二者覆盖注册表）。
+4. 跑桌面端 `--probe <id>` 与实机验证清单，按输出补选择器。
+5. 更新本文档矩阵与「验证日期」。
 
 > 2026 年改版很频繁：通义千问→千问（3 月）、百度文心三入口合并（6 月）、豆包上线付费版（6 月）、海螺转视频、跃问→阶跃 AI；入口与选择器要按数据驱动方式维护，不要写死在代码里。
 

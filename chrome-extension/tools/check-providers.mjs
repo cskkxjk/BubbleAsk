@@ -35,8 +35,13 @@ const REQUIRED_FIELDS = [
 ]
 
 async function loadProvidersModule() {
+  // providers.js 现在 import './providers.data.js'，data: URL 里没法解析相对路径，
+  // 所以把数据文件也转成 data: URL 并把 import 改写过去。
+  const dataSource = readFileSync(path.join(extRoot, 'lib', 'providers.data.js'), 'utf8')
+  const dataUrl = `data:text/javascript;base64,${Buffer.from(dataSource, 'utf8').toString('base64')}`
   const source = readFileSync(path.join(extRoot, 'lib', 'providers.js'), 'utf8')
-  const url = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`
+  const rewritten = source.replace("'./providers.data.js'", `'${dataUrl}'`)
+  const url = `data:text/javascript;base64,${Buffer.from(rewritten, 'utf8').toString('base64')}`
   return import(url)
 }
 
@@ -63,6 +68,30 @@ record('manifest.json 可解析', `version=${manifest.version}`)
 assert.equal(manifest.manifest_version, 3, 'manifest_version 必须是 3')
 assert.equal(manifest.version, '1.2.0', '版本应为 1.2.0（多服务方）')
 assert.ok(!/deepseek-bridge\.js/.test(readFileSync(manifestPath, 'utf8')), 'manifest 不应再引用 deepseek-bridge.js')
+
+// 0) 生成物必须与唯一真源一致（漂移检查）
+const repoRoot = path.resolve(extRoot, '..')
+const canonicalPath = path.join(repoRoot, 'shared', 'providers.json')
+assert.ok(existsSync(canonicalPath), `缺唯一真源 ${canonicalPath}`)
+const canonical = JSON.parse(readFileSync(canonicalPath, 'utf8'))
+const { validate, buildExtensionModule, buildPluginModule } = await import(
+  `file:///${path.join(repoRoot, 'tools', 'gen-providers.mjs').replace(/\\/g, '/')}`
+)
+const sourceProblems = validate(canonical)
+assert.equal(sourceProblems.length, 0, `真源校验失败：${sourceProblems.join('；')}`)
+const generatedExtension = buildExtensionModule(canonical)
+const generatedPlugin = buildPluginModule(canonical)
+assert.equal(
+  readFileSync(path.join(extRoot, 'lib', 'providers.data.js'), 'utf8'),
+  generatedExtension,
+  'chrome-extension/lib/providers.data.js 与真源不一致，请运行 node tools/gen-providers.mjs',
+)
+assert.equal(
+  readFileSync(path.join(repoRoot, 'dsh-plugin', 'lib', 'providers.data.js'), 'utf8'),
+  generatedPlugin,
+  'dsh-plugin/lib/providers.data.js 与真源不一致，请运行 node tools/gen-providers.mjs',
+)
+record('真源一致性', `${canonical.providers.length} 家服务方，两处生成物无漂移`)
 
 const providersModule = await loadProvidersModule()
 const { PROVIDERS, DEFAULT_PROVIDER_ID, PROVIDER_MATCH_PATTERNS, PROVIDER_STORAGE_KEY, isProviderUrl, resolveProvider } =

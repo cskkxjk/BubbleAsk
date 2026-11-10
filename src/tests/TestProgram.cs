@@ -74,29 +74,55 @@ namespace BubbleAsk
             string outDir = args != null && args.Length > 0 ? args[0] : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest");
             Directory.CreateDirectory(outDir);
 
-            TestJson();
-            TestPrompt();
-            TestHotkeyParse();
-            TestBrowsers();
-            TestConfigRoundTrip();
-            TestProviders();
-            TestWebProviders();
-            TestEndpoints();
-            TestPayload(outDir);
-            TestDeltaParsing();
-            TestStreaming();
-            TestStreamingError();
-            TestStreamErrorFrame();
-            TestTruncationNotice();
-            TestEmptyAnswer();
-            TestTimeoutRecovery();
-            TestApiChat();
-            TestOffscreenForm(outDir);
-            TestBubble(outDir);
-            TestIcon();
+            try
+            {
+                TestJson();
+                TestPrompt();
+                TestHotkeyParse();
+                TestBrowsers();
+                TestConfigRoundTrip();
+                TestProviders();
+                TestWebProviders();
+                TestEndpoints();
+                TestPayload(outDir);
+                TestDeltaParsing();
+                TestStreaming();
+                TestStreamingError();
+                TestStreamErrorFrame();
+                TestTruncationNotice();
+                TestEmptyAnswer();
+                TestTimeoutRecovery();
+                TestApiChat();
+                TestOffscreenForm(outDir);
+                TestBubble(outDir);
+                TestIcon();
+            }
+            catch (Exception error)
+            {
+                Console.WriteLine("UNHANDLED");
+                DumpException(error, 0);
+                return 3;
+            }
 
             Console.WriteLine(_failures == 0 ? "ALL PASS" : _failures + " FAILURE(S)");
             return _failures == 0 ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 把异常连同内部异常链打出来。
+        ///
+        /// 不能直接用 ex.ToString()：静态构造函数失败时它会抛「由于 Exception.ToString() 失败」，
+        /// 反而把真正的原因藏起来（正是这个坑让人排查了一轮）。
+        /// </summary>
+        private static void DumpException(Exception error, int depth)
+        {
+            while (error != null && depth < 8)
+            {
+                Console.WriteLine("EXCEPTION[" + depth + "] " + error.GetType().FullName);
+                Console.WriteLine("  message: " + error.Message);
+                error = error.InnerException;
+                depth += 1;
+            }
         }
 
         private static void Check(string name, bool condition, string detail)
@@ -354,6 +380,39 @@ namespace BubbleAsk
             Check("web providers count", WebProviders.All.Count == 6, WebProviders.All.Count.ToString());
             Check("web provider default", WebProviders.DefaultProvider.Id == "deepseek"
                 && WebProviders.DefaultId == "deepseek", WebProviders.DefaultProvider.Id);
+
+            // 注册表必须真的来自真源（shared/providers.json），而不是别处还留了一份。
+            // 断言「真源能读出来、id 顺序一致、桌面端用的是基础定义」。
+            List<Dictionary<string, object>> source = ProviderData.Providers();
+            Check("provider source loads", source.Count == 6, source.Count.ToString());
+            List<string> sourceIds = new List<string>();
+            for (int i = 0; i < source.Count; i += 1)
+            {
+                sourceIds.Add(ProviderData.Text(source[i], "id", "?"));
+            }
+            Check("provider source order",
+                string.Join(",", sourceIds.ToArray()) == "deepseek,qwen,doubao,chatgpt,gemini,grok",
+                string.Join(",", sourceIds.ToArray()));
+
+            // 桌面端读基础定义：DeepSeek 允许回车兜底（真源 enterSends=true），
+            // 扩展端有 overrides.extension 把它关掉 —— 覆写不能漏到桌面端来。
+            WebProvider deepseekBase = WebProviders.Get("deepseek");
+            Check("provider desktop keeps base enterSends", deepseekBase != null && deepseekBase.EnterSends, null);
+            Dictionary<string, object> extensionView = ProviderData.Resolve(source[0], "extension");
+            Check("provider overrides apply per host",
+                ProviderData.Flag(extensionView, "enterSends", true) == false
+                && deepseekBase != null && deepseekBase.EnterSends, null);
+
+            // 通用兜底也来自真源
+            string[] genericComposer = ProviderData.GenericComposerSelectors;
+            Check("provider generic composer from source",
+                Array.IndexOf(genericComposer, "[role=\"textbox\"]") >= 0, string.Join(",", genericComposer));
+            Check("provider generic send labels from source",
+                Array.IndexOf(ProviderData.GenericSendAriaLabels, "提交") >= 0,
+                string.Join(",", ProviderData.GenericSendAriaLabels));
+            // 脚本里确实用上了真源的通用兜底（不是另写死一份）
+            string stateScript = PageScripts.BuildStateScript(deepseekBase);
+            Check("provider script uses source labels", stateScript.Contains("提交"), null);
 
             List<string> ids = new List<string>();
             bool complete = true;

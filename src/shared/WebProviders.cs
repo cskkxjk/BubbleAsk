@@ -139,9 +139,14 @@ namespace BubbleAsk
     /// </summary>
     public static class WebProviders
     {
-        public const string DefaultId = "deepseek";
-        public const string CustomId = "custom";
-        public const string DefaultUrl = "https://chat.deepseek.com/";
+        /// <summary>默认服务方 id（真源 shared/providers.json 的 defaultId）。</summary>
+        public static readonly string DefaultId = ProviderData.DefaultId;
+
+        /// <summary>自定义服务方 id（真源 customId）。</summary>
+        public static readonly string CustomId = ProviderData.CustomId;
+
+        /// <summary>默认入口地址 = 第一家预设的 url，避免地址写两遍。</summary>
+        public static readonly string DefaultUrl = FirstUrl();
 
         private static readonly List<WebProvider> Registry = BuildRegistry();
 
@@ -157,172 +162,55 @@ namespace BubbleAsk
             get { return Registry[0]; }
         }
 
+        /// <summary>
+        /// 从真源构建注册表。
+        ///
+        /// 数据全部来自 shared/providers.json（编译时内嵌）；本类只负责「怎么用」。
+        /// 加站点或校准选择器请改真源并跑 tools/gen-providers.mjs，不要改这里。
+        /// </summary>
         private static List<WebProvider> BuildRegistry()
         {
             List<WebProvider> list = new List<WebProvider>();
-            list.Add(BuildDeepSeek());
-            list.Add(BuildQwen());
-            list.Add(BuildDoubao());
-            list.Add(BuildChatGpt());
-            list.Add(BuildGemini());
-            list.Add(BuildGrok());
+            List<Dictionary<string, object>> items = ProviderData.Providers();
+            for (int i = 0; i < items.Count; i += 1)
+            {
+                list.Add(FromDictionary(ProviderData.Resolve(items[i], "desktop")));
+            }
+            if (list.Count == 0)
+            {
+                throw new InvalidOperationException("shared/providers.json 里没有任何服务方定义");
+            }
             return list;
         }
 
-        // ---------- 各服务方预设 ----------
-        // 说明：除 DeepSeek 外，其余站点按「最佳猜测 + 通用兜底」实现 —— 选择器尽力贴近
-        // 公开页面结构，找不到就退到通用规则（可见 textarea/contenteditable/role=textbox、
-        // 发送文案、输入框附近最后一个纯图标按钮）。实机校准只需改这里的字符串。
-
-        private static WebProvider BuildDeepSeek()
+        private static WebProvider FromDictionary(Dictionary<string, object> item)
         {
             WebProvider provider = new WebProvider();
-            provider.Id = "deepseek";
-            provider.Name = "DeepSeek";
-            provider.Url = DefaultUrl;
-            provider.Origins = new string[] { "chat.deepseek.com", "deepseek.com" };
-            // 保持改造前的查找顺序：search textarea → textarea → contenteditable → 各种 data-testid。
-            provider.ComposerSelectors = new string[]
-            {
-                "textarea[name=\"search\"]",
-                "textarea",
-                "div[contenteditable=\"true\"]",
-                "p[contenteditable=\"true\"]",
-                "[contenteditable=\"true\"]",
-                "[role=\"textbox\"]",
-                "[data-testid=\"chat-input\"] textarea",
-                "[data-testid=\"chat-input\"] [contenteditable=\"true\"]",
-                "textarea[data-testid]",
-                "[data-testid*=\"input\"] textarea",
-                "[data-testid*=\"input\"] [contenteditable=\"true\"]",
-                "[data-testid=\"chat-input\"]"
-            };
-            // 实测（Edge 156 + chat.deepseek.com 2026-11）页面上唯一命中，且不依赖图标长什么样。
-            provider.SendClassHints = new string[] { "ds-button--primary", "ds-button--circle" };
-            provider.SendSvgPaths = new string[] { "M8.3125" };
-            // 主路径仍是点击发送；Enter 只作「点不到按钮」时的兜底，保持改造前行为。
-            provider.EnterSends = true;
-            // 登录页 URL 片段：命中就提示「请先在窗口里登录」（登录态保存在浏览器 profile）。
-            provider.LoginMarkers = new string[] { "sign_in", "signin", "login" };
-            provider.VerifyUrlRegex = "^https?://chat\\.deepseek\\.com/";
-            provider.PrefillParam = "q";
-            provider.Upload = true;
+            provider.Id = ProviderData.Text(item, "id", "");
+            provider.Name = ProviderData.Text(item, "name", provider.Id);
+            provider.Url = ProviderData.Text(item, "url", "");
+            provider.Origins = ProviderData.Strings(item, "origins");
+            provider.ComposerSelectors = ProviderData.Strings(item, "composerSelectors");
+            provider.SendSelectors = ProviderData.Strings(item, "sendSelectors");
+            provider.SendAriaLabels = ProviderData.Strings(item, "sendAriaLabels");
+            provider.SendClassHints = ProviderData.Strings(item, "sendClassHints");
+            provider.SendSvgPaths = ProviderData.Strings(item, "sendSvgPaths");
+            provider.EnterSends = ProviderData.Flag(item, "enterSends", false);
+            provider.LoginMarkers = ProviderData.Strings(item, "loginMarkers");
+            provider.VerifyUrlRegex = ProviderData.Text(item, "verifyUrlRegex", "");
+            provider.PrefillParam = ProviderData.Text(item, "prefillParam", "");
+            provider.Upload = ProviderData.Flag(item, "upload", false);
             return provider;
         }
 
-        private static WebProvider BuildQwen()
+        private static string FirstUrl()
         {
-            WebProvider provider = new WebProvider();
-            provider.Id = "qwen";
-            provider.Name = "千问 Qwen";
-            provider.Url = "https://www.qianwen.com/";
-            provider.Origins = new string[]
+            List<Dictionary<string, object>> items = ProviderData.Providers();
+            if (items.Count == 0)
             {
-                "www.qianwen.com", "qianwen.com", "qianwen.aliyun.com",
-                "chat.qwen.ai", "tongyi.aliyun.com", "tongyi.com"
-            };
-            // 输入框/发送按钮都按通用兜底（发现候选后可用 --probe qwen 校准）。
-            provider.SendAriaLabels = new string[] { "发送", "Send", "Submit" };
-            provider.EnterSends = true;
-            provider.LoginMarkers = new string[] { "login", "signin", "passport", "sso" };
-            provider.VerifyUrlRegex = "^https?://((www\\.)?qianwen\\.com|qianwen\\.aliyun\\.com|chat\\.qwen\\.ai|tongyi\\.aliyun\\.com|(www\\.)?tongyi\\.com)/";
-            provider.Upload = true;
-            return provider;
-        }
-
-        private static WebProvider BuildDoubao()
-        {
-            WebProvider provider = new WebProvider();
-            provider.Id = "doubao";
-            provider.Name = "豆包 Doubao";
-            provider.Url = "https://www.doubao.com/chat/";
-            provider.Origins = new string[] { "www.doubao.com", "doubao.com" };
-            provider.SendAriaLabels = new string[] { "发送", "Send", "Submit" };
-            provider.EnterSends = true;
-            provider.LoginMarkers = new string[] { "login", "signin", "passport", "sso" };
-            provider.VerifyUrlRegex = "^https?://(www\\.)?doubao\\.com/";
-            provider.Upload = true;
-            return provider;
-        }
-
-        private static WebProvider BuildChatGpt()
-        {
-            WebProvider provider = new WebProvider();
-            provider.Id = "chatgpt";
-            provider.Name = "ChatGPT";
-            provider.Url = "https://chatgpt.com/";
-            provider.Origins = new string[] { "chatgpt.com", "chat.openai.com" };
-            provider.ComposerSelectors = new string[]
-            {
-                "#prompt-textarea",
-                "textarea#prompt-textarea",
-                "div#prompt-textarea[contenteditable=\"true\"]"
-            };
-            provider.SendSelectors = new string[]
-            {
-                "button[data-testid=\"send-button\"]",
-                "button#composer-submit-button"
-            };
-            provider.SendAriaLabels = new string[] { "Send prompt", "Send message", "发送" };
-            provider.EnterSends = true;
-            provider.LoginMarkers = new string[] { "auth0", "/auth/", "login", "signin" };
-            provider.VerifyUrlRegex = "^https?://(chatgpt\\.com|chat\\.openai\\.com)/";
-            provider.Upload = true;
-            return provider;
-        }
-
-        private static WebProvider BuildGemini()
-        {
-            WebProvider provider = new WebProvider();
-            provider.Id = "gemini";
-            provider.Name = "Gemini";
-            provider.Url = "https://gemini.google.com/app";
-            provider.Origins = new string[] { "gemini.google.com" };
-            provider.ComposerSelectors = new string[]
-            {
-                "rich-textarea .ql-editor",
-                ".ql-editor[contenteditable=\"true\"]",
-                "rich-textarea [contenteditable=\"true\"]"
-            };
-            provider.SendSelectors = new string[]
-            {
-                "button[aria-label*=\"Send\"]",
-                "button.send-button",
-                "[class*=\"send-button\"]"
-            };
-            provider.SendAriaLabels = new string[] { "Send message", "Send", "发送" };
-            provider.EnterSends = true;
-            // Gemini 未登录会被重定向到 Google 账号页（accounts.google.com/ServiceLogin）。
-            provider.LoginMarkers = new string[] { "accounts.google.com", "servicelogin", "signin", "login" };
-            provider.VerifyUrlRegex = "^https?://gemini\\.google\\.com/";
-            provider.Upload = true;
-            return provider;
-        }
-
-        private static WebProvider BuildGrok()
-        {
-            WebProvider provider = new WebProvider();
-            provider.Id = "grok";
-            provider.Name = "Grok";
-            provider.Url = "https://grok.com/";
-            provider.Origins = new string[] { "grok.com", "x.com" };
-            provider.ComposerSelectors = new string[]
-            {
-                "textarea[aria-label]",
-                "textarea"
-            };
-            provider.SendSelectors = new string[]
-            {
-                "button[aria-label=\"Submit\"]",
-                "button[type=\"submit\"]",
-                "[aria-label=\"Submit\"]"
-            };
-            provider.SendAriaLabels = new string[] { "Submit", "发送" };
-            provider.EnterSends = true;
-            provider.LoginMarkers = new string[] { "login", "signin", "i/flow" };
-            provider.VerifyUrlRegex = "^https?://(grok\\.com|x\\.com)/";
-            provider.Upload = true;
-            return provider;
+                return "https://chat.deepseek.com/";
+            }
+            return ProviderData.Text(items[0], "url", "https://chat.deepseek.com/");
         }
 
         // ---------- 查询 / 解析 ----------

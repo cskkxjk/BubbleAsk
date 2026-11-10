@@ -351,7 +351,8 @@ src/
     Logger.cs / Json.cs
     IpcContract.cs    命名管道契约：协议版本、管道名、发现文件、连接与存活判断
     EngineClient.cs   客户端侧：按需拉起服务、发命令、持有租约
-    WebProviders.cs   网页版服务方注册表（URL / 选择器 / 发送与校验规则）
+    WebProviders.cs   网页版服务方注册表（数据模型 + 查询/解析；**数据来自 shared/providers.json**）
+    ProviderData.cs   读取内嵌的 shared/providers.json（唯一真源，编译时 /resource 打入）
   engine/             网页版驱动（只编译进服务身份，ui 不得引用）
     PageScripts.cs    把服务方选择器拼成注入页面的 JS（查找/填充/发送/诊断）
     EdgeHost.cs       启动、定位与置顶浏览器窗口（Edge / Chrome / Brave 等）
@@ -387,7 +388,7 @@ dsh-plugin/           DSH 插件（Node 包）
 chrome-extension/     Chrome / Edge 扩展（MV3）
   manifest.json       权限与入口声明
   background.js       调度：采集 → 拼提问 → 交给所选服务方侧边窗口
-  lib/providers.js    服务方注册表（DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok）
+  lib/providers.js    服务方注册表的查询函数（数据见 lib/providers.data.js，由真源生成）
   lib/prompt.js       页面上下文 → 提问文本（纯函数）
   content/collect.js  页面结构与文字采集（隔离世界执行）
   content/chat-bridge.js  在所选服务方页面内填入并发送、回读确认

@@ -8,6 +8,11 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $srcDir = Join-Path $root 'src'
 $distDir = Join-Path $root 'dist'
 $manifest = Join-Path $srcDir 'app.manifest'
+# 服务方数据的唯一真源：编译时内嵌进 exe，运行时用 System.Web.Extensions 解析。
+$providerData = Join-Path $root 'shared\providers.json'
+if (-not (Test-Path $providerData)) {
+    throw "Missing provider source: $providerData"
+}
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) {
@@ -103,6 +108,8 @@ function Build-Target {
     foreach ($reference in $references) {
         $lines.Add("/r:$reference")
     }
+    # 内嵌真源：保持单 exe，运行时从 ManifestResourceStream 读，不额外落文件
+    $lines.Add("/resource:`"$providerData`",BubbleAsk.providers.json")
     foreach ($source in $Sources) {
         $lines.Add("`"$source`"")
     }

@@ -99,6 +99,9 @@ namespace BubbleAsk
         /// <summary>
         /// 实际用于找输入框的选择器：provider 专属的优先，再补上通用兜底
         /// （可见 textarea / contenteditable / role=textbox）。重复的自动去掉，顺序不变。
+        ///
+        /// 通用兜底同样来自真源（shared/providers.json 的 generic.composerSelectors），
+        /// 与扩展里的那套保持同一份定义。
         /// </summary>
         internal static string[] AllComposerSelectors(WebProvider provider)
         {
@@ -110,12 +113,57 @@ namespace BubbleAsk
                     AddUnique(list, provider.ComposerSelectors[i], false);
                 }
             }
-            AddUnique(list, "textarea", false);
-            AddUnique(list, "div[contenteditable=\"true\"]", false);
-            AddUnique(list, "p[contenteditable=\"true\"]", false);
-            AddUnique(list, "[contenteditable=\"true\"]", false);
-            AddUnique(list, "[role=\"textbox\"]", false);
+            string[] generic = ProviderData.GenericComposerSelectors;
+            for (int i = 0; i < generic.Length; i++)
+            {
+                AddUnique(list, generic[i], false);
+            }
             return list.ToArray();
+        }
+
+        /// <summary>
+        /// 发送按钮文案兜底的「正则源码」（不含斜杠与 flag），来自真源 generic.sendAriaLabels。
+        /// 例：发送|send|submit|提交
+        /// </summary>
+        private static string LabelPattern()
+        {
+            string[] labels = ProviderData.GenericSendAriaLabels;
+            if (labels == null || labels.Length == 0)
+            {
+                return "发送|send|submit";
+            }
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < labels.Length; i++)
+            {
+                string label = labels[i];
+                if (label == null || label.Length == 0)
+                {
+                    continue;
+                }
+                if (builder.Length > 0)
+                {
+                    builder.Append('|');
+                }
+                builder.Append(EscapeRegex(label));
+            }
+            return builder.Length == 0 ? "发送|send|submit" : builder.ToString();
+        }
+
+        /// <summary>把字面量转成可以安全放进正则的片段。</summary>
+        private static string EscapeRegex(string value)
+        {
+            const string special = "\\^$.|?*+()[]{}";
+            StringBuilder builder = new StringBuilder(value.Length * 2);
+            for (int i = 0; i < value.Length; i++)
+            {
+                char current = value[i];
+                if (special.IndexOf(current) >= 0)
+                {
+                    builder.Append('\\');
+                }
+                builder.Append(current);
+            }
+            return builder.ToString();
         }
 
         /// <summary>可见性、深度、候选挑选、输入框查找等公共函数（每个脚本里都会带上）。</summary>
@@ -196,7 +244,7 @@ namespace BubbleAsk
                 "if(labels.length){t=pick(nodes,function(n){var a=attrLabel(n).toLowerCase();" +
                 "for(var i=0;i<labels.length;i++){if(a.indexOf(labels[i].toLowerCase())>=0){return true;}}return false;});" +
                 "if(t){return t;}}" +
-                "t=pick(nodes,function(n){return /发送|send|submit/i.test(attrLabel(n));});" +
+                "t=pick(nodes,function(n){return /" + LabelPattern() + "/i.test(attrLabel(n));});" +
                 "if(t){return t;}" +
                 "var scope2=nearComposer(4);" +
                 "if(scope2){var near=scope2.querySelectorAll('button,[role=\"button\"]');" +
@@ -206,7 +254,7 @@ namespace BubbleAsk
                 "t=pick(nodes,function(n){return !!(n.querySelector&&n.querySelector('svg')" +
                 "&&/send|submit|arrow|paper|plane/i.test(labelOf(n)));});" +
                 "if(t){return t;}" +
-                "t=pick(nodes,function(n){return /发送|send|submit/i.test(String(n.className||''));});" +
+                "t=pick(nodes,function(n){return /" + LabelPattern() + "/i.test(String(n.className||''));});" +
                 "if(t){return t;}" +
                 "var paths=" + JsArray(provider.SendSvgPaths) + ";" +
                 "if(paths.length){t=pick(nodes,function(n){" +
