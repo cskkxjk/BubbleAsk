@@ -46,9 +46,20 @@ src/shared/ProviderData.cs            ← 桌面端读取器：JSON 以**内嵌�
    桌面端自测断言「注册表确实来自真源」（`provider source loads/order`、通用兜底来自真源）。
 
 **per-host 覆写**：真源里每家可带 `overrides.<desktop|extension|plugin>`，只覆盖它列出的字段。
-目前唯一一处真实差异是 DeepSeek 的 `enterSends`：桌面端 `true`（点不到按钮时用可信 Enter 兜底），
-扩展端 `false`（合成 KeyboardEvent 在 React 站点上可能只换行）。这类差异**集中写在真源里**，
-而不是散落在两套实现中——以前正是这样漂移的。
+目前唯一一处真实差异是 DeepSeek 的 `enterSends`：桌面端 `true`、扩展端 `false`。
+
+原因是**两端发出 Enter 的「可信度」不同**，不是随便设的：
+
+- 桌面端走 CDP `Input.dispatchKeyEvent`，浏览器视为真实按键（`isTrusted=true`），
+  会进入正常输入管线，站点难以分辨 —— 所以它是可靠兜底，还能用于「点完没确认时补发一次」。
+- 扩展的内容脚本只能 `new KeyboardEvent()` + `dispatchEvent`，事件 `isTrusted=false`。
+  站点若检查该字段、或要求可信输入才提交，这一次就不能成功；而且扩展没有补发路径。
+
+因此同一个 `true` 在两端的实际可靠性完全不同。DeepSeek 是唯一实机验证过的站点，
+按钮可用时就没必要再引入这条不确定路径，故扩展端置 `false`（保持 1.1.x 行为）。
+其余 5 家在扩展端是 `true`——那不是「更可靠」，而是选择器本身是推测值，
+若连回车兜底也不给就几乎必然失败。这个不对称是**已知的设计债**，见 §5。
+
 
 ### 2.1 统一 provider 定义
 
@@ -159,6 +170,11 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 总是把当前选�
 
 ## 5. 已知限制与风险
 
+- **Enter 兜底的不对称（设计债）**：桌面端能发可信按键、扩展端只能发合成事件，同一开关含义不同。
+  当前规则是「DeepSeek 在扩展端关、其余家开」。想真正统一只有两条路：扩展改用 `chrome.debugger`
+  发 CDP 按键（要常量级权限与「正在调试此浏览器」横幅，用户体验差），或两端都关掉 Enter 兜底
+  （安全，但扩展端 5 家推测选择器几乎必然失败）。另外桌面端有「点完未确认再补发一次」的路径，
+  扩展端没有 —— 这一项的影响其实比 `enterSends` 本身更大。
 - 真实站点未在本仓库开发环境实测；首轮选择器可能需按 §4 校准。
 - 消费级网页版用户协议普遍禁止自动化访问，账号存在被限制风险；本功能定位是**用户人工触发、单次注入**的辅助工具，不抓取回答、不高频调用。重活请用 API 模式（已支持 DeepSeek/OpenAI/SiliconFlow/Ollama/自定义）。
 - 国际站点需要可用的网络出口；Cloudflare/登录风控可能导致 `unverified`，属预期失败，工具会如实报告阶段。
