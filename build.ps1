@@ -32,6 +32,21 @@ $whalePng = Join-Path $root 'chrome-extension\tools\art\whale.png'
 if (-not (Test-Path $whalePng)) {
     throw "Missing mascot source: $whalePng"
 }
+# API 气泡的可视部分：纯 HTML/CSS/JS 资产（不依赖 Windows，将来换宿主可直接搬走）
+$answerHtml = Join-Path $root 'src\web\answer.html'
+if (-not (Test-Path $answerHtml)) {
+    throw "Missing answer UI: $answerHtml"
+}
+# WebView2 SDK（托管 DLL + 原生 loader）。系统没装 WebView2 运行时会自动退回原生气泡。
+$wv2Dir = Join-Path $root 'third_party\webview2'
+$wv2Core = Join-Path $wv2Dir 'Microsoft.Web.WebView2.Core.dll'
+$wv2Forms = Join-Path $wv2Dir 'Microsoft.Web.WebView2.WinForms.dll'
+$wv2Loader = Join-Path $wv2Dir 'WebView2Loader.dll'
+foreach ($required in @($wv2Core, $wv2Forms, $wv2Loader)) {
+    if (-not (Test-Path $required)) {
+        throw "Missing WebView2 SDK file: $required（见 README 的 third_party 说明）"
+    }
+}
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) {
@@ -132,6 +147,10 @@ function Build-Target {
     $lines.Add("/resource:`"$driverScript`",BubbleAsk.driver.js")
     $lines.Add("/resource:`"$iconPng`",BubbleAsk.icon.png")
     $lines.Add("/resource:`"$whalePng`",BubbleAsk.whale.png")
+    $lines.Add("/resource:`"$answerHtml`",BubbleAsk.answer.html")
+    # WebView2：托管程序集引用（原生 loader 在构建完成后拷到 dist）
+    $lines.Add("/r:`"$wv2Core`"")
+    $lines.Add("/r:`"$wv2Forms`"")
     # exe 自身的图标（资源管理器 / 任务栏 / 快捷方式）
     $lines.Add("/win32icon:`"$iconIco`"")
     foreach ($source in $Sources) {
@@ -152,6 +171,10 @@ $testOut = Join-Path $distDir 'BubbleAsk.Tests.exe'
 Write-Host "Building $testOut ($($testAllSources.Count) sources)"
 Build-Target -Target 'exe' -EntryPoint 'BubbleAsk.TestProgram' -Output $testOut -ResponseFile (Join-Path $distDir 'tests.rsp') -Sources $testAllSources
 
+# WebView2 的托管 DLL 与原生 loader 必须在 exe 旁边
+foreach ($file in @($wv2Core, $wv2Forms, $wv2Loader)) {
+    Copy-Item $file (Join-Path $distDir (Split-Path $file -Leaf)) -Force
+}
 Write-Host "Build OK: $appOut"
 if ($Test) {
     Write-Host 'Running self tests...'

@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bubble Ask</title>
+<style>
+  /* 这套 HTML/CSS 是纯前端资产：不依赖任何宿主 API，Windows 用 WebView2 承载，
+     以后上 macOS 可以直接塞进 WKWebView / Tauri / Electron，一行不用改。 */
+  :root {
+    --ink: #1f2937;
+    --ink-dim: #6b7280;
+    --ink-faint: #9ca3af;
+    --line: #e2e6ef;
+    --line-soft: #eef1f6;
+    --accent: #4d6bfe;
+    --accent-soft: #eff3ff;
+    --accent-line: #d6defc;
+    --danger: #d64545;
+    --code-bg: #f6f7fb;
+    --quote-bg: #f7f9ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #fff;
+    color: var(--ink);
+    font: 400 14px/1.72 "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- 标题栏 ---------- */
+  header {
+    flex: none;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px 0 12px;
+    border-bottom: 1px solid var(--line);
+    background: #fff;
+    cursor: default;
+    user-select: none;
+  }
+  header .whale { width: 30px; height: 30px; object-fit: contain; opacity: .95; flex: none; }
+  header .title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ghost {
+    flex: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-dim);
+    font: inherit;
+    font-size: 12px;
+    height: 28px;
+    padding: 0 9px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .ghost:hover { background: #f3f5fa; color: var(--ink); }
+
+  /* ---------- 正文 ---------- */
+  main {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 14px 18px 10px;
+    scroll-behavior: auto;
+  }
+  main::-webkit-scrollbar { width: 10px; }
+  main::-webkit-scrollbar-thumb {
+    background: #d8dce6;
+    border-radius: 6px;
+    border: 3px solid #fff;
+  }
+  .turn { margin-bottom: 12px; }
+  .ask {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+  }
+  .ask .bubble {
+    max-width: 84%;
+    padding: 9px 13px;
+    border-radius: 14px 14px 4px 14px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-line);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13.5px;
+  }
+  .reasoning {
+    margin: 0 0 10px;
+    padding: 8px 12px;
+    border-left: 2px solid var(--accent-line);
+    background: var(--quote-bg);
+    border-radius: 0 8px 8px 0;
+    color: var(--ink-dim);
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow: auto;
+  }
+  .reasoning::before {
+    content: "深度思考";
+    display: block;
+    font-size: 11px;
+    color: var(--ink-faint);
+    margin-bottom: 4px;
+    letter-spacing: .04em;
+  }
+  .error {
+    color: var(--danger);
+    font-size: 13px;
+    padding: 6px 0;
+  }
+  .note { color: var(--ink-faint); font-size: 12px; padding: 4px 0; }
+
+  /* ---------- Markdown ---------- */
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md p { margin: 0 0 10px; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    margin: 16px 0 8px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  .md h1 { font-size: 19px; }
+  .md h2 { font-size: 17px; }
+  .md h3 { font-size: 15.5px; }
+  .md h4, .md h5, .md h6 { font-size: 14px; }
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+  .md li { margin: 3px 0; }
+  .md li > ul, .md li > ol { margin: 3px 0; }
+  .md blockquote {
+    margin: 0 0 10px;
+    padding: 6px 12px;
+    border-left: 3px solid var(--accent-line);
+    background: var(--quote-bg);
+    color: var(--ink-dim);
+    border-radius: 0 8px 8px 0;
+  }
+  .md code {
+    font: 12.5px/1.5 "Cascadia Mono", "Consolas", "SF Mono", monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--line-soft);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  .md pre {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    background: var(--code-bg);
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    overflow: auto;
+  }
+  .md pre code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    display: block;
+    white-space: pre;
+  }
+  .md table {
+    border-collapse: collapse;
+    margin: 0 0 12px;
+    font-size: 13px;
+    width: 100%;
+  }
+  .md th, .md td {
+    border: 1px solid var(--line);
+    padding: 6px 9px;
+    text-align: left;
+  }
+  .md th { background: var(--code-bg); font-weight: 600; }
+  .md a { color: var(--accent); text-decoration: none; }
+  .md a:hover { text-decoration: underline; }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+  .md strong { font-weight: 600; }
+
+  .caret {
+    display: inline-block;
+    width: 7px;
+    height: 15px;
+    margin-left: 2px;
+    vertical-align: -2px;
+    background: var(--accent);
+    border-radius: 2px;
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { to { visibility: hidden; } }
+
+  /* ---------- 输入区 ---------- */
+  footer {
+    flex: none;
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--line);
+    background: #fff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .belly {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    height: 38px;
+    border: 1px solid var(--accent-line);
+    border-radius: 12px;
+    background: var(--accent-soft);
+  }
+  .belly:focus-within { background: #fff; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77, 107, 254, .14); }
+  .belly input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 13.5px;
+  }
+  .belly input::placeholder { color: var(--ink-faint); }
+  .send {
+    flex: none;
+    height: 38px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .send:hover { filter: brightness(1.05); }
+  .send:disabled { opacity: .55; cursor: default; }
+</style>
+</head>
+<body>
+  <header>
+    <img class="whale" alt="" src="data:image/png;base64,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">
+    <span class="title" id="title">Bubble Ask</span>
+    <button class="ghost" id="copy" title="复制全文">复制</button>
+    <button class="ghost" id="close" title="关闭">✕</button>
+  </header>
+
+  <main id="stream"></main>
+
+  <footer>
+    <div class="belly">
+      <input id="input" type="text" autocomplete="off" placeholder="接着问点什么…">
+    </div>
+    <button class="send" id="send">追问</button>
+  </footer>
+
+<script>
+  //#region 极简 Markdown 渲染
+  // 只做对话里真会出现的语法：标题、列表、引用、表格、围栏代码、行内代码、加粗、
+  // 斜体、链接、分隔线。刻意不引第三方库 —— 这段要能被原样搬到别的宿主里。
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
+
+  function inline(text) {
+    let out = escapeHtml(text)
+    // 行内代码先抽出来，避免里面的 * _ 被当成强调
+    const codes = []
+    out = out.replace(/`([^`]+)`/g, function (_, code) {
+      codes.push(code)
+      return '\u0000' + (codes.length - 1) + '\u0000'
+    })
+    out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    out = out.replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    out = out.replace(/\u0000(\d+)\u0000/g, function (_, index) {
+      return '<code>' + codes[Number(index)] + '</code>'
+    })
+    return out
+  }
+
+  function renderTable(lines) {
+    const rows = lines.map(function (line) {
+      return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (cell) {
+        return cell.trim()
+      })
+    })
+    if (rows.length < 2) return null
+    const head = rows[0]
+    const body = rows.slice(2)
+    let html = '<table><thead><tr>'
+    head.forEach(function (cell) { html += '<th>' + inline(cell) + '</th>' })
+    html += '</tr></thead><tbody>'
+    body.forEach(function (row) {
+      html += '<tr>'
+      head.forEach(function (_, index) { html += '<td>' + inline(row[index] || '') + '</td>' })
+      html += '</tr>'
+    })
+    return html + '</tbody></table>'
+  }
+
+  function renderMarkdown(source) {
+    const lines = String(source || '').replace(/\r\n/g, '\n').split('\n')
+    let html = ''
+    let index = 0
+    let paragraph = []
+    let list = null
+
+    function flushParagraph() {
+      if (paragraph.length === 0) return
+      html += '<p>' + inline(paragraph.join('\n')).replace(/\n/g, '<br>') + '</p>'
+      paragraph = []
+    }
+    function flushList() {
+      if (!list) return
+      html += '</' + list + '>'
+      list = null
+    }
+
+    while (index < lines.length) {
+      const line = lines[index]
+
+      // 围栏代码块
+      const fence = line.match(/^\s*```(.*)$/)
+      if (fence) {
+        flushParagraph()
+        flushList()
+        const body = []
+        index += 1
+        while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+          body.push(lines[index])
+          index += 1
+        }
+        index += 1
+        html += '<pre><code>' + escapeHtml(body.join('\n')) + '</code></pre>'
+        continue
+      }
+
+      // 表格：至少两行且第二行是分隔线
+      if (/^\s*\|/.test(line) && index + 1 < lines.length && /^\s*\|?[\s:|-]+\|/.test(lines[index + 1])) {
+        flushParagraph()
+        flushList()
+        const block = []
+        while (index < lines.length && /^\s*\|/.test(lines[index])) {
+          block.push(lines[index])
+          index += 1
+        }
+        const table = renderTable(block)
+        html += table || ('<p>' + inline(block.join(' ')) + '</p>')
+        continue
+      }
+
+      const heading = line.match(/^\s*(#{1,6})\s+(.*)$/)
+      if (heading) {
+        flushParagraph()
+        flushList()
+        const level = heading[1].length
+        html += '<h' + level + '>' + inline(heading[2]) + '</h' + level + '>'
+        index += 1
+        continue
+      }
+
+      const quote = line.match(/^\s*>\s?(.*)$/)
+      if (quote) {
+        flushParagraph()
+        flushList()
+        const body = []
+        while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+          body.push(lines[index].replace(/^\s*>\s?/, ''))
+          index += 1
+        }
+        html += '<blockquote>' + inline(body.join('\n')).replace(/\n/g, '<br>') + '</blockquote>'
+        continue
+      }
+
+      if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
+        flushParagraph()
+        flushList()
+        html += '<hr>'
+        index += 1
+        continue
+      }
+
+      const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/)
+      const bullet = line.match(/^\s*[-*+]\s+(.*)$/)
+      if (ordered || bullet) {
+        flushParagraph()
+        const kind = ordered ? 'ol' : 'ul'
+        if (list !== kind) {
+          flushList()
+          html += '<' + kind + '>'
+          list = kind
+        }
+        html += '<li>' + inline((ordered || bullet)[1]) + '</li>'
+        index += 1
+        continue
+      }
+
+      if (/^\s*$/.test(line)) {
+        flushParagraph()
+        flushList()
+        index += 1
+        continue
+      }
+
+      flushList()
+      paragraph.push(line)
+      index += 1
+    }
+
+    flushParagraph()
+    flushList()
+    return html
+  }
+  //#endregion
+
+  //#region 视图状态
+  const els = {
+    stream: document.getElementById('stream'),
+    title: document.getElementById('title'),
+    input: document.getElementById('input'),
+    send: document.getElementById('send'),
+    copy: document.getElementById('copy'),
+    close: document.getElementById('close'),
+  }
+
+  let current = null      // 当前回答：{ wrap, reasoningEl, bodyEl, raw }
+  let stickToBottom = true
+  let renderFrame = 0
+
+  els.stream.addEventListener('scroll', function () {
+    const gap = els.stream.scrollHeight - els.stream.scrollTop - els.stream.clientHeight
+    stickToBottom = gap < 40
+  })
+
+  function scrollToBottom() {
+    if (!stickToBottom) return
+    els.stream.scrollTop = els.stream.scrollHeight
+  }
+
+  function reportHeight() {
+    // 让宿主把窗口高度贴合内容（Markdown 渲染后的真实高度，不是按字数估）
+    const height = Math.min(560, Math.max(140, document.body.scrollHeight))
+    post('height:' + height)
+  }
+
+  function post(message) {
+    // 宿主通道：WebView2 用 chrome.webview；别的宿主（Tauri/Electron）换掉这一处即可。
+    // 协议是纯字符串（"followup:…"），宿主那边不用解析 JSON。
+    try {
+      if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+        window.chrome.webview.postMessage(message)
+      } else if (window.__hostPost) {
+        window.__hostPost(message)
+      }
+    } catch (error) {
+      /* 没有宿主就静默 */
+    }
+  }
+
+  function scheduleRender() {
+    if (renderFrame) return
+    renderFrame = requestAnimationFrame(function () {
+      renderFrame = 0
+      if (!current) return
+      const stick = stickToBottom
+      current.bodyEl.innerHTML = renderMarkdown(current.raw) + (current.streaming ? '<span class="caret"></span>' : '')
+      if (stick) scrollToBottom()
+      reportHeight()
+    })
+  }
+
+  function scrollOrRender() {
+    scrollToBottom()
+    scheduleRender()
+  }
+  //#endregion
+
+  //#region 宿主 API（C# 通过 ExecuteScriptAsync 调这些）
+  window.ds = {
+    setTitle: function (text) {
+      els.title.textContent = text || 'Bubble Ask'
+      els.title.title = text || ''
+    },
+    beginTurn: function (question) {
+      const turn = document.createElement('div')
+      turn.className = 'turn'
+
+      const ask = document.createElement('div')
+      ask.className = 'ask'
+      const bubble = document.createElement('div')
+      bubble.className = 'bubble'
+      bubble.textContent = question || ''
+      ask.appendChild(bubble)
+      turn.appendChild(ask)
+
+      const reasoningEl = document.createElement('div')
+      reasoningEl.className = 'reasoning'
+      reasoningEl.style.display = 'none'
+      turn.appendChild(reasoningEl)
+
+      const bodyEl = document.createElement('div')
+      bodyEl.className = 'md'
+      turn.appendChild(bodyEl)
+
+      els.stream.appendChild(turn)
+      current = { wrap: turn, reasoningEl: reasoningEl, bodyEl: bodyEl, raw: '', reasoning: '', streaming: true }
+      stickToBottom = true
+      scrollOrRender()
+      return true
+    },
+    appendReasoning: function (delta) {
+      if (!current) return false
+      current.reasoning += String(delta || '')
+      current.reasoningEl.style.display = ''
+      current.reasoningEl.textContent = current.reasoning
+      scrollToBottom()
+      reportHeight()
+      return true
+    },
+    appendAnswer: function (delta) {
+      if (!current) return false
+      current.raw += String(delta || '')
+      scheduleRender()
+      return true
+    },
+    endTurn: function () {
+      if (!current) return false
+      current.streaming = false
+      scheduleRender()
+      setBusy(false)
+      return true
+    },
+    failTurn: function (message) {
+      if (!current) return false
+      current.streaming = false
+      const error = document.createElement('div')
+      error.className = 'error'
+      error.textContent = '⚠ ' + (message || '出错了')
+      current.bodyEl.appendChild(error)
+      scheduleRender()
+      setBusy(false)
+      return true
+    },
+    note: function (text) {
+      const note = document.createElement('div')
+      note.className = 'note'
+      note.textContent = text || ''
+      els.stream.appendChild(note)
+      scrollToBottom()
+      reportHeight()
+      return true
+    },
+    focusInput: function () {
+      els.input.focus()
+      return true
+    },
+    setBusy: function (busy) {
+      setBusy(!!busy)
+      return true
+    },
+    bodyText: function () {
+      return current ? current.raw : ''
+    },
+  }
+  //#endregion
+
+  //#region 页脚交互
+  function setBusy(busy) {
+    els.send.disabled = !!busy
+    els.input.disabled = !!busy
+  }
+
+  function submit() {
+    const text = els.input.value.trim()
+    if (!text) return
+    els.input.value = ''
+    setBusy(true)
+    post('followup:' + text)
+  }
+
+  els.send.addEventListener('click', submit)
+  els.input.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault()
+      submit()
+    }
+  })
+  els.copy.addEventListener('click', function () {
+    const raw = current ? current.raw : ''
+    post('copy:' + raw)
+  })
+  els.close.addEventListener('click', function () {
+    post('close:')
+  })
+
+  // 无边框窗口：按住标题栏拖动（由宿主处理，这里只上报）
+  document.querySelector('header').addEventListener('mousedown', function (event) {
+    if (event.button !== 0) return
+    if (event.target.closest('button')) return
+    post('drag:')
+  })
+
+  reportHeight()
+  //#endregion
+</script>
+</body>
+</html>

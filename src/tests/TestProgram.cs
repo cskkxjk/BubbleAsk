@@ -71,8 +71,19 @@ namespace BubbleAsk
                 return 0;
             }
 
+            // 开发用：跑一次 HTML 版气泡并截图（验证 WebView2 这条路真的能渲染）。
+            //   BubbleAsk.Tests.exe --bubbleweb <outDir>
+            if (args != null && args.Length > 0 && string.Equals(args[0], "--bubbleweb", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunBubbleWeb(args.Length > 1 ? args[1] : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest"));
+            }
+
             string outDir = args != null && args.Length > 0 ? args[0] : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest");
             Directory.CreateDirectory(outDir);
+
+            // 自测里强制用原生气泡：DrawToBitmap 抓不到 WebView2 的内容，
+            // 排版断言得在那套自绘界面上做。HTML 版另有独立的前端测试（见 docs 说明）。
+            AnswerBubble.ForceNativeUi = true;
 
             try
             {
@@ -944,6 +955,62 @@ namespace BubbleAsk
             return count;
         }
 
+        /// <summary>
+        /// HTML 版气泡的端到端验证：真的起 WebView2、喂一轮带 Markdown 的回答，
+        /// 再用引擎自己的截图接口把画面存下来。DrawToBitmap 抓不到 WebView2。
+        /// </summary>
+        private static int RunBubbleWeb(string outDir)
+        {
+            Directory.CreateDirectory(outDir);
+            try
+            {
+                using (AnswerBubble bubble = new AnswerBubble(new AppConfig()))
+                {
+                    bubble.ShowForAsk();
+                    bubble.Location = new Point(120, 120);
+                    bubble.Width = 460;
+                    bubble.Height = 520;
+                    Pump(60);
+                    bubble.SetTitle("DeepSeek · deepseek-chat");
+                    bubble.BeginTurn("什么是闭包？");
+                    bubble.AppendReasoning("先想清楚捕获的是变量还是值。" + Environment.NewLine);
+                    bubble.AppendAnswer("闭包是**函数**加上它捕获的词法环境。" + Environment.NewLine + Environment.NewLine);
+                    bubble.AppendAnswer("```js" + Environment.NewLine + "const next = makeCounter()" + Environment.NewLine + "```" + Environment.NewLine);
+                    bubble.EndTurn();
+                    Pump(40);
+                    bubble.Activate();
+                    bubble.TopMost = true;
+                    Pump(10);
+                    Console.WriteLine("ready=" + bubble.WebUiReady + " error=" + (bubble.WebUiError ?? "-"));
+                    string path = Path.Combine(outDir, "bubble-web.png");
+                    Rectangle bounds = bubble.Bounds;
+                    using (Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height))
+                    using (Graphics graphics = Graphics.FromImage(bitmap))
+                    {
+                        graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bitmap.Size);
+                        bitmap.Save(path, ImageFormat.Png);
+                    }
+                    bool ok = File.Exists(path) && new FileInfo(path).Length > 2000;
+                    Console.WriteLine((ok ? "SAVED " : "NO-WEBUI ") + path + " bytes=" + new FileInfo(path).Length);
+                    return ok ? 0 : 3;
+                }
+            }
+            catch (Exception error)
+            {
+                Console.WriteLine("FAILED " + error.Message);
+                return 4;
+            }
+        }
+
+        /// <summary>转消息循环若干拍（WebView2 的初始化和渲染都靠它推进）。</summary>
+        private static void Pump(int ticks)
+        {
+            for (int i = 0; i < ticks; i += 1)
+            {
+                Application.DoEvents();
+                Thread.Sleep(50);
+            }
+        }
         private static void TestOffscreenForm(string outDir)
         {
             try
@@ -1110,7 +1177,7 @@ namespace BubbleAsk
                 using (AnswerBubble bubble = new AnswerBubble(config))
                 {
                     bubble.StartPosition = FormStartPosition.Manual;
-                    bubble.Location = new Point(-3000, -3000);
+                    bubble.Location = new Point(120, 120);
                     bubble.SetTitle("DeepSeek · deepseek-chat");
                     bubble.ShowForAsk();
                     Application.DoEvents();

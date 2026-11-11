@@ -1,4 +1,4 @@
-﻿# 打包脚本：把三个交付物分别打成独立的 zip。
+# 打包脚本：把三个交付物分别打成独立的 zip。
 #
 #   powershell -ExecutionPolicy Bypass -File .\pack.ps1
 #   powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild    # 用已有的 dist
@@ -80,6 +80,10 @@ $desktopStage = Join-Path $stage 'desktop'
 New-Item -ItemType Directory -Force -Path $desktopStage | Out-Null
 Copy-Item $exe $desktopStage
 Copy-Item (Join-Path $root 'README.md') $desktopStage
+# WebView2 SDK：托管程序集 + 原生 loader，必须和 exe 放一起（API 气泡的 HTML 版靠它）
+foreach ($dll in @('Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll')) {
+    Copy-Item (Join-Path $root ('third_party\webview2\' + $dll)) $desktopStage
+}
 # 单文件交付：--service 是同一个 exe 的参数，不需要第二个文件。
 $note = @"
 Bubble Ask 桌面端 $desktopVer

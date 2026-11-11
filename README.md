@@ -310,13 +310,21 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
   │          发送未获确认 → 回退为 ?q= 预填链接（仅填入不发送；仅当填入/点击本身失败才回退）
   └─ API
        POST {base}/v1/chat/completions，stream=true → 逐段 SSE
-       └ 自绘气泡：流式显示 + 多轮追问
+       └ 内嵌 HTML 气泡（WebView2 渲染）：Markdown 流式显示 + 多轮追问
              截图：转为 data URL 一并提交
 ```
 
+### API 模式的气泡 UI
+
+答案的显示层是一份**独立的 HTML/CSS/JS 资产**（[`src/web/answer.html`](src/web/answer.html)），不依赖 Windows，也不依赖任何宿主 API：Markdown、代码块、表格、流式回流都在浏览器里做。桌面端用 **WebView2** 承载它；这台机器没装 WebView2 运行时时自动退回原来的 WinForms 自绘气泡（功能一致，排版能力弱一些）。
+
+- 宿主接口很小：C# 调页面里的 `ds.beginTurn / appendAnswer / appendReasoning / endTurn / failTurn / setTitle / focusInput / note / setBusy`，页面用 `"followup:…" / "copy:…" / "height:…" / "close:…" / "drag:…"` 这类字符串消息回话。
+- 之所以做成 HTML：将来上 macOS（WKWebView）或换 Electron/Tauri 壳，这份 UI 可以原样搬走。
+- WebView2 的托管程序集与原生 loader 在 `third_party/webview2/`，构建时拷到 `dist/`，打包时随 exe 一起发。
+
 主要设计取舍：
 
-- **不内嵌 Chromium**：直接驱动本机已有的浏览器，避免分发浏览器运行时，并复用现有登录状态。Edge、Chrome 等 Chromium 内核浏览器共用同一套 `--app` 与 CDP 逻辑，因此均可支持。
+- **网页版不内嵌 Chromium**：直接驱动本机已有的浏览器，避免分发浏览器运行时，并复用现有登录状态。Edge、Chrome 等 Chromium 内核浏览器共用同一套 `--app` 与 CDP 逻辑，因此均可支持。（API 模式的答案气泡是个例外：它只渲染我们自己的 HTML，所以用了系统 WebView2，且可以降级。）
 - **使用 CDP 而非页面脚本**：不受页面 CSP 与 Trusted Types 限制，无需注入用户脚本或安装扩展。
 - **应用窗口隔离**：使用独立 profile，并在启动参数中加入 `--disable-sync --disable-extensions`，避免浏览器账号同步日常扩展、或在页面中注入脚本干扰输入框写入。
 - **截图不经过剪贴板**：通过 `DOM.setFileInputFiles` 直接提交文件，既不需要窗口焦点，也不会覆盖剪贴板内容。

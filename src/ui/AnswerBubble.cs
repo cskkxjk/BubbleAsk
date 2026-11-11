@@ -1,7 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Reflection;
+using System.Text;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 namespace BubbleAsk
 {
@@ -39,6 +44,71 @@ namespace BubbleAsk
         private bool _dragging;
         private Point _dragOrigin;
         private Point _formOrigin;
+
+        // ---------- HTML 版（WebView2） ----------
+        /// <summary>自测里置真：DrawToBitmap 抓不到 WebView2 的内容，渲染断言仍需原生那套。</summary>
+        public static bool ForceNativeUi;
+
+        /// <summary>诊断用：HTML 版启用失败时的原因。</summary>
+        public string WebUiError;
+
+        /// <summary>诊断用：HTML 版是否已经就绪。</summary>
+        public bool WebUiReady { get { return _web && _webReady; } }
+
+        /// <summary>内嵌资源名：build.ps1 的 /resource:...,BubbleAsk.answer.html。</summary>
+        private const string HtmlResourceName = "BubbleAsk.answer.html";
+
+        private static bool? _webUiAvailable;
+        private static string _htmlSource;
+
+        private bool _web;
+        private WebView2 _webView;
+        private CoreWebView2 _core;
+        private bool _webReady;
+        private readonly List<string> _transcript = new List<string>();
+
+        /// <summary>Windows 上有 WebView2 运行时就用 HTML 版；没有就退回原生自绘。</summary>
+        private static bool WebUiAvailable()
+        {
+            if (_webUiAvailable.HasValue)
+            {
+                return _webUiAvailable.Value;
+            }
+            bool available;
+            try
+            {
+                string version = CoreWebView2Environment.GetAvailableBrowserVersionString();
+                available = !string.IsNullOrEmpty(version);
+            }
+            catch
+            {
+                available = false;
+            }
+            _webUiAvailable = available;
+            return available;
+        }
+
+        private static string HtmlSource()
+        {
+            if (_htmlSource != null)
+            {
+                return _htmlSource;
+            }
+            Assembly assembly = Assembly.GetExecutingAssembly();
+            using (System.IO.Stream stream = assembly.GetManifestResourceStream(HtmlResourceName))
+            {
+                if (stream == null)
+                {
+                    throw new InvalidOperationException(
+                        "缺少内嵌资源 " + HtmlResourceName + "（build.ps1 的 /resource 参数漏了 answer.html？）");
+                }
+                using (System.IO.StreamReader reader = new System.IO.StreamReader(stream, Encoding.UTF8))
+                {
+                    _htmlSource = reader.ReadToEnd();
+                }
+            }
+            return _htmlSource;
+        }
 
         public event Action<string> FollowUp;
         public event Action Dismissed;
@@ -246,6 +316,13 @@ namespace BubbleAsk
             Controls.Add(divider);
             Controls.Add(_header);
 
+            // 有 WebView2 运行时就用 HTML 版盖住原生界面；没有就继续用自绘那套。
+            _web = !ForceNativeUi && WebUiAvailable();
+            if (_web)
+            {
+                AttachWebUi();
+            }
+
             FormClosed += delegate
             {
                 if (Dismissed != null)
@@ -254,6 +331,201 @@ namespace BubbleAsk
                 }
             };
         }
+
+        //#region HTML 版：WebView2 承载内嵌的 answer.html
+        /// <summary>
+        /// 用 WebView2 盖住原生界面（原生那套仍然在，作为初始化失败时的兜底，
+        /// 也作为 BodyText / 自测渲染断言的来源）。
+        /// </summary>
+        private void AttachWebUi()
+        {
+            try
+            {
+                _webView = new WebView2();
+                _webView.Dock = DockStyle.Fill;
+                _webView.DefaultBackgroundColor = Color.White;
+                // 把原生那套藏起来（不是删掉）：WinForms 的 Dock 布局只给可见控件留位置，
+                // 藏着它们 webview 才能真正铺满整块；同时它们仍是初始化失败时的兜底。
+                foreach (Control child in Controls)
+                {
+                    child.Visible = false;
+                }
+                Controls.Add(_webView);
+                _webView.BringToFront();
+                _webView.CoreWebView2InitializationCompleted += OnWebViewInitialized;
+                _webView.EnsureCoreWebView2Async(null);
+            }
+            catch
+            {
+                // 初始化失败：拆掉 webview，回到原生界面
+                _web = false;
+                if (_webView != null)
+                {
+                    Controls.Remove(_webView);
+                    _webView.Dispose();
+                    _webView = null;
+                }
+                AdjustHeight();
+            }
+        }
+
+        private void OnWebViewInitialized(object sender, CoreWebView2InitializationCompletedEventArgs e)
+        {
+            if (!e.IsSuccess || _webView == null)
+            {
+                _web = false;
+                return;
+            }
+            _core = _webView.CoreWebView2;
+            _core.Settings.AreDefaultContextMenusEnabled = false;
+            _core.Settings.AreDevToolsEnabled = false;
+            _core.Settings.IsStatusBarEnabled = false;
+            _core.WebMessageReceived += OnWebMessage;
+            _core.NavigationCompleted += OnWebNavigationCompleted;
+            _core.NavigateToString(HtmlSource());
+        }
+
+        private void OnWebNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            if (!e.IsSuccess)
+            {
+                return;
+            }
+            _webReady = true;
+            // 页面就绪前攒下的调用按原顺序补发一次
+            string[] queued = _transcript.ToArray();
+            _transcript.Clear();
+            for (int i = 0; i < queued.Length; i += 1)
+            {
+                RunScript(queued[i]);
+            }
+        }
+
+        /// <summary>调用页面里的 ds.* 接口；页面没就绪就先攒着。</summary>
+        private void Js(string script)
+        {
+            if (!_web)
+            {
+                return;
+            }
+            if (!_webReady)
+            {
+                _transcript.Add(script);
+                return;
+            }
+            RunScript(script);
+        }
+
+        private void RunScript(string script)
+        {
+            try
+            {
+                if (_core != null)
+                {
+                    _core.ExecuteScriptAsync(script);
+                }
+            }
+            catch
+            {
+                /* 页面在导航中/已销毁：忽略，原生界面还有一份内容 */
+            }
+        }
+
+        /// <summary>页面 → 宿主：字符串协议（"followup:…" / "copy:…" / "height:…" …）。</summary>
+        private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            string message;
+            try
+            {
+                message = e.TryGetWebMessageAsString();
+            }
+            catch
+            {
+                return;
+            }
+            if (string.IsNullOrEmpty(message))
+            {
+                return;
+            }
+            int split = message.IndexOf(':');
+            string kind = split >= 0 ? message.Substring(0, split) : message;
+            string body = split >= 0 ? message.Substring(split + 1) : string.Empty;
+
+            if (kind == "followup")
+            {
+                if (!string.IsNullOrEmpty(body) && FollowUp != null)
+                {
+                    FollowUp(body);
+                }
+                return;
+            }
+            if (kind == "copy")
+            {
+                try
+                {
+                    Clipboard.SetText(body ?? string.Empty);
+                }
+                catch
+                {
+                    /* 剪贴板被占用：静默 */
+                }
+                return;
+            }
+            if (kind == "close")
+            {
+                Close();
+                return;
+            }
+            if (kind == "drag")
+            {
+                ReleaseCapture();
+                SendMessage(Handle, 0xA1, 0x2, 0);
+                return;
+            }
+            if (kind == "height")
+            {
+                int px;
+                if (int.TryParse(body, out px))
+                {
+                    int target = Math.Min(560, Math.Max(140, px));
+                    if (Math.Abs(target - Height) > 2)
+                    {
+                        Height = target;
+                    }
+                }
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+
+        /// <summary>
+        /// 诊断/自测用：把 WebView2 当前画面存成 PNG。没启用 HTML 版（或还没就绪）返回 false。
+        /// DrawToBitmap 抓不到 WebView2 的内容，只能走引擎自己的截图接口。
+        /// </summary>
+        public bool CaptureWebUi(string path)
+        {
+            if (!_web || _core == null || !_webReady || string.IsNullOrEmpty(path))
+            {
+                return false;
+            }
+            try
+            {
+                using (System.IO.FileStream stream = System.IO.File.Create(path))
+                {
+                    _core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream).Wait(8000);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+            return System.IO.File.Exists(path) && new System.IO.FileInfo(path).Length > 0;
+        }
+        //#endregion
 
         public bool IsStreaming
         {
@@ -279,6 +551,7 @@ namespace BubbleAsk
         public void SetTitle(string text)
         {
             _title.Text = text;
+            Js("ds.setTitle(" + Json.Stringify(text ?? string.Empty) + ")");
         }
 
         public void BeginTurn(string question)
@@ -288,6 +561,7 @@ namespace BubbleAsk
             _thinking.Visible = false;
             _thinking.Height = 0;
             AppendParagraph("你： " + (question ?? ""), Color.FromArgb(90, 90, 100), false);
+            Js("ds.beginTurn(" + Json.Stringify(question ?? string.Empty) + ")");
             _body.SelectionStart = _body.TextLength;
             _body.ScrollToCaret();
             AdjustHeight();
@@ -306,6 +580,7 @@ namespace BubbleAsk
                 next = next.Substring(next.Length - 90);
             }
             _thinking.Text = "思考中：" + next.Replace("\r", " ").Replace("\n", " ");
+            Js("ds.appendReasoning(" + Json.Stringify(delta) + ")");
             if (!_thinking.Visible)
             {
                 _thinking.Visible = true;
@@ -326,6 +601,7 @@ namespace BubbleAsk
                 _thinking.Height = 0;
             }
             AppendRaw(delta, Color.FromArgb(31, 41, 55));
+            Js("ds.appendAnswer(" + Json.Stringify(delta) + ")");
         }
 
         public void EndTurn()
@@ -333,6 +609,7 @@ namespace BubbleAsk
             _thinking.Visible = false;
             _thinking.Height = 0;
             AppendRaw("\n", Color.FromArgb(31, 41, 55));
+            Js("ds.endTurn()");
             SetStreaming(false);
             AdjustHeight();
         }
@@ -342,6 +619,7 @@ namespace BubbleAsk
             _thinking.Visible = false;
             _thinking.Height = 0;
             AppendParagraph("⚠ " + (message ?? "出错了"), Color.FromArgb(185, 28, 28), false);
+            Js("ds.failTurn(" + Json.Stringify(message ?? string.Empty) + ")");
             SetStreaming(false);
             AdjustHeight();
         }
@@ -350,6 +628,7 @@ namespace BubbleAsk
         public void Note(string text)
         {
             AppendParagraph(text, Color.FromArgb(107, 114, 128), true);
+            Js("ds.note(" + Json.Stringify(text ?? string.Empty) + ")");
             AdjustHeight();
         }
 
@@ -360,6 +639,7 @@ namespace BubbleAsk
             {
                 _input.Focus();
             }
+            Js("ds.focusInput()");
         }
 
         /// <summary>和用户在输入框里按回车等价；自测与托盘菜单复用这条路径。</summary>
@@ -620,6 +900,11 @@ namespace BubbleAsk
         /// <summary>内容变长时跟着长高，最多到配置的上限。</summary>
         private void AdjustHeight()
         {
+            // HTML 版的真实高度由页面自己量（Markdown 渲染后的高度才对），这里不掺和
+            if (_web)
+            {
+                return;
+            }
             int maxHeight = _config.BubbleMaxHeight > 240 ? _config.BubbleMaxHeight : 560;
             Point last = _body.GetPositionFromCharIndex(_body.TextLength);
             int chrome = _header.Height + _footer.Height + (_thinking.Visible ? _thinking.Height : 0) + 40;
