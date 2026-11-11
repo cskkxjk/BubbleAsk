@@ -204,6 +204,13 @@ namespace BubbleAsk
             string longText = new string('a', 1000);
             string truncated = PromptBuilder.Normalize(longText, 100);
             Check("normalize truncates", truncated.Length <= 110 && truncated.Length > 50, "len=" + truncated.Length);
+
+            // 用户自己写的问题：问题在后、材料在前；空问题返回空串让调用方回退模板。
+            string own = PromptBuilder.BuildWithQuestion("这跟上面矛盾吗？", "分布式系统没有银弹");
+            Check("question prompt keeps text", own.Contains("分布式系统没有银弹"), own);
+            Check("question prompt puts question last", own.TrimEnd().EndsWith("这跟上面矛盾吗？"), own);
+            Check("question prompt empty question", PromptBuilder.BuildWithQuestion("   ", "任意") == "", null);
+            Check("question prompt without text", PromptBuilder.BuildWithQuestion("解释一下", null) == "【我的问题】\r\n解释一下" || PromptBuilder.BuildWithQuestion("解释一下", null) == "【我的问题】\n解释一下", PromptBuilder.BuildWithQuestion("解释一下", null));
         }
 
         private static void TestHotkeyParse()
@@ -971,11 +978,44 @@ namespace BubbleAsk
                     Check("settings form renders", new FileInfo(first).Length > 2000, first);
                     form.Close();
                 }
+
+                // 抓词提问的输入框：能建起来、画得出图，尺寸和控件齐全。
+                using (QuestionForm form = new QuestionForm("分布式系统里没有银弹，这句话是什么意思？", "什么是%s"))
+                {
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-3000, -3000);
+                    form.Show();
+                    Application.DoEvents();
+                    Check("question form size", form.ClientSize.Width == 440 && form.ClientSize.Height == 156, form.ClientSize.ToString());
+                    Check("question form has input", HasTextBoxControl(form), "没有 TextBox");
+                    string path = Path.Combine(outDir, "question-form.png");
+                    RenderForm(form, path);
+                    Check("question form renders", new FileInfo(path).Length > 2000, path);
+                    form.Close();
+                }
             }
             catch (Exception error)
             {
                 Check("settings form renders", false, error.Message);
             }
+        }
+
+        /// <summary>窗口里有没有文本框（不引 LINQ，只走控件树）。</summary>
+        private static bool HasTextBoxControl(Control root)
+        {
+            for (int i = 0; i < root.Controls.Count; i++)
+            {
+                Control child = root.Controls[i];
+                if (child is TextBox)
+                {
+                    return true;
+                }
+                if (HasTextBoxControl(child))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>

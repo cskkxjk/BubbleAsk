@@ -262,7 +262,19 @@ namespace BubbleAsk
                 }
 
                 string text = PromptBuilder.Normalize(selected, _config.MaxChars);
-                string prompt = PromptBuilder.Build(_config.PromptTemplate, text);
+                // 先问一句「你想问什么」：留空 ＝ 老模板，取消 ＝ 什么都不发。
+                // 只传选中文字给弹窗，不让它把 clipboard 里的原文改坏。
+                string question = QuestionForm.Ask(text, _config.PromptTemplate);
+                if (question == null)
+                {
+                    Log.Info("抓词提问已取消");
+                    return;
+                }
+                string prompt = PromptBuilder.BuildWithQuestion(question, text);
+                if (prompt.Length == 0)
+                {
+                    prompt = PromptBuilder.Build(_config.PromptTemplate, text);
+                }
                 Log.Info("提问: " + prompt);
 
                 if (IsApiMode())

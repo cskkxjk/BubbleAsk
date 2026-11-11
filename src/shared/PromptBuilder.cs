@@ -77,5 +77,31 @@ namespace BubbleAsk
             tpl = tpl.Trim();
             return tpl.Length == 0 ? DefaultShotPrompt : tpl;
         }
+
+        /// <summary>
+        /// 用户自己写的问题 + 选中的文字。
+        ///
+        /// 问题放在最后（模型对「最后那句」最敏感），选中的文字放前面当材料。
+        /// 问题为空时返回空串，调用方据此回退到 Build(template, text)。
+        /// </summary>
+        public static string BuildWithQuestion(string question, string text)
+        {
+            string asked = (question ?? string.Empty).Trim();
+            if (asked.Length == 0)
+            {
+                return string.Empty;
+            }
+            string body = (text ?? string.Empty).Trim();
+            StringBuilder sb = new StringBuilder();
+            if (body.Length > 0)
+            {
+                sb.AppendLine("【我选中的文字】");
+                sb.AppendLine(body);
+                sb.AppendLine();
+            }
+            sb.AppendLine("【我的问题】");
+            sb.Append(asked);
+            return sb.ToString();
+        }
     }
 }

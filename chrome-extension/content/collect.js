@@ -166,8 +166,103 @@
     return fields
   }
 
-  /** 选区及其所在的 DOM 路径。 */
-  function collectSelection(ancestorDepth) {
+  /** 头尾保留、中间省略（局部上下文不用精确定位到某个字，保住两端信息量最大）。 */
+  function clip(text, limit) {
+    const value = String(text || '')
+    if (value.length <= limit) return value
+    const head = Math.floor(limit * 0.7)
+    const tail = limit - head - 12
+    return `${value.slice(0, head)}…（省略 ${value.length - head - tail} 字）…${value.slice(-tail)}`
+  }
+
+  /** 元素的可读位置：标签 + #id + .前两个类名。 */
+  function whereOf(element) {
+    if (!element || !element.tagName) return ''
+    const tag = element.tagName.toLowerCase()
+    const parts = [tag]
+    if (element.id) parts.push(`#${element.id}`)
+    const className = typeof element.className === 'string' ? element.className.trim().split(/\s+/).slice(0, 2).join('.') : ''
+    if (className) parts.push(`.${className}`)
+    return parts.join('')
+  }
+
+  /**
+   * 选区**周围**的文字（局部上下文）。
+   *
+   * 为什么需要它：整页 `document.body.innerText` 在 feed 类页面（知乎首页、微博、
+   * 贴吧）几乎没用 —— 选中处通常落在被头尾截断丢掉的中段，虚拟列表里没渲染的卡片
+   * 更是压根不在文本里。真正有用的是「选中处自己那一块」：最近的够长的块容器全文，
+   * 加上最近的小标题、前后一块、以及再往外两层的文字。
+   */
+  function collectLocal(selection, limits) {
+    const budget = limits || {}
+    if (!selection || !selection.rangeCount) return null
+    const range = selection.getRangeAt(0)
+    if (!range || !range.commonAncestorContainer) return null
+
+    /** 块容器的"够长"门槛：太短的容器（span/按钮）不算，继续往上找。 */
+    const MIN_BLOCK = 160
+
+    let node = range.commonAncestorContainer
+    let element = node && node.nodeType === 1 ? node : node && node.parentElement
+    let block = null
+    let fallback = null
+    for (let depth = 0; element && element !== document.body && depth < 12; depth += 1) {
+      const text = tidy(element.innerText || '')
+      if (text.length >= MIN_BLOCK) {
+        block = element
+        break
+      }
+      if (text.length > 0) fallback = element
+      element = element.parentElement
+    }
+    if (!block) block = fallback
+    if (!block) return null
+
+    const blockText = tidy(block.innerText || '')
+    const result = {
+      where: whereOf(block),
+      chars: blockText.length,
+      block: clip(blockText, budget.localBlock || 2500),
+    }
+
+    // 最近的小标题：选区之前、文档序上最近的一个标题（知乎 feed 里就是那张卡的问题标题）
+    const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]')
+    let nearestHeading = ''
+    for (const heading of headings) {
+      const position = heading.compareDocumentPosition(range.startContainer)
+      if ((position & Node.DOCUMENT_POSITION_FOLLOWING) === 0) continue
+      const text = tidy(heading.innerText || '')
+      if (text) nearestHeading = text
+    }
+    if (nearestHeading) result.heading = clip(nearestHeading, 140)
+
+    // 前后各一块：列表/卡片流里最直接的邻居
+    const siblingText = (sibling) => {
+      if (!sibling || !sibling.tagName) return ''
+      const text = tidy(sibling.innerText || '')
+      return text.length >= 20 ? clip(text, budget.localSibling || 400) : ''
+    }
+    const above = siblingText(block.previousElementSibling)
+    const below = siblingText(block.nextElementSibling)
+    if (above) result.above = above
+    if (below) result.below = below
+
+    // 再往外两层：告诉模型这块在页面里的位置
+    const parents = []
+    let parent = block.parentElement
+    for (let depth = 0; parent && parent !== document.body && depth < 2; depth += 1) {
+      const text = tidy(parent.innerText || '')
+      if (text) parents.push({ where: whereOf(parent), text: clip(text, budget.localParent || 320) })
+      parent = parent.parentElement
+    }
+    if (parents.length > 0) result.parents = parents
+
+    return result
+  }
+
+  /** 选区及其所在的 DOM 路径、以及周围的文字。 */
+  function collectSelection(ancestorDepth, limits) {
     const selection = window.getSelection()
     const text = selection ? tidy(selection.toString()) : ''
     if (!text) return { text: '', ancestors: [] }
@@ -190,7 +285,20 @@
       element = element.parentElement
       depth += 1
     }
-    return { text, ancestors }
+    const local = collectLocal(selection, limits)
+    return local ? { text, ancestors, local } : { text, ancestors }
+  }
+
+  /**
+   * 只取「选区周围的文字」。气泡在**弹出那一刻**调用它 —— 那时选区一定还在；
+   * 等后台发 BA_COLLECT 回来时选区多半已经收起，祖先和局部上下文都会是空的。
+   */
+  globalThis.__bubbleAskSelectionContext = function __bubbleAskSelectionContext(limits) {
+    try {
+      return collectLocal(window.getSelection(), limits || {})
+    } catch (error) {
+      return null
+    }
   }
 
   /**
@@ -199,7 +307,7 @@
    */
   globalThis.__bubbleAskCollect = function __bubbleAskCollect(limits) {
     const budget = limits || {}
-    const selection = collectSelection(budget.selectionAncestors || 4)
+    const selection = collectSelection(budget.selectionAncestors || 4, budget)
     const bodyText = tidy(document.body ? document.body.innerText : '')
     const description = (() => {
       const meta = document.querySelector('meta[name="description"], meta[property="og:description"]')

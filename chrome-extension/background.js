@@ -466,16 +466,20 @@ async function preview(tabId, question, providerParam) {
  * @param selectionOverride 划词气泡带来的选区文本。点气泡时页面选区可能已经被
  *        收起，所以以气泡记住的那份为准。
  * @param providerParam 服务方 id（popup 传），缺省时用存储里的默认服务方。
+ * @param localOverride 气泡在**弹出那一刻**抓下的「选区周围的文字」。等这里再去读
+ *        DOM 时选区早就没了，祖先链和局部上下文都会是空的 —— 所以只能由气泡带过来。
  */
-async function ask(tabId, question, selectionOverride, providerParam) {
+async function ask(tabId, question, selectionOverride, providerParam, localOverride) {
   const provider = await resolveProviderParam(providerParam)
   const context = await collectFromTab(tabId)
   const selectionText = String(selectionOverride || '').trim()
   if (selectionText) {
+    const local = localOverride || (context.selection && context.selection.local) || null
     context.selection = {
       text: selectionText,
       ancestors: (context.selection && context.selection.ancestors) || [],
     }
+    if (local) context.selection.local = local
   }
   // question 为空时 buildPrompt 会按「有没有选区」自动选默认问题。
   const prompt = buildPrompt(context, question)
@@ -556,7 +560,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, stage: 'collect', detail: '没有拿到选区' })
       return false
     }
-    ask(tabId, '', selection, message.provider)
+    ask(tabId, String(message.question || ''), selection, message.provider, message.local || null)
       .then(sendResponse)
       .catch((error) =>
         sendResponse({ ok: false, stage: 'error', detail: String(error && error.message ? error.message : error) }),

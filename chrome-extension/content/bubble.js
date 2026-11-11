@@ -65,6 +65,47 @@
     .pill[data-tone="error"] { background: linear-gradient(180deg, #e5605a, #d64a44); }
     .pill[data-tone="ok"] { background: linear-gradient(180deg, #3f9a5b, #338451); }
     .pill svg { width: 14px; height: 14px; flex: none; }
+    .card {
+      position: fixed;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      width: min(340px, 86vw);
+      padding: 9px 10px;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 10px 30px rgba(24, 32, 74, 0.26), 0 1px 2px rgba(0, 0, 0, 0.16);
+      pointer-events: auto;
+      font: 500 13px/1.3 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+    }
+    .card[data-state="shown"] { display: flex; }
+    .ask-row { display: flex; align-items: center; gap: 6px; }
+    .ask-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      height: 30px;
+      padding: 0 9px;
+      border-radius: 8px;
+      border: 1px solid #d7dbe8;
+      background: #fff;
+      color: #1b2130;
+      font: 500 13px/1.2 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+      outline: none;
+    }
+    .ask-input:focus { border-color: #4d6bfe; box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.16); }
+    .ask-go {
+      flex: none;
+      height: 30px;
+      padding: 0 12px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(180deg, #5b78ff, #4d6bfe);
+      color: #fff;
+      font: 600 12.5px/1 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+    }
+    .ask-go:disabled { opacity: 0.55; cursor: default; }
+    .ask-hint { color: #8a90a2; font: 400 11px/1.3 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif; }
   `
 
   const pill = document.createElement('button')
@@ -85,10 +126,39 @@
   label.textContent = '问这段'
 
   pill.append(icon, label)
-  shadow.append(style, pill)
+
+  // 点气泡后展开的提问框：可以自己写问题，也可以留空直接用默认问题。
+  const card = document.createElement('form')
+  card.className = 'card'
+  card.dataset.state = 'hidden'
+  const row = document.createElement('div')
+  row.className = 'ask-row'
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'ask-input'
+  input.placeholder = '想问什么？（留空就用默认问题）'
+  input.autocomplete = 'off'
+  input.spellcheck = false
+  const go = document.createElement('button')
+  go.type = 'submit'
+  go.className = 'ask-go'
+  go.textContent = '发送'
+  row.append(input, go)
+  const hint = document.createElement('div')
+  hint.className = 'ask-hint'
+  hint.textContent = '回车发送 · 留空用默认问题 · Esc 取消'
+  card.append(row, hint)
+
+  shadow.append(style, pill, card)
 
   /** 当前气泡对应的选区文本。 */
   let pendingText = ''
+  /** 选区周围的文字（气泡弹出那一刻的快照；等后台去读时就没了）。 */
+  let pendingLocal = null
+  /** 气泡/提问框对齐的选区矩形。 */
+  let anchorRect = null
+  /** idle：只有气泡；asking：提问框展开；sending：已提交，等结果。 */
+  let mode = 'idle'
   /** 隐藏时的收尾（清定时器）。 */
   let hideTimer = null
 
@@ -120,21 +190,35 @@
     return { ok: true, text, rect }
   }
 
-  function place(rect) {
-    pill.dataset.state = 'shown'
-    pill.style.left = '0px'
-    pill.style.top = '0px'
-    const box = pill.getBoundingClientRect()
+  function placeAt(element, rect) {
+    element.dataset.state = 'shown'
+    element.style.left = '0px'
+    element.style.top = '0px'
+    const box = element.getBoundingClientRect()
     let left = rect.left + rect.width / 2 - box.width / 2
     let top = rect.top - box.height - GAP
     if (top < 4) top = rect.bottom + GAP
     left = Math.min(Math.max(4, left), Math.max(4, window.innerWidth - box.width - 4))
     top = Math.min(Math.max(4, top), Math.max(4, window.innerHeight - box.height - 4))
-    pill.style.left = `${Math.round(left)}px`
-    pill.style.top = `${Math.round(top)}px`
+    element.style.left = `${Math.round(left)}px`
+    element.style.top = `${Math.round(top)}px`
+  }
+
+  /** 抓一份「选区周围的文字」。采集器没加载就返回 null，后端会退回整页文本。 */
+  function snapshotLocal() {
+    const collect = globalThis.__bubbleAskSelectionContext
+    if (typeof collect !== 'function') return null
+    try {
+      return collect({})
+    } catch (error) {
+      console.warn('[BubbleAsk] 局部上下文采集失败', error)
+      return null
+    }
   }
 
   function show() {
+    // 正在提问 / 发送中时不要把气泡弹回来盖住输入框
+    if (mode !== 'idle') return
     const found = readSelection()
     if (!found.ok) {
       hide()
@@ -145,18 +229,48 @@
       hideTimer = null
     }
     pendingText = found.text
+    anchorRect = found.rect
+    pendingLocal = snapshotLocal()
     pill.dataset.tone = ''
     pill.dataset.busy = 'false'
     label.textContent = '问这段'
     // 清掉上一次失败留下的 title，否则成功后悬停仍会显示旧错误
     pill.title = ''
-    place(found.rect)
+    placeAt(pill, found.rect)
   }
 
   function hide() {
     pendingText = ''
+    pendingLocal = null
+    anchorRect = null
+    mode = 'idle'
+    card.dataset.state = 'hidden'
+    input.value = ''
+    input.disabled = false
+    go.disabled = false
     pill.dataset.state = 'hidden'
     pill.dataset.busy = 'false'
+  }
+
+  /** 展开提问框：保留 pendingText / pendingLocal，只换 UI。 */
+  function openAsk() {
+    if (!pendingText || !anchorRect) return
+    mode = 'asking'
+    pill.dataset.state = 'hidden'
+    input.value = ''
+    input.disabled = false
+    go.disabled = false
+    placeAt(card, anchorRect)
+    input.focus()
+  }
+
+  /** 收起提问框、回到气泡（不清选区，用户还能再点）。 */
+  function closeAsk() {
+    if (mode !== 'asking') return
+    card.dataset.state = 'hidden'
+    input.value = ''
+    mode = 'idle'
+    if (pendingText && anchorRect) placeAt(pill, anchorRect)
   }
 
   function hideSoon(delayMs) {
@@ -193,6 +307,8 @@
   document.addEventListener(
     'keyup',
     (event) => {
+      // 在自己弹出的输入框里打字，不要触发页面的选词逻辑
+      if (event.composedPath && event.composedPath().includes(host)) return
       if (event.key === 'Escape') {
         hide()
         return
@@ -216,6 +332,10 @@
   // 按下时保住选区：否则 mousedown 一到，页面就把 selection 清了
   pill.addEventListener('mousedown', (event) => {
     event.preventDefault()
+    event.stopPropagation()
+  })
+  // 输入框里要能正常聚焦，只挡住页面自己的 mousedown 反应
+  card.addEventListener('mousedown', (event) => {
     event.stopPropagation()
   })
 
@@ -243,24 +363,36 @@
     return { label, detail: detail ? `${stage || 'error'}：${detail}` : stage || '未知原因' }
   }
 
-  pill.addEventListener('click', async (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (pill.dataset.busy === 'true') return
+  /**
+   * 真正发出去。question 为空 → 后端按「有没有选区」套默认问题，与以前一致；
+   * 有内容 → 用户自己写的问题会被放进 prompt 的「我的问题」一节。
+   */
+  async function send(question) {
     const text = pendingText
     if (!text) {
       hide()
       return
     }
+    mode = 'sending'
+    card.dataset.state = 'hidden'
+    pill.dataset.state = 'shown'
     pill.dataset.busy = 'true'
+    pill.dataset.tone = ''
+    pill.title = ''
     label.textContent = '发送中…'
+    input.disabled = true
+    go.disabled = true
     try {
-      const result = await chrome.runtime.sendMessage({ type: 'BA_ASK_SELECTION', selection: text })
+      const result = await chrome.runtime.sendMessage({
+        type: 'BA_ASK_SELECTION',
+        selection: text,
+        question: String(question || ''),
+        local: pendingLocal,
+      })
       if (result && result.ok) {
         pill.dataset.tone = 'ok'
         label.textContent = '已发送'
       } else {
-        pill.dataset.tone = 'error'
         const failure = describeFailure(result)
         pill.dataset.tone = 'error'
         label.textContent = failure.label
@@ -275,9 +407,34 @@
       console.warn('[BubbleAsk] 发送异常', error)
     } finally {
       pill.dataset.busy = 'false'
+      input.disabled = false
+      go.disabled = false
+      mode = 'idle'
       // 出错时多留一会儿，让人能看清 / 悬停读原因
       hideSoon(pill.dataset.tone === 'error' ? 6000 : 1200)
     }
+  }
+
+  // 点气泡 → 展开提问框，而不是直接发出去
+  pill.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (mode !== 'idle' || pill.dataset.busy === 'true') return
+    openAsk()
+  })
+
+  card.addEventListener('submit', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (mode !== 'asking') return
+    send(input.value.trim())
+  })
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    closeAsk()
   })
 
   /**
