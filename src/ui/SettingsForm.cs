@@ -43,8 +43,6 @@ namespace BubbleAsk
         private TextBox _edgePath;
         private TextBox _profileDir;
         private NumericUpDown _cdpPort;
-        private NumericUpDown _bubbleWidth;
-        private NumericUpDown _bubbleHeight;
         private CheckBox _showBubble;
 
         private TextBox _hotkeySummon;
@@ -386,28 +384,7 @@ namespace BubbleAsk
             _topMost.ForeColor = Ink;
             AddRow(table, "置顶", _topMost, null);
 
-            _bubbleWidth = new NumericUpDown();
-            _bubbleWidth.Minimum = 300;
-            _bubbleWidth.Maximum = 900;
-            _bubbleWidth.Increment = 20;
-            _bubbleHeight = new NumericUpDown();
-            _bubbleHeight.Minimum = 240;
-            _bubbleHeight.Maximum = 1000;
-            _bubbleHeight.Increment = 40;
-            TableLayoutPanel bubbleRow = new TableLayoutPanel();
-            bubbleRow.Dock = DockStyle.Top;
-            bubbleRow.AutoSize = true;
-            bubbleRow.ColumnCount = 2;
-            bubbleRow.RowCount = 1;
-            bubbleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            bubbleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            _bubbleWidth.Dock = DockStyle.Fill;
-            _bubbleHeight.Dock = DockStyle.Fill;
-            _bubbleWidth.Margin = new Padding(0, 0, 6, 0);
-            _bubbleHeight.Margin = new Padding(6, 0, 0, 0);
-            bubbleRow.Controls.Add(_bubbleWidth, 0, 0);
-            bubbleRow.Controls.Add(_bubbleHeight, 1, 0);
-            AddRow(table, "气泡尺寸", bubbleRow, "宽 × 最大高度；回答越长越高，到上限就滚动");
+            // API 模式的气泡尺寸已与上面的「窗口尺寸」统一，这里不再单独配置。
 
             _showBubble = new CheckBox();
             _showBubble.Text = "气泡贴着鼠标出现（不勾选则屏幕居中）";
@@ -588,10 +565,6 @@ namespace BubbleAsk
             _height.Value = Clamp(_config.WindowHeight, _height);
             SetNumber(_height, _config.WindowHeight);
             _topMost.Checked = _config.TopMost;
-            _bubbleWidth.Value = Clamp(_config.BubbleWidth, _bubbleWidth);
-            SetNumber(_bubbleWidth, _config.BubbleWidth);
-            _bubbleHeight.Value = Clamp(_config.BubbleMaxHeight, _bubbleHeight);
-            SetNumber(_bubbleHeight, _config.BubbleMaxHeight);
             _showBubble.Checked = _config.ShowBubble;
             _edgePath.Text = _config.BrowserPath;
             RefreshBrowsers();
@@ -784,8 +757,6 @@ namespace BubbleAsk
             _config.WindowWidth = ReadNumber(_width);
             _config.WindowHeight = ReadNumber(_height);
             _config.TopMost = _topMost.Checked;
-            _config.BubbleWidth = ReadNumber(_bubbleWidth);
-            _config.BubbleMaxHeight = ReadNumber(_bubbleHeight);
             _config.ShowBubble = _showBubble.Checked;
             _config.BrowserPath = _edgePath.Text.Trim();
             _config.ProfileDir = _profileDir.Text.Trim();

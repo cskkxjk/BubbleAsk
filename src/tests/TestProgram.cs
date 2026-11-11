@@ -1168,8 +1168,9 @@ namespace BubbleAsk
                     }
                     longBubble.EndTurn();
                     Application.DoEvents();
-                    Check("bubble grows", longBubble.Height > before, before + " -> " + longBubble.Height);
-                    Check("bubble capped", longBubble.Height <= config.BubbleMaxHeight, longBubble.Height.ToString());
+                    // 尺寸和网页版小窗统一：固定为 窗口宽 × 窗口高，不随内容伸缩
+                    Check("bubble fixed width", longBubble.Width == config.WindowWidth, longBubble.Width + " vs " + config.WindowWidth);
+                    Check("bubble fixed height", longBubble.Height == config.WindowHeight, longBubble.Height + " vs " + config.WindowHeight);
                     longBubble.Close();
                 }
 

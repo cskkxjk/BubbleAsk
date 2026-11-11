@@ -126,8 +126,9 @@ namespace BubbleAsk
             KeyPreview = true;
             DoubleBuffered = true;
             Text = "Bubble Ask";
-            Width = config.BubbleWidth > 240 ? config.BubbleWidth : 460;
-            Height = 280;
+            // 尺寸与网页版小窗统一（WindowWidth × WindowHeight）：两种模式看到的是同样大的面板。
+            Width = config.WindowWidth > 240 ? config.WindowWidth : 480;
+            Height = config.WindowHeight > 240 ? config.WindowHeight : 720;
 
             _header = new Panel();
             _header.Dock = DockStyle.Top;
@@ -484,15 +485,9 @@ namespace BubbleAsk
             }
             if (kind == "height")
             {
-                int px;
-                if (int.TryParse(body, out px))
-                {
-                    int target = Math.Min(560, Math.Max(140, px));
-                    if (Math.Abs(target - Height) > 2)
-                    {
-                        Height = target;
-                    }
-                }
+                // 尺寸已固定成「窗口尺寸」，页面报上来的高度不再改变窗口大小
+                // （内容超出时由正文自己滚动）。留这个分支是为了协议完整、方便排查。
+                return;
             }
         }
 
@@ -898,27 +893,18 @@ namespace BubbleAsk
         }
 
         /// <summary>内容变长时跟着长高，最多到配置的上限。</summary>
+        /// <summary>
+        /// 尺寸固定为「窗口尺寸」（和网页版小窗一致），不再按内容伸缩 ——
+        /// 回答长了就在正文里自己滚动。这里只负责把被改过的尺寸拉回来。
+        /// </summary>
         private void AdjustHeight()
         {
-            // HTML 版的真实高度由页面自己量（Markdown 渲染后的高度才对），这里不掺和
-            if (_web)
+            int width = _config.WindowWidth > 240 ? _config.WindowWidth : 480;
+            int height = _config.WindowHeight > 240 ? _config.WindowHeight : 720;
+            if (Width != width || Height != height)
             {
-                return;
+                Size = new Size(width, height);
             }
-            int maxHeight = _config.BubbleMaxHeight > 240 ? _config.BubbleMaxHeight : 560;
-            Point last = _body.GetPositionFromCharIndex(_body.TextLength);
-            int chrome = _header.Height + _footer.Height + (_thinking.Visible ? _thinking.Height : 0) + 40;
-            int desired = last.Y + _body.Font.Height + chrome;
-            int target = Math.Max(240, Math.Min(maxHeight, desired));
-            if (target == Height)
-            {
-                return;
-            }
-            int bottomLimit = Screen.FromPoint(Location).WorkingArea.Bottom - 8;
-            int newTop = Math.Max(Screen.FromPoint(Location).WorkingArea.Top + 8, Math.Min(Top, bottomLimit - target));
-            Bounds = new Rectangle(Left, newTop, Width, target);
-            _body.SelectionStart = _body.TextLength;
-            _body.ScrollToCaret();
         }
 
         private void SubmitFollowUp()

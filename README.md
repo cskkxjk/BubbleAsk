@@ -284,7 +284,7 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 | `MaxChars` | `2000` | 超长内容从中部省略 |
 | `HotkeySummon` / `HotkeyAsk` / `HotkeyShot` | Ctrl+Alt+D / Q / A | 格式如 `Ctrl+Shift+F2` |
 | `ChatUrl` | chat.deepseek.com | 自定义服务方（`WebProvider=custom`）时打开的地址；预设服务方忽略此项 |
-| `WindowWidth` / `WindowHeight` | 480×720 | 网页版窗口尺寸 |
+| `WindowWidth` / `WindowHeight` | 480×720 | 网页版小窗与 API 气泡共用的尺寸（两种模式看到的是同样大的面板） |
 | `TopMost` | `true` | 网页版窗口置顶 |
 | `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera → Chromium） |
 | `ProfileDir` | 空 | 登录数据目录；留空则按浏览器分别存储（Edge 使用 `edge-profile`，其余使用 `profile-<名称>`） |
@@ -295,7 +295,6 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 | `ApiModel` | `deepseek-chat` | 模型名 |
 | `ApiMaxTokens` | `2048` | 单次回答上限 |
 | `ApiSystemPrompt` | 见默认值 | 每轮对话开头的系统提示词 |
-| `BubbleWidth` / `BubbleMaxHeight` | 460 / 560 | 气泡宽度与最大高度，内容增多时自动增高 |
 | `ShowBubble` | `true` | 气泡跟随鼠标出现；取消勾选则屏幕居中 |
 | `StartWithWindows` | `false` | 开机自启（写入当前用户 `Run` 键，设置页可勾选） |
 
@@ -343,7 +342,7 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 - **API 返回 404**：地址或模型名错误；预设之外自行填写的地址需确认兼容 OpenAI 协议。
 - **无法连接**：气泡显示 `连不上 http://...`，先确认该地址可从本机直连（企业网络可能拦截）。
 - **端口冲突**：在设置中修改 `CdpPort`，并使用菜单「重启浏览器会话」。
-- **气泡过长**：拖动标题栏移动，或调小 `BubbleMaxHeight`。
+- **气泡太小/太大**：设置里的「窗口尺寸」同时决定网页版小窗和 API 气泡的大小。
 - **气泡显示「读取响应超时」**：服务端已接收请求但未发送正文。该超时由本项目实现（.NET Framework 的 `HttpClient.Timeout` 在响应头到达后失效），超时后气泡恢复可用，不会滞留在「回答中」状态。
 - **未检测到浏览器或需更换浏览器**：设置 →「窗口与网页」→ 浏览器下拉框。自动检测顺序为 Edge → Chrome → Brave → Vivaldi → Opera → Chromium；登录数据按浏览器分别存储，更换后需各自登录一次。
 
