@@ -150,7 +150,7 @@ window.__ModuleLoader__.load({
       '.dba-pane-btn:disabled{opacity:.5;cursor:default}',
       '.dba-pane-host{flex:auto;min-height:0;display:flex;background:#fff}',
       '.dba-pane-host webview{flex:auto;width:100%;height:100%;border:0}',
-      // 输入框右侧的常驻开关：跟 DSH 自己的小控件同高，靠状态点区分开/关。
+      // 会话标题栏右上角的常驻开关：跟 DSH 自己的小控件同高，靠状态点区分开/关。
       '.dba-toggle{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 9px;',
       'border-radius:8px;cursor:pointer;font:var(--dsw-font-xxs-12,12px/1.4 system-ui);',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
@@ -651,11 +651,11 @@ window.__ModuleLoader__.load({
     /**
      * 气泡、内嵌面板与常驻开关之间的总线。
      *
-     * 三者是三个独立的 slot 条目（`shell.overlay` 两条 + `conversation.input.right` 一条），
+     * 三者是三个独立的 slot 条目（`shell.overlay` 两条 + `conversation.session.header.utilities` 一条），
      * 互相拿不到 ref，所以用一个模块级单槽转交：
      *   - 面板挂载时登记 handler（发送）与 setOpen（开关）
      *   - 气泡点「发送」调 ask()；拿不到面板就退回桌面端 exe
-     *   - 输入框右侧那颗小按钮调 toggle()，并订阅 open 显示当前状态
+     *   - 标题栏右上角那颗小按钮调 toggle()，并订阅 open 显示当前状态
      */
     const paneBus = {
       handler: null,
@@ -1059,7 +1059,7 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      // 展开状态广播给输入框右侧那颗小按钮（它据此显示「问 DeepSeek」/「收起」）。
+      // 展开状态广播给标题栏右上角那颗小按钮（它据此显示「问 DeepSeek」/「收起」）。
       useEffect(() => {
         paneBus.publish(open)
       }, [open])
@@ -1152,11 +1152,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 输入框右侧那颗常驻小按钮：不选文字也能开/关内嵌面板。
+     * 会话标题栏右上角那颗常驻小按钮：不选文字也能开/关内嵌面板。
      *
-     * 位置是 `conversation.input.right`（发送键前的小控件位，DSH 自己在这里放
-     * 「联网搜索」「深度思考」之类）。没有桌面桥时（浏览器里打开 GUI）不渲染 ——
-     * 那种环境下内嵌面板本来就不可用，放个按钮只会误导。
+     * 位置是 `conversation.session.header.utilities`（右对齐的会话工具位，DSH 自己
+     * 把「打开方式」「定时任务」「下载会话日志」放在这里）。没有桌面桥时（浏览器里
+     * 打开 GUI）不渲染 —— 那种环境下内嵌面板本来就不可用，放个按钮只会误导。
      */
     function PaneToggle() {
       const [open, setOpen] = useState(paneBus.open)
@@ -1203,11 +1203,11 @@ window.__ModuleLoader__.load({
           id: 'bubble-ask-webview',
           order: 901,
         }, WebPane))
-        // 输入框右侧的常驻开关：不选文字也能开/关内嵌面板。
-        context.slots.inject('conversation.input.right', () => context.slots.register({
-          name: 'conversation.input.right',
+        // 会话标题栏右上角的常驻开关：不选文字也能开/关内嵌面板。
+        context.slots.inject('conversation.session.header.utilities', () => context.slots.register({
+          name: 'conversation.session.header.utilities',
           id: 'bubble-ask-pane-toggle',
-          order: 900,
+          order: 10,
         }, PaneToggle))
         report('loaded', { href: window.location.href })
       },
