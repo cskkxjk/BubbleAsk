@@ -21,6 +21,9 @@ import { dirname, join } from 'node:path'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const sourcePath = join(root, 'shared', 'providers.json')
+/** 客户端半的兜底名单：它拿不到生成物，只能手写在源码里，由这里对齐。 */
+const clientSourcePath = join(root, 'dsh-plugin', 'client.js')
+const CLIENT_FALLBACK_BLOCK = /^([ \t]*)const PROVIDERS = \[\r?\n([\s\S]*?)^\1\]/m
 
 /** 生成物：路径 → 内容 */
 const targets = []
@@ -164,6 +167,41 @@ export const PROVIDERS = ${JSON.stringify(providers, null, 2)}
 `
 }
 
+/**
+ * 把插件 Client 半的兜底名单与真源对齐。
+ *
+ * 为什么要单独处理：Client 半是被 `window.__ModuleLoader__.load({ factory(require) })` 装载的
+ * 浏览器侧模块，`require` 只提供宿主注入的包，读不到 `lib/providers.data.js`。这份名单只用于
+ * 首帧渲染与 `/health` 返回前的下拉、以及校验存储里的服务方 id，但漏改会让「新增服务方后
+ * 记忆被当成非法值清掉」这类问题静默发生，所以由生成器统一改写、由 --check 拦住漂移。
+ *
+ * 返回 'same' / 'rewritten' / 'drift' / 'absent'（源码里没有这段就视为不使用兜底）。
+ */
+function syncClientFallback(data, checkOnly) {
+  if (!existsSync(clientSourcePath)) return 'absent'
+  const source = readFileSync(clientSourcePath, 'utf8')
+  const match = CLIENT_FALLBACK_BLOCK.exec(source)
+  if (!match) return 'absent'
+
+  const indent = `${match[1]}  `
+  const body = data.providers
+    .map((provider) => `${indent}{ id: ${quoteJs(provider.id)}, name: ${quoteJs(provider.name)} },`)
+    .join('\n')
+  const expected = `${match[1]}const PROVIDERS = [\n${body}\n${match[1]}]`
+  const actual = match[0]
+
+  if (normalizeEol(actual) === normalizeEol(expected)) return 'same'
+  if (checkOnly) return 'drift'
+
+  writeFileSync(clientSourcePath, source.replace(actual, expected), 'utf8')
+  return 'rewritten'
+}
+
+/** 单引号 JS 字符串字面量（与 client.js 里现有的写法一致）。 */
+function quoteJs(value) {
+  return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+}
+
 function main() {
   const checkOnly = process.argv.includes('--check')
 
@@ -238,6 +276,19 @@ export const DRIVER_SOURCE = ${JSON.stringify(driverSource)}
       writeFileSync(target.path, target.content, 'utf8')
       console.log(`  ${current === null ? '+' : '~'} ${relative}`)
     }
+  }
+
+  // 客户端半的兜底名单：与生成物同一份真源，单独对齐（它不是生成物，是手写源码里的一段）。
+  const clientState = syncClientFallback(raw, checkOnly)
+  if (checkOnly) {
+    if (clientState === 'drift') {
+      console.error('  ! dsh-plugin/client.js 的 PROVIDERS 兜底名单与真源不一致，请运行 node tools/gen-providers.mjs')
+      drifted += 1
+    }
+  } else if (clientState === 'rewritten') {
+    console.log('  ~ dsh-plugin/client.js（PROVIDERS 兜底名单）')
+  } else if (clientState === 'same') {
+    console.log('  = dsh-plugin/client.js（PROVIDERS 兜底名单）')
   }
 
   if (checkOnly) {

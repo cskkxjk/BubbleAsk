@@ -143,7 +143,7 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 把当前选择显�
 ## 3. 新增/调整服务方
 
 1. 在 `shared/providers.json` 里加或改一条（id/name/url/origins/选择器），需要按宿主区分时用 `overrides`。
-2. 跑 `node tools/gen-providers.mjs` 生成扩展与插件的数据模块（同时同步 `shared/driver.js`），再跑 `--check` 确认无漂移。
+2. 跑 `node tools/gen-providers.mjs` 生成扩展与插件的数据模块（同时同步 `shared/driver.js`，并改写插件 Client 半的首帧兜底名单 `dsh-plugin/client.js` 里的 `PROVIDERS`），再跑 `--check` 确认无漂移。
 3. 入口域名变化时，同步修改扩展 `manifest.json` 的 `host_permissions` 与 content script `matches`（`check-providers.mjs` 会断言二者覆盖注册表）。
 4. 跑桌面端 `--probe <id>` 与 §4.1 清单，按输出补选择器。
 5. 更新本文档的矩阵与「验证日期」。
@@ -175,7 +175,7 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 把当前选择显�
 4. 发送校验失败时（`pending-*` / `unverified`），记录页面 URL 以及 DOM 中 composer 与发送按钮的结构，更新 provider 配置后用 `--probe` 复核。整个过程不得重复发送。
 5. 截图提问 `Ctrl+Alt+A`：页面存在 `input[type=file]` 时应走文件上传，否则回退剪贴板粘贴。
 6. Chrome 扩展：选中文字 → 选区旁出现提问卡片 → 回车发送 → 应在所选服务方窗口里发送；失败时卡片显示具体阶段（`login` / `no-composer` / `no-button` / `unverified`）。
-7. DSH 插件：选中文字 → 卡片「发到」切到某家 → 发送；桌面端日志应出现对应 provider 名称与导航目标。桌面端 < 2.1.0 时下拉应只剩 DeepSeek（并纠正此前记忆的非 DeepSeek 选择）；此时若构造出非 DeepSeek 请求，应看到 `old-app` 提示且「复制全文」可用。
+7. DSH 插件：在设置页或鲸鱼按钮右键面板里切到某家 → 选中文字 → 发送；桌面端日志应出现对应 provider 名称与导航目标。桌面端 < 2.1.0 时下拉应只剩 DeepSeek（并纠正此前记忆的非 DeepSeek 选择）；此时若构造出非 DeepSeek 请求，应看到 `old-app` 提示且「复制全文」可用。
 8. 记录每家「验证日期 + 浏览器版本」，更新 §1 表格。
 
 ## 5. 已知限制与风险
@@ -186,4 +186,4 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 把当前选择显�
 - 国际站点需要可用的网络出口；Cloudflare 与登录风控可能导致 `unverified`，属于预期失败，工具会报告具体阶段。
 - 免费额度政策变化频繁，选型与文案不对额度做长期承诺。
 - 桌面端单窗口 + 单 profile：切换服务方会导航当前窗口，不影响登录态，页面对话状态以各站点服务端为准。
-- DSH 插件与桌面端的服务方列表可能短暂不一致（插件内置列表用于展示）：实际可用性以桌面端 `health.app.providers` 为准。桌面端低于 2.1.0 时插件只提供 DeepSeek，旧桌面端忽略 `provider` 字段、按本机配置入口发送（若配置了自定义 `ChatUrl`，卡片显示 DeepSeek 但实际走那个入口，需升级桌面端才能按服务方切换）。
+- DSH 插件与桌面端的服务方列表可能短暂不一致：插件 Client 半带一份兜底名单，只用于 `/health` 返回前的首帧渲染，内容由 `node tools/gen-providers.mjs` 与真源对齐、由 `--check` 拦住漂移。实际可用性以桌面端 `health.app.providers` 为准。桌面端低于 2.1.0 时插件只提供 DeepSeek，旧桌面端忽略 `provider` 字段、按本机配置入口发送（若配置了自定义 `ChatUrl`，卡片显示 DeepSeek 但实际走那个入口，需升级桌面端才能按服务方切换）。

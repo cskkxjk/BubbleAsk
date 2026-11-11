@@ -210,13 +210,14 @@ src/tests/
 | 文件 | 职责 |
 | --- | --- |
 | `dsh-plugin/index.js` | Host 端：HTTP 路由（prompt / send / driver / session / session-data / health / diag）、轨迹精简、prompt 拼装、`resolveProvider`、`checkProviderSupport`（每次发送前查 `health.app` 版本 >= 2.1.0，不缓存）、`versionAtLeast` |
-| `dsh-plugin/client.js` | Client 端：选区提问卡片（「发到」下拉 + localStorage 记忆）、设置页（`settings.section`）、内嵌网页版面板、会话 id 探针 |
+| `dsh-plugin/client.js` | Client 端：选区提问卡片、设置页（`settings.section`）与右键面板（服务方下拉 + localStorage 记忆）、内嵌网页版面板、会话 id 探针。顶部手写的 `PROVIDERS` 兜底名单由 `gen-providers.mjs` 改写并由 `--check` 拦漂移 |
 | `dsh-plugin/lib/ask-client.mjs` | 与桌面端服务的命名管道通信（惰性加载，可带 `provider` / `providerUrl`） |
 | `dsh-plugin/lib/providers.data.js` | 服务方定义，由真源生成；下发全量字段（内嵌面板驱动页面需要完整选择器） |
 | `dsh-plugin/lib/driver.source.mjs` | 页面驱动源码，由 `shared/driver.js` 生成，经 Host 下发给内嵌面板 |
 | `dsh-plugin/cordis.patch.yml` | 插入 `bubble-ask` 条目 |
 
 - 插件 2.3.0 与桌面端 2.1.x 配合正常。桌面端低于 2.1.0 时插件下拉只提供 DeepSeek；若仍构造出非 DeepSeek 请求，`old-app` 拒绝并保留完整 prompt 供「复制全文」。
+- Client 半拿不到 `lib/providers.data.js`（`__ModuleLoader__` 的 `require` 只提供宿主包），因此源码里保留一份首帧兜底名单；它是唯一一处真源之外的服务方名单，靠生成器与 `--check` 维持一致，不要手改。
 - `versionAtLeast(app, '2.1.0')` 是能力边界（2.1.0 引入按请求切换服务方），不随统一版本号变动。
 - 验证：`node --check` 检查 `index.js` / `client.js` / `lib/ask-client.mjs`；`node chrome-extension/tools/check-providers.mjs` 断言三端版本号一致与生成物无漂移。真实站点仍未实测。
 - 内嵌面板只接了 DeepSeek：登录态迁移、UA 脱敏与环境判定都是对 `chat.deepseek.com` 实测出来的，其它 5 家没有逐个验证。
