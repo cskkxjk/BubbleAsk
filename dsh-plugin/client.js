@@ -996,6 +996,8 @@ window.__ModuleLoader__.load({
       // 登记到总线：气泡据此判断走内嵌还是走桌面端 exe。
       useEffect(() => {
         paneBus.handler = handleAsk
+        // 上报一次是否可用：/health 的 diag 里能看出「发送会走哪条路」。
+        report('pane-bus-ready', { available: paneBus.available() })
         return () => {
           if (paneBus.handler === handleAsk) paneBus.handler = null
         }
