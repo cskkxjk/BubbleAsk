@@ -180,6 +180,21 @@ const ROUTE_HEALTH = '/bubble-ask/health'
 const ROUTE_DIAG = '/bubble-ask/diag'
 /** 内嵌 webview（spike）用：把页面驱动源码与服务方配置交给 Client 半。 */
 const ROUTE_DRIVER = '/bubble-ask/driver'
+/**
+ * 内嵌 webview 的登录态存取。
+ *
+ * 为什么要这一层：lease 的 partition 由桌面端主进程生成，没有 `persist:` 前缀、
+ * 也不落盘，DSH 一重启就换新分区 —— 用户必须重新登录。实测证明把网页版的
+ * localStorage 认证键灌进新分区即可免登录（7 个键 / 不到 1KB），所以这里只做
+ * 「存 / 取 / 清」三件事，把凭据放进 DSH 自己的凭证存储，而不是插件私有的文件。
+ *
+ * GET  → { ok, keys: string[] }           只报键名，不回值
+ * POST → { ok, saved: number }            写入给定键值
+ * DELETE → { ok }                         清掉
+ */
+const ROUTE_SESSION = '/bubble-ask/session'
+/** 取回登录态的值（Client 半建 guest 后写回 localStorage 用）。 */
+const ROUTE_SESSION_DATA = '/bubble-ask/session-data'
 const MAX_BODY_BYTES = 128 * 1024
 
 /** Client 半上报的记录（最近若干条，用于无人值守自检）。 */
@@ -1050,6 +1065,69 @@ export function apply(ctx, config = {}) {
   }
   const sessions = () => ctx.get('sessions')
 
+  /**
+   * 内嵌 webview 的登录态记录。
+   *
+   * 走 DSH 自己的凭证存储（`ctx.credentials`，`@deepseek-ai/dsh-credentials-local`
+   * 在 base bundle 里默认挂载），不自己写文件：
+   *   - 记录按 `<scope>/<id>` 寻址，`scope` 必须是本插件注册名
+   *   - `modifyRecord` 是唯一写路径，记录在写时是独占的
+   *   - 凭据值不进配置、不进日志、不进 diag
+   *
+   * 存的是网页版 localStorage 里的认证键（实测 7 个键不到 1KB 就够跨分区免登录）。
+   * 存网页版自己的 token 而不是另做一套登录，是因为它本来就是站点签发的凭据，
+   * 复制一份不会有第二套失效规则。
+   */
+  const SESSION_SCOPE = 'bubble-ask'
+  const SESSION_RECORD_ID = 'web-session'
+  const credentials = () => ctx.get('credentials')
+  let credentialKeyFactory
+  async function sessionKey() {
+    if (!credentialKeyFactory) {
+      try {
+        const mod = await import('@deepseek-ai/dsh-credentials')
+        credentialKeyFactory = mod.credentialKey
+      } catch {
+        // 包可能不在插件的解析路径上；退回拼字符串（品牌只是字符串）。
+        credentialKeyFactory = (scope, id) => `${scope}/${id}`
+      }
+    }
+    return credentialKeyFactory(SESSION_SCOPE, SESSION_RECORD_ID)
+  }
+  /** 读出已存的登录态键值对；没有就返回 null。 */
+  async function readSession() {
+    const service = credentials()
+    if (!service || typeof service.readRecord !== 'function') return null
+    try {
+      const record = await service.readRecord(await sessionKey())
+      const payload = record?.payload
+      if (!payload || typeof payload !== 'object') return null
+      const data = payload.data
+      if (!data || typeof data !== 'object') return null
+      return data
+    } catch (error) {
+      log(`读登录态失败：${String(error?.message ?? error)}`)
+      return null
+    }
+  }
+  /** 写入登录态（覆盖）。只接受字符串值。 */
+  async function writeSession(data) {
+    const service = credentials()
+    if (!service || typeof service.modifyRecord !== 'function') {
+      throw new Error('宿主没有凭证存储（ctx.credentials）')
+    }
+    const clean = {}
+    for (const [key, value] of Object.entries(data || {})) {
+      if (typeof value === 'string' && value) clean[key] = value
+    }
+    if (!Object.keys(clean).length) throw new Error('没有可写入的登录态')
+    await service.modifyRecord(await sessionKey(), async () => ({
+      kind: 'grant',
+      payload: { data: clean, savedAt: Date.now() },
+    }))
+    return Object.keys(clean)
+  }
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: ROUTE_HEALTH,
@@ -1127,6 +1205,58 @@ export function apply(ctx, config = {}) {
       })
     },
   }), 'bubble-ask: driver route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_SESSION,
+    async handler(req, res) {
+      try {
+        if (req.method === 'GET') {
+          // 只回键名：凭据值出了这一层就再也不回来，Client 半按需取。
+          const data = await readSession()
+          return sendJson(res, 200, { ok: true, keys: data ? Object.keys(data) : [] })
+        }
+        if (req.method === 'POST') {
+          const body = await readJsonBody(req)
+          const keys = await writeSession(body && body.data)
+          log(`已保存内嵌登录态：${keys.length} 个键`)
+          return sendJson(res, 200, { ok: true, saved: keys.length })
+        }
+        if (req.method === 'DELETE') {
+          const service = credentials()
+          if (service && typeof service.deleteRecord === 'function') {
+            await service.deleteRecord(await sessionKey())
+          }
+          log('已清除内嵌登录态')
+          return sendJson(res, 200, { ok: true })
+        }
+        return sendJson(res, 405, { ok: false, error: '不支持的方法' })
+      } catch (error) {
+        sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  }), 'bubble-ask: session route')
+
+  /**
+   * 把已存的登录态取给 Client 半（含值）。
+   *
+   * 单独一条路由而不是并进上面那条 GET：那条只回答「存了没有」，
+   * 这条要真的把凭据交出去，语义不同，混在一起容易误用。
+   */
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_SESSION_DATA,
+    async handler(req, res) {
+      if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: '只接受 POST' })
+      try {
+        const data = await readSession()
+        if (!data) return sendJson(res, 200, { ok: false, stage: 'empty', error: '没有保存过登录态' })
+        sendJson(res, 200, { ok: true, data, savedAt: 0 })
+      } catch (error) {
+        sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  }), 'bubble-ask: session data route')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',

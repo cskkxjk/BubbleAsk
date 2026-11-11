@@ -132,36 +132,30 @@ window.__ModuleLoader__.load({
       '.dba-btn.dba-primary:hover{filter:brightness(1.06)}',
       '.dba-btn:disabled{opacity:.55;cursor:default}',
       '.dba-status{padding:0 10px 9px;color:var(--dsw-alias-label-tertiary,#888);min-height:14px;word-break:break-word}',
-      // ---- webview 内嵌验证（spike）----
-      '.dba-wv{position:fixed;right:12px;bottom:12px;width:520px;height:calc(100vh - 96px);pointer-events:auto;',
-      'display:flex;flex-direction:column;border-radius:12px;overflow:hidden;',
+      // ---- 内嵌网页版面板 ----
+      '.dba-pane{position:fixed;right:12px;bottom:12px;width:520px;height:calc(100vh - 96px);pointer-events:auto;',
+      'flex-direction:column;border-radius:12px;overflow:hidden;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));',
       'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#111);',
       'box-shadow:0 16px 40px rgba(0,0,0,.22);font:var(--dsw-font-xxs-12,12px/1.5 system-ui)}',
-      '.dba-wv-head{display:flex;align-items:center;gap:6px;padding:7px 9px;flex:none;',
+      '.dba-pane-head{display:flex;align-items:center;gap:6px;padding:7px 9px;flex:none;',
       'border-bottom:.5px solid var(--dsw-alias-border-l3,rgba(0,0,0,.08))}',
-      '.dba-wv-title{font-weight:600;flex:none}',
-      '.dba-wv-status{flex:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      '.dba-pane-title{font-weight:600;flex:none}',
+      '.dba-pane-status{flex:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
       'color:var(--dsw-alias-label-tertiary,#888)}',
-      '.dba-wv-tools{display:flex;gap:6px;padding:6px 9px;flex:none;flex-wrap:wrap;',
-      'border-bottom:.5px solid var(--dsw-alias-border-l3,rgba(0,0,0,.08))}',
-      '.dba-wv-btn{height:24px;padding:0 9px;border-radius:6px;cursor:pointer;font:inherit;',
+      '.dba-pane-btn{height:24px;padding:0 9px;border-radius:6px;cursor:pointer;font:inherit;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
       'color:var(--dsw-alias-label-primary,#111)}',
-      '.dba-wv-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}',
-      '.dba-wv-btn:disabled{opacity:.5;cursor:default}',
-      '.dba-wv-host{flex:auto;min-height:0;display:flex;background:#fff}',
-      '.dba-wv-host webview{flex:auto;width:100%;height:100%;border:0}',
-      '.dba-wv-pre{margin:0;padding:7px 9px;flex:none;max-height:88px;overflow:auto;white-space:pre-wrap;',
-      'word-break:break-word;font:11px/1.45 ui-monospace,Consolas,monospace;',
-      'color:var(--dsw-alias-label-secondary,#555);background:var(--dsw-alias-bg-layer-1,rgba(0,0,0,.03));',
-      'border-bottom:.5px solid var(--dsw-alias-border-l3,rgba(0,0,0,.08))}',
-      '.dba-spike{position:fixed;left:12px;bottom:12px;pointer-events:auto;height:26px;padding:0 10px;',
+      '.dba-pane-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}',
+      '.dba-pane-btn:disabled{opacity:.5;cursor:default}',
+      '.dba-pane-host{flex:auto;min-height:0;display:flex;background:#fff}',
+      '.dba-pane-host webview{flex:auto;width:100%;height:100%;border:0}',
+      '.dba-pane-open{position:fixed;right:12px;bottom:12px;pointer-events:auto;height:26px;padding:0 10px;',
       'border-radius:13px;cursor:pointer;font:var(--dsw-font-xxs-12,12px/1.4 system-ui);',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));',
       'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#555);',
       'box-shadow:0 2px 8px rgba(0,0,0,.1)}',
-      '.dba-spike:hover{color:var(--dsw-alias-label-primary,#111)}',
+      '.dba-pane-open:hover{color:var(--dsw-alias-label-primary,#111)}',
     ].join('')
 
     //#region 工具函数
@@ -380,7 +374,34 @@ window.__ModuleLoader__.load({
           provider: providerId,
         })
         try {
-          const payload = await postJson(send ? '/bubble-ask/send' : '/bubble-ask/prompt', {
+          // 内嵌面板能发 DeepSeek 时，先只用 Host 组好提问（/prompt 不触发发送），
+          // 再由面板把同一份 prompt 填进自己开的 guest —— 这样「发送」不再需要托盘 exe。
+          const usePane = send && providerId === 'deepseek' && paneBus.available()
+          let payload = null
+          if (usePane) {
+            try {
+              payload = await postJson('/bubble-ask/prompt', {
+                sessionId: currentSessionId,
+                selection,
+                question,
+                provider: providerId,
+              })
+              const panePrompt = typeof payload.prompt === 'string' ? payload.prompt : ''
+              if (!payload.ok || !panePrompt) throw new Error(payload.detail || payload.error || '整理提问失败')
+              setStatus('正在通过内嵌窗口发送…')
+              const result = await paneBus.ask({ prompt: panePrompt, providerId })
+              if (!result || !result.ok) throw new Error(result && result.detail ? result.detail : '内嵌窗口没能发送')
+              report('action-send-done', { stage: 'pane', promptChars: panePrompt.length, provider: providerId })
+              closeBubble()
+              return
+            } catch (paneError) {
+              // 内嵌这条路失败不直接判死：还有桌面端 exe 这条退路。
+              report('action-pane-failed', { detail: errorText(paneError), provider: providerId })
+              setStatus('内嵌窗口失败，改用桌面端窗口…')
+            }
+          }
+
+          payload = await postJson(send ? '/bubble-ask/send' : '/bubble-ask/prompt', {
             sessionId: currentSessionId,
             selection,
             question,
@@ -514,20 +535,43 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dba-status' }, status)))
     }
 
-    //#region webview 内嵌验证（spike，验完即删）
+    //#region 内嵌网页版（自己开 guest，不依赖桌面端 exe）
     /**
-     * 目的：验证「插件自己开一个 Electron guest 打开 chat.deepseek.com，并注入唯一驱动」
-     * 这条路径是否真的可行 —— 走得通，插件就能脱离桌面端 exe。
+     * 插件自己经桌面端 lease 通道开一个 Electron guest，打开网页版并注入唯一驱动
+     * （shared/driver.js），于是「发送」不再需要托盘 exe。
      *
-     * 主进程在 `will-attach-webview` 里设了门禁：src 必须是 `about:blank#<lease>`、
-     * partition 必须等于该 lease 的 partition、lease 只能从 `dshDesktop.browser.acquire()` 拿。
-     * 所以这里严格照 `@deepseek-ai/dsh-client-ui-sidebar-browser` 的顺序建元素：
-     * 先设属性再挂 DOM，且只有 `dsh-app://app` 主框架拿得到那座桥。
+     * 三条实测出来的硬约束：
+     *   1. 主进程在 `will-attach-webview` 里把关：src 必须是 `about:blank#<lease>`、
+     *      partition 必须等于该 lease 的 partition，lease 只能从
+     *      `dshDesktop.browser.acquire()` 拿；裸 createElement('webview') 会被 preventDefault。
+     *   2. 主进程在 `did-attach-webview` 里等同一个 dom-ready 后读 URL 认领 lease
+     *      （URL 必须仍是 `about:blank#<lease>`）。立刻 loadURL 会让它读到的 URL 对不上
+     *      lease，直接把 guest 关掉 —— 所以 dom-ready 之后要多等一拍。
+     *   3. 站点按 UA 判定「使用环境异常」：UA 含 electron 或 window.process.type==='renderer'。
+     *      lease 的 UA 带 Electron，必须 `setUserAgent` 脱敏，且要在首个文档建立之前设。
+     *
+     * 登录态：lease 的 partition 由主进程生成（`dsh-sidebar-browser-<uuid>`，无 `persist:`
+     * 前缀、不落盘），DSH 一重启就换新分区。实测把网页版 localStorage 里 7 个认证键
+     * （< 1KB）灌进全新分区即可免登录，所以登录一次后存进 DSH 自己的凭证存储
+     * （Host 半 `/bubble-ask/session`），下次建好 guest 再写回去。
      */
-    const SPIKE_WORKSPACE = 'bubble-ask-spike'
-    const SPIKE_HOME = 'https://chat.deepseek.com/'
+    const PANE_WORKSPACE = 'bubble-ask-webview'
+    const PANE_HOME = 'https://chat.deepseek.com/'
+    /**
+     * 跨分区够用的最小登录集 —— 实测（全新分区 + 只写这几个键 + reload）能直接进主界面
+     * 且能正常对话。全量 29 个键里 37KB 大部分是 feature store 缓存，属于可再生数据，不存。
+     */
+    const SESSION_KEYS = [
+      'userToken',
+      'settingsJwt',
+      'smidV2',
+      'deepseek-device-id:chat',
+      '__appKit_userInfo',
+      '__ds_remote_feature_did',
+      'hif_leim_cached',
+    ]
 
-    /** 取主进程发放 lease 的桌面桥；非 dsh-app://app 主框架下不存在。 */
+    /** 取主进程发放 lease 的桌面桥；非 `dsh-app://app` 主框架下不存在。 */
     function takeDesktopBrowser() {
       const carrier = globalThis.dshDesktop
       if (!carrier || carrier.protocolVersion !== 1) return null
@@ -567,43 +611,397 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 内嵌 webview 验证面板：默认展开，自检跑完再收。 */
-    function WebviewSpike() {
-      // 默认展开：guest 在 0 尺寸容器里可能不初始化，自检要的是真实布局。
-      const [open, setOpen] = useState(true)
-      const [status, setStatus] = useState('未连接')
-      const [log, setLog] = useState('')
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    /** 给 Promise 加超时：guest 导航过程中 executeJavaScript 可能永远不兑现。 */
+    function withTimeout(promise, timeoutMs, label) {
+      return new Promise((resolve, reject) => {
+        let settled = false
+        const timer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          reject(new Error(`${label} 超时（${timeoutMs}ms）`))
+        }, timeoutMs)
+        promise.then(
+          (value) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve(value)
+          },
+          (error) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            reject(error)
+          },
+        )
+      })
+    }
+
+    /** Electron 在 guest 还没 attach / 刚 reload 时对 executeJavaScript 抛的错。 */
+    const NOT_ATTACHED = /must be attached to the DOM|dom-ready event emitted/i
+
+    /**
+     * 气泡与内嵌面板之间的总线。
+     *
+     * 两者都挂在 `shell.overlay` 上，是同一层里的两个 slot 条目，拿不到彼此的 ref，
+     * 所以用一个模块级的单槽转交：面板挂载时登记 handler，气泡点「发送」时调用它。
+     * 面板不在（例如浏览器里打开、没有桌面桥）就返回 null，气泡退回桌面端 exe 那条路。
+     */
+    const paneBus = {
+      handler: null,
+      available() {
+        return typeof this.handler === 'function' && takeDesktopBrowser() !== null
+      },
+      /** 让面板打开并发送；面板没就绪时抛错，由调用方决定是否降级。 */
+      async ask(payload) {
+        if (!this.available()) throw new Error('内嵌窗口不可用')
+        return this.handler(payload)
+      },
+    }
+
+    /** 从 Host 取驱动源码与服务方配置（都来自唯一真源，插件里没有第二份实现）。 */
+    async function fetchDriver() {
+      const response = await fetch('/bubble-ask/driver')
+      const payload = await response.json()
+      if (!payload || payload.ok !== true) throw new Error('拿不到驱动配置')
+      const provider =
+        (payload.providers || []).find((item) => item.id === payload.defaultId) || (payload.providers || [])[0]
+      if (!provider) throw new Error('驱动配置里没有服务方')
+      return {
+        payload,
+        cfg: {
+          ...provider,
+          genericComposerSelectors: payload.generic.composerSelectors,
+          genericSendAriaLabels: payload.generic.sendAriaLabels,
+        },
+      }
+    }
+
+    /** 读出 Host 存的登录态（没有就 null）。 */
+    async function readSavedSession() {
+      try {
+        const response = await fetch('/bubble-ask/session-data', { method: 'POST' })
+        const payload = await response.json()
+        if (!payload || payload.ok !== true) return null
+        const data = payload.data
+        if (!data || typeof data !== 'object') return null
+        return Object.keys(data).length ? data : null
+      } catch {
+        return null
+      }
+    }
+
+    /** 把登录态存进 Host（走 DSH 凭证存储）。 */
+    async function saveSession(data) {
+      const keys = Object.keys(data || {}).filter((key) => typeof data[key] === 'string' && data[key])
+      if (!keys.length) return 0
+      const body = { data: {} }
+      for (const key of keys) body.data[key] = data[key]
+      const response = await fetch('/bubble-ask/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const payload = await response.json()
+      if (!payload || payload.ok !== true) throw new Error(payload?.error || '保存登录态失败')
+      return payload.saved || 0
+    }
+
+    /**
+     * 内嵌网页版面板。
+     *
+     * 面板常驻挂载、默认收起：收起只是 `display:none`，guest 仍然活着，登录态留在分区里，
+     * 下次发送不用重新加载。因为要先挂载才拿得到宿主容器，所以收起状态也渲染容器。
+     */
+    function WebPane() {
+      const [open, setOpen] = useState(false)
+      /** 是否已经建过 guest：没建过就别在界面上多一个小按钮。 */
+      const [hasGuest, setHasGuest] = useState(false)
+      const [status, setStatus] = useState('待命')
       const [busy, setBusy] = useState(false)
       const hostRef = useRef(null)
       const guestRef = useRef(null)
-      /** 自检只自动跑一次，避免每次重渲染都开一个 guest。 */
-      const autoRanRef = useRef(false)
+      /** 未完成的连接 Promise：连点两次发送时不要建两个 guest。 */
+      const connectingRef = useRef(null)
 
-      function push(line) {
-        setLog((prev) => (prev ? `${prev}\n${line}` : line))
+      /** 建 guest 并导航到网页版；已连就直接复用。 */
+      async function connect() {
+        if (guestRef.current) return guestRef.current
+        if (connectingRef.current) return connectingRef.current
+        const task = (async () => {
+          const bridge = takeDesktopBrowser()
+          if (!bridge) throw new Error('宿主没有 dshDesktop.browser（不是桌面端主框架）')
+          const host = hostRef.current
+          if (!host) throw new Error('面板容器还没挂载')
+          setStatus('正在建内嵌窗口…')
+          const reservation = await bridge.acquire(PANE_WORKSPACE)
+          const element = document.createElement('webview')
+          element.setAttribute('name', reservation.lease)
+          element.setAttribute('partition', reservation.partition)
+          element.setAttribute('allowpopups', '')
+          element.setAttribute('src', `about:blank#${reservation.lease}`)
+          const blankReady = waitGuest(element, 'dom-ready', 15000)
+          host.appendChild(element)
+          const held = {
+            element,
+            bridge,
+            lease: reservation.lease,
+            partition: reservation.partition,
+            cfg: null,
+            driver: '',
+            /** 每次导航换一个代次：异步回来的旧代结果直接丢弃。 */
+            generation: 0,
+            /** 页面是否已经到过 dom-ready（没到之前 executeJavaScript 会抛错）。 */
+            attached: false,
+          }
+          guestRef.current = held
+          setHasGuest(true)
+          await blankReady
+          // 约束 2：等主进程认领完 lease（它读的是同一时刻的 URL）。
+          await sleep(400)
+          held.attached = true
+          // 约束 3：UA 脱敏必须在首个文档建立之前。
+          try {
+            const ua = await element.executeJavaScript('navigator.userAgent', true)
+            element.setUserAgent(
+              String(ua)
+                .replace(/\s*Electron\/[\d.]+/gi, '')
+                .replace(/\s*@deepseek-ai\/[\w.-]+\/[\w.-]+/gi, ''),
+            )
+          } catch {
+            /* UA 只影响提示条，失败不阻断发送 */
+          }
+          report('pane-connected', { partition: reservation.partition })
+          return held
+        })()
+        connectingRef.current = task
+        try {
+          return await task
+        } finally {
+          connectingRef.current = null
+        }
+      }
+
+      /** 导航到网页版并等页面就绪。 */
+      async function navigate(held) {
+        const ready = waitGuest(held.element, 'dom-ready', 60000)
+        held.element.loadURL(PANE_HOME)
+        await ready
+        await sleep(1800)
+      }
+
+      /** 页面当前是否已登录（离开登录页且 localStorage 已有内容）。 */
+      async function probeLogin(held) {
+        const raw = await evaluate(
+          held,
+          `JSON.stringify({
+             href: location.href,
+             needLogin: /sign_in|\\/login/i.test(location.href),
+             keys: (() => { try { return localStorage.length } catch { return -1 } })(),
+           })`,
+        )
+        try {
+          return JSON.parse(asText(raw))
+        } catch {
+          return { href: '', needLogin: true, keys: -1 }
+        }
+      }
+
+      /** 把登录态写进当前分区（必须已在目标站点上，否则 localStorage 是别处的）。 */
+      async function writeSession(held, data) {
+        const written = await evaluate(
+          held,
+          `(() => {
+             const data = ${JSON.stringify(data || {})}
+             let n = 0
+             for (const key of Object.keys(data)) {
+               try { localStorage.setItem(key, data[key]); n += 1 } catch {}
+             }
+             return String(n)
+           })()`,
+        )
+        return Number(asText(written)) || 0
+      }
+
+      /** 抓取当前分区的登录态（只取认证键），并存进 Host。 */
+      async function captureSession(held) {
+        const raw = await evaluate(
+          held,
+          `(() => {
+             const keys = ${JSON.stringify(SESSION_KEYS)}
+             const data = {}
+             for (const key of keys) {
+               try { const value = localStorage.getItem(key); if (value) data[key] = value } catch {}
+             }
+             return JSON.stringify(data)
+           })()`,
+        )
+        let data = {}
+        try {
+          data = JSON.parse(asText(raw))
+        } catch {
+          return 0
+        }
+        const saved = await saveSession(data)
+        report('pane-session-saved', { keys: Object.keys(data), saved })
+        return saved
+      }
+
+      /** 注入驱动（页面导航后注入的会丢，所以每次导航完都要重注）。 */
+      async function injectDriver(held) {
+        if (!held.driver) {
+          const { payload, cfg } = await fetchDriver()
+          held.driver = String(payload.driver || '')
+          held.cfg = cfg
+        }
+        await evaluate(held, held.driver)
+        return held.cfg
       }
 
       /**
-       * 自动跑一次自检并上报。
+       * 确保「已登录 + 驱动已注入」。
        *
-       * 目的：把「能不能用」这个问题变成可读的结论，而不是靠人看面板。
-       * 只跑一次（autoRanRef），失败也不重试 —— 重试会把 diag 刷满。
+       * 顺序是关键：先导航（同源才能写 localStorage）→ 判断是否已登录 →
+       * 没登录但有存档就写进去再 reload → 仍然没登录就把窗口交给用户手动登录，
+       * 并轮询到登录完成。最后注入驱动、抓一次登录态存档。
        */
+      async function ensureReady(held, onProgress) {
+        const step = onProgress || (() => {})
+        step('正在打开网页版…')
+        await navigate(held)
+        let state = await probeLogin(held)
+        report('pane-probe', state)
+        if (state.needLogin) {
+          const saved = await readSavedSession()
+          if (saved) {
+            step('正在恢复登录态…')
+            const count = await writeSession(held, saved)
+            report('pane-session-restored', { keys: Object.keys(saved), written: count })
+            const ready = waitGuest(held.element, 'dom-ready', 60000)
+            held.element.reload()
+            await ready
+            await sleep(2500)
+            state = await probeLogin(held)
+            report('pane-probe-after-restore', state)
+          }
+        }
+        if (state.needLogin) {
+          // 手动登录：窗口就在面板里，用户登完这里轮询到状态变化再继续。
+          step('请在内嵌窗口里登录 DeepSeek')
+          setOpen(true)
+          const deadline = Date.now() + 10 * 60 * 1000
+          while (Date.now() < deadline) {
+            await sleep(3000)
+            state = await probeLogin(held)
+            if (!state.needLogin) break
+          }
+          if (state.needLogin) throw new Error('等待登录超时')
+          await sleep(1500)
+        }
+        step('正在装载页面驱动…')
+        const cfg = await injectDriver(held)
+        // 登录成功就顺手存一次，下次换分区免登录。
+        try {
+          const saved = await captureSession(held)
+          if (saved) report('pane-session-cached', { saved })
+        } catch {
+          /* 存档失败不影响本次发送 */
+        }
+        return cfg
+      }
+
+      /**
+       * 在 guest 里求值，带「未 attach 就等」与超时。
+       *
+       * Electron 在 guest 刚建、或 reload 后 dom-ready 之前调 executeJavaScript 会抛
+       * `The WebView must be attached to the DOM and the dom-ready event emitted`——
+       * 这不是致命错误，等一拍再试就行。
+       */
+      async function evaluate(held, expression, timeoutMs) {
+        const deadline = Date.now() + (timeoutMs || 20000)
+        for (;;) {
+          try {
+            return await withTimeout(
+              held.element.executeJavaScript(expression, true),
+              Math.max(deadline - Date.now(), 1000),
+              '页面求值',
+            )
+          } catch (error) {
+            if (!NOT_ATTACHED.test(errorText(error)) || Date.now() >= deadline) throw error
+            await sleep(300)
+          }
+        }
+      }
+
+      /** 在 guest 里求值：统一走驱动的只读接口，不在这里重写页面逻辑。 */
+      async function callDriver(held, expression) {
+        if (!held.cfg) throw new Error('驱动还没注入')
+        return evaluate(held, expression(JSON.stringify(held.cfg)))
+      }
+
+      /** 填并发送。返回 { ok, stage, detail } —— 不抛错，交给气泡显示原因。 */
+      async function fillAndSend(held, prompt) {
+        const filled = await callDriver(
+          held,
+          (cfg) => `globalThis.__bubbleAskDriver.fill(${cfg}, ${JSON.stringify(prompt)})`,
+        )
+        const filledText = asText(filled)
+        if (filledText === 'none') {
+          return { ok: false, stage: 'no-composer', detail: '找不到输入框，页面可能还没加载完或已退出登录' }
+        }
+        await sleep(600)
+        const clicked = await callDriver(held, (cfg) => `globalThis.__bubbleAskDriver.send(${cfg})`)
+        const clickedText = asText(clicked)
+        if (clickedText.startsWith('clicked')) return { ok: true, stage: 'sent', detail: clickedText }
+        if (clickedText.startsWith('disabled')) {
+          return { ok: false, stage: 'disabled', detail: '发送按钮处于禁用状态，文字可能没有真的填进去' }
+        }
+        if (clickedText === 'nobutton') {
+          return { ok: false, stage: 'no-button', detail: '找不到发送按钮（文字已填入，可按 Enter 手动发送）' }
+        }
+        return { ok: false, stage: 'failed', detail: clickedText }
+      }
+
+      /** 气泡点「发送」时走这里。 */
+      async function handleAsk(payload) {
+        setOpen(true)
+        // 先让面板真的可见再建 guest：容器尺寸为 0 时 Electron 可能不给它建立视图。
+        await sleep(120)
+        setBusy(true)
+        setStatus('准备内嵌网页版…')
+        try {
+          const held = await connect()
+          const cfg = await ensureReady(held, setStatus)
+          // 服务方只有 DeepSeek 走内嵌；其它家仍由桌面端 exe 负责（气泡那边已先判断）。
+          if (payload && payload.providerId && payload.providerId !== cfg.id) {
+            return { ok: false, stage: 'provider', detail: `内嵌窗口只支持 ${cfg.name}，其它服务方请用桌面端窗口` }
+          }
+          setStatus('正在填入并发送…')
+          const result = await fillAndSend(held, String((payload && payload.prompt) || ''))
+          report('pane-send', { ok: result.ok, stage: result.stage })
+          setStatus(result.ok ? '已发送' : `失败：${result.detail}`)
+          return result
+        } catch (error) {
+          const detail = errorText(error)
+          report('pane-send-error', { detail })
+          setStatus(`失败：${detail}`)
+          return { ok: false, stage: 'error', detail }
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      // 登记到总线：气泡据此判断走内嵌还是走桌面端 exe。
       useEffect(() => {
-        if (autoRanRef.current) return
-        autoRanRef.current = true
-        const timer = setTimeout(() => {
-          void run('自检', async () => {
-            const ok = await selftest()
-            // 自检只证明「能读写 DOM」，不证明「能对话」。
-            // 已经登录（输入框在）时顺便真发一条，把最后这个未知项也消掉。
-            if (ok && guestRef.current) await sendProbe()
-          })
-        }, 1200)
-        return () => clearTimeout(timer)
+        paneBus.handler = handleAsk
+        return () => {
+          if (paneBus.handler === handleAsk) paneBus.handler = null
+        }
       }, [])
 
-      /** 退出时释放 lease 并摘掉元素，避免留下悬挂的 guest。 */
+      // 卸载时释放 lease 并摘元素，避免留下悬挂的 guest。
       useEffect(() => function () {
         const held = guestRef.current
         guestRef.current = null
@@ -620,543 +1018,49 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      /**
-       * 一条龙自检：每一步的结果都打成一行上报。
-       *
-       * 为什么要这样：执行结果只有页面里的这个面板能看到，而我只能读 Host 的 /diag。
-       * 把它做成一个按钮，用户点一次，我就能从 diag 里拿到整条链路的结论，
-       * 不用靠截图或口述。
-       */
-      async function selftest() {        const steps = []
-        const step = async (name, task) => {
-          try {
-            const value = await task()
-            steps.push({ step: name, ok: true, value: asText(value).slice(0, 600) })
-            push(`✓ ${name} → ${asText(value).slice(0, 200)}`)
-            return { ok: true, value }
-          } catch (error) {
-            const message = errorText(error)
-            steps.push({ step: name, ok: false, value: message.slice(0, 600) })
-            push(`✗ ${name} → ${message}`)
-            report('wv-selftest', { steps })
-            throw error
-          }
-        }
-
-        setStatus('自检中…')
-        setLog('')
-        report('wv-selftest-start', { href: window.location.href })
-
-        const bridge = takeDesktopBrowser()
-        if (!bridge) {
-          report('wv-selftest', {
-            steps: [{ step: 'bridge', ok: false, value: '没有 dshDesktop.browser' }],
-          })
-          throw new Error('宿主没有 dshDesktop.browser')
-        }
-        await step('bridge', () => `acquire=${typeof bridge.acquire} release=${typeof bridge.release}`)
-
-        await step('连接 guest', async () => {
-          if (guestRef.current) return '已连接，复用'
-          await connect()
-          return '已新建'
-        })
-        await step('lease', () => guestRef.current && guestRef.current.lease)
-        // partition 多次加载之间是否一致 —— 决定「刷新页面后要不要重登」。
-        await step('partition', () => (guestRef.current && guestRef.current.partition) || '(未知)')
-        const element = held().element
-        await step('executeJavaScript 可用', () => `${typeof element.executeJavaScript}`)
-        // guest 有没有真实尺寸：0 尺寸的话网页渲染了用户也看不见。
-        await step('guest 尺寸', () => {
-          const rect = element.getBoundingClientRect()
-          return `${Math.round(rect.width)}x${Math.round(rect.height)}`
-        })
-        await step('页面信息', () => element.executeJavaScript(
-          'JSON.stringify({href:location.href,title:document.title,ua:navigator.userAgent,ready:document.readyState})',
-          true,
-        ))
-
-        // 注入驱动（幂等：driver 自己在已存在时直接 return）
-        const { payload, cfg } = await fetchDriver()
-        await step('取驱动配置', () => `driver=${String(payload.driver || '').length}B provider=${cfg.id}`)
-        await step('注入驱动', () => element.executeJavaScript(String(payload.driver || ''), true))
-        await step('驱动存在', () => element.executeJavaScript('String(!!globalThis.__bubbleAskDriver)', true))
-        guestRef.current.cfg = cfg
-
-        const json = JSON.stringify(cfg)
-        await step('findComposer', () => element.executeJavaScript(
-          `String(globalThis.__bubbleAskDriver.findComposer(${json}) ? 'found' : 'null')`,
-          true,
-        ))
-        await step('state', () => element.executeJavaScript(
-          `globalThis.__bubbleAskDriver.state(${json})`,
-          true,
-        ))
-        await step('登录态', () => element.executeJavaScript(
-          `String(globalThis.__bubbleAskDriver.isLoginUrl(${json}))`,
-          true,
-        ))
-        // 填入但不发送：验证「能驱动」即可，不要在真实站点上乱发消息。
-        await step('fill', () => element.executeJavaScript(
-          `globalThis.__bubbleAskDriver.fill(${json}, 'Bubble Ask 内嵌自检')`,
-          true,
-        ))
-        await step('composerState', () => element.executeJavaScript(
-          `globalThis.__bubbleAskDriver.composerState(${json})`,
-          true,
-        ))
-
-        // 登录页能不能真的操作：站点可能判定环境异常，把交互静默拦掉。
-        // 这里只读，不点任何按钮。
-        await step('登录页可操作性', () => element.executeJavaScript(
-          `(() => {
-             const inputs = [...document.querySelectorAll('input')]
-             const buttons = [...document.querySelectorAll('button')].filter(b => b.offsetParent !== null)
-             const text = document.body.innerText || ''
-             const hit = (text.match(/环境异常|verify|captcha|安全验证/gi) || [])
-             return JSON.stringify({
-               inputs: inputs.map(i => ({ type: i.type, visible: i.offsetParent !== null, disabled: i.disabled, editable: !i.readOnly && !i.disabled })),
-               visibleButtons: buttons.length,
-               bodyChars: text.length,
-               hitWords: [...new Set(hit.map(s => s.toLowerCase()))],
-               bodyHead: text.slice(0, 240).replace(/\\s+/g, ' '),
-               title: document.title,
-             })
-           })()`,
-          true,
-        ))
-
-        // 提示条：站点判定 === UA 含 "electron" || window.process.type==="renderer"，
-        // 命中后弹一个「使用环境异常」Modal；关闭后写 localStorage 记住。
-        //
-        // 关键：先清掉 dismissFlag 再重载，才能分辨是「UA 脱敏生效」还是
-        // 「关过的弹窗不再弹」。只清自己写的那个键。
-        await step('提示条诊断', () => element.executeJavaScript(
-          `(() => {
-             const text = document.body.innerText || ''
-             let flag = null
-             try { flag = localStorage.getItem('closeUnsafeEnvWarn') } catch {}
-             return JSON.stringify({
-               modalVisible: /使用环境异常|Abnormal usage environment/.test(text),
-               dismissFlag: flag,
-               uaHasElectron: navigator.userAgent.toLowerCase().includes('electron'),
-               hasProcess: 'process' in window,
-             })
-           })()`,
-          true,
-        ))
-
-        // 登录页只在「没登录」时出现。记下来，登录完成后自动再跑一次，
-        // 这样我不用问「登进去了吗」——结果自己会出现在 diag 里。
-        const url = await element.executeJavaScript('location.href', true)
-        const needLogin = /sign_in|\/login/i.test(String(url))
-        report('wv-selftest', { steps, needLogin, url })
-
-        if (needLogin) {
-          setStatus('等待登录…（登录后自动复检）')
-          waitForChat(element, cfg, json)
-          return false
-        }
-        setStatus('自检完成')
-        return true
-      }
-
-      /**
-       * 登录页 → 主界面：轮询到输入框出现为止，然后自动复检一次并上报。
-       *
-       * 轮询放在 guest 里执行，不在渲染进程里堆定时器：
-       * 一次 executeJavaScript 就能等到「输入框出现」，跨页面跳转也不会失效。
-       */
-      async function waitForChat(element, cfg, json) {
-        guestRef.current.waiting = true
-        let done = false
-        // 最多等 10 分钟；用户可能慢慢登录。
-        for (let attempt = 0; attempt < 120 && !done; attempt += 1) {
-          const current = guestRef.current
-          if (!current || current.element !== element) return
-          let href = ''
-          try {
-            href = await element.executeJavaScript('location.href', true)
-          } catch {
-            return // guest 被拆了
-          }
-          if (!/sign_in|\/login/i.test(String(href))) {
-            // 已经离开登录页，看看输入框在不在
-            try {
-              const found = await element.executeJavaScript(
-                `String(!!globalThis.__bubbleAskDriver && !!globalThis.__bubbleAskDriver.findComposer(${json}))`,
-                true,
-              )
-              if (found === 'true') {
-                done = true
-                break
-              }
-            } catch {
-              return
-            }
-          }
-          await new Promise((resolve) => setTimeout(resolve, 5000))
-        }
-        const current = guestRef.current
-        if (!done || !current || current.element !== element) {
-          setStatus('等登录超时')
-          return
-        }
-        push('检测到已登录，开始复检')
-        report('wv-login-detected', {})
+      /** 清掉 Host 存的登录态（换账号或凭据失效时用）。 */
+      async function forgetSession() {
         try {
-          const state = await element.executeJavaScript(`globalThis.__bubbleAskDriver.state(${json})`, true)
-          const filled = await element.executeJavaScript(
-            `globalThis.__bubbleAskDriver.fill(${json}, 'Bubble Ask 内嵌自检')`,
-            true,
-          )
-          const after = await element.executeJavaScript(
-            `globalThis.__bubbleAskDriver.composerState(${json})`,
-            true,
-          )
-          // 登录态到底存在哪 —— 决定「重启后要不要重登」这个核心未知项。
-          // 只列 key 名和 cookie 名，不取任何值。
-          const storage = await element.executeJavaScript(
-            `(() => {
-               const keys = []
-               try { for (let i = 0; i < localStorage.length; i += 1) keys.push(localStorage.key(i)) } catch {}
-               let cookies = []
-               try { cookies = document.cookie.split(';').map(s => s.split('=')[0].trim()).filter(Boolean) } catch {}
-               return JSON.stringify({ localStorageKeys: keys, cookieNames: cookies, host: location.host })
-             })()`,
-            true,
-          )
-          report('wv-login-selftest', { steps: [
-            { step: 'state', ok: true, value: asText(state) },
-            { step: 'fill', ok: true, value: asText(filled) },
-            { step: 'composerState', ok: true, value: asText(after) },
-            { step: '存储（仅键名）', ok: true, value: asText(storage) },
-          ] })
-          setStatus('登录后复检完成')
+          await fetch('/bubble-ask/session', { method: 'DELETE' })
+          setStatus('已清除保存的登录态')
+          report('pane-session-forgotten', {})
         } catch (error) {
-          report('wv-login-selftest', {
-            steps: [{ step: '复检', ok: false, value: errorText(error) }],
-          })
-          setStatus('复检失败')
+          setStatus('清除失败：' + errorText(error))
         }
       }
-
-      async function run(label, task) {
-        if (busy) return
-        setBusy(true)
-        setStatus(`${label}…`)
-        try {
-          await task()
-        } catch (error) {
-          const message = errorText(error)
-          setStatus(`失败：${message}`)
-          push(`✗ ${message}`)
-          report('wv-fail', { step: label, message })
-        } finally {
-          setBusy(false)
-        }
-      }
-
-      /** 已持有的 guest；没有就明确报错，而不是抛 TypeError。 */
-      function held() {
-        const value = guestRef.current
-        if (!value) throw new Error('还没连接（先点「连接」）')
-        return value
-      }
-
-      /** 建 guest：设属性 → 挂 DOM → 等 dom-ready → 导航到服务方首页。 */
-      async function connect() {
-        if (guestRef.current) {
-          push('已经连接过了')
-          return
-        }
-        const bridge = takeDesktopBrowser()
-        if (!bridge) throw new Error('宿主没有 dshDesktop.browser（当前不是桌面端主框架）')
-        push(`acquire workspace=${SPIKE_WORKSPACE}`)
-        const reservation = await bridge.acquire(SPIKE_WORKSPACE)
-        push(`lease=${reservation.lease}`)
-        push(`partition=${reservation.partition}`)
-        const host = hostRef.current
-        if (!host) throw new Error('面板还没挂载')
-
-        const element = document.createElement('webview')
-        element.setAttribute('name', reservation.lease)
-        element.setAttribute('partition', reservation.partition)
-        element.setAttribute('allowpopups', '')
-        element.setAttribute('src', `about:blank#${reservation.lease}`)
-        element.style.width = '100%'
-        element.style.height = '100%'
-        element.style.border = '0'
-
-        // 先挂监听再入 DOM：dom-ready 是异步的，但这样最稳。
-        const blankReady = waitGuest(element, 'dom-ready', 15000)
-        host.appendChild(element)
-        guestRef.current = { element, bridge, lease: reservation.lease, partition: reservation.partition, cfg: null }
-        await blankReady
-        push('about:blank dom-ready ✓')
-
-        // 主进程在 did-attach-webview 里等同一个 dom-ready，再读 URL 认领 lease
-        // （必须是 about:blank#<lease>）。这里多等一拍，确保它先认领完，
-        // 否则我立刻 loadURL 会让它读到的 URL 对不上 lease，直接把 guest 关掉。
-        await new Promise((resolve) => setTimeout(resolve, 400))
-        push(`认领前 URL=${typeof element.getURL === 'function' ? element.getURL() : '(无 getURL)'}`)
-
-        // UA 脱敏：站点判定「环境异常」只看 UA 含 electron 或 window.process.type。
-        // setUserAgent 是 webview 的运行时方法（不是 attach preferences 的键），
-        // 主进程只会删 preferences 里那些键，所以这条路可能没被堵。
-        // 必须在 loadURL 之前设，否则首个文档已经用旧 UA 建立了 navigator。
-        if (typeof element.setUserAgent === 'function') {
-          try {
-            const ua = await element.executeJavaScript('navigator.userAgent', true)
-            const clean = String(ua)
-              .replace(/\s*Electron\/[\d.]+/gi, '')
-              .replace(/\s*@deepseek-ai\/[\w.-]+\/[\w.-]+/gi, '')
-            element.setUserAgent(clean)
-            push(`UA 已脱敏 → ${clean.slice(0, 160)}`)
-          } catch (error) {
-            push(`UA 脱敏失败：${errorText(error)}`)
-          }
-        } else {
-          push('guest 没有 setUserAgent')
-        }
-
-        const loaded = waitGuest(element, 'dom-ready', 60000)
-        element.loadURL(SPIKE_HOME)
-        await loaded
-        const url = typeof element.getURL === 'function' ? element.getURL() : '(无 getURL)'
-        push(`已加载 ${url}`)
-
-        try {
-          const ua = await element.executeJavaScript('navigator.userAgent', true)
-          push(`实际 UA=${String(ua).slice(0, 200)}`)
-        } catch (error) {
-          push(`读 UA 失败：${errorText(error)}`)
-        }
-        setStatus('已连接')
-      }
-
-      async function check() {
-        const { element } = held()
-        push(`guest API: executeJavaScript=${typeof element.executeJavaScript} loadURL=${typeof element.loadURL} getURL=${typeof element.getURL}`)
-        if (typeof element.executeJavaScript !== 'function') throw new Error('guest 没有 executeJavaScript')
-        const page = await element.executeJavaScript(
-          'JSON.stringify({href:location.href,title:document.title,ua:navigator.userAgent,cookie:navigator.cookieEnabled,ready:document.readyState})',
-          true,
-        )
-        push(`页面 ${asText(page)}`)
-        setStatus('可执行 JS ✓')
-      }
-
-      /** 从 Host 取驱动源码与配置（都来自唯一真源，插件里没有第二份实现）。 */
-      async function fetchDriver() {
-        const response = await fetch('/bubble-ask/driver')
-        const payload = await response.json()
-        if (!payload || payload.ok !== true) throw new Error('拿不到驱动配置')
-        const provider =
-          (payload.providers || []).find((item) => item.id === payload.defaultId) || (payload.providers || [])[0]
-        if (!provider) throw new Error('驱动配置里没有服务方')
-        return {
-          payload,
-          cfg: {
-            ...provider,
-            genericComposerSelectors: payload.generic.composerSelectors,
-            genericSendAriaLabels: payload.generic.sendAriaLabels,
-          },
-        }
-      }
-
-      async function inject() {
-        const guest = held()
-        const { payload, cfg } = await fetchDriver()
-        const driver = String(payload.driver || '')
-        if (!driver) throw new Error('驱动源码为空')
-        await guest.element.executeJavaScript(driver, true)
-        guest.cfg = cfg
-        push(`注入驱动 ${driver.length} 字节，服务方 ${cfg.id}`)
-        const present = await guest.element.executeJavaScript('String(!!globalThis.__bubbleAskDriver)', true)
-        push(`__bubbleAskDriver = ${asText(present)}`)
-        setStatus('驱动已注入')
-      }
-
-      /** 在 guest 里求值：统一走驱动的只读接口，不在这里重写逻辑。 */
-      async function callDriver(expression) {
-        const guest = held()
-        if (!guest.cfg) throw new Error('先注入驱动')
-        return guest.element.executeJavaScript(expression(JSON.stringify(guest.cfg)), true)
-      }
-
-      async function probe() {
-        const out = await callDriver((cfg) => `globalThis.__bubbleAskDriver.probe(${cfg})`)
-        push(`probe ${asText(out)}`)
-        setStatus('已读页面状态')
-      }
-
-      /**
-       * 对照实验：清掉「已关闭提示条」标记后重载，看提示条是否还会出现。
-       *
-       * 不做这一步就分不清「UA 脱敏生效」和「弹窗关过就不再弹」——
-       * 前者是可复用的方案，后者只是这次碰巧关掉了。
-       */
-      async function recheckEnv() {
-        const { element } = held()
-        await element.executeJavaScript("localStorage.removeItem('closeUnsafeEnvWarn')", true)
-        push('已清 closeUnsafeEnvWarn（只清这个键）')
-        const loaded = waitGuest(element, 'dom-ready', 60000)
-        element.reload()
-        await loaded
-        await new Promise((resolve) => setTimeout(resolve, 2500))
-        const verdict = await element.executeJavaScript(
-          `(() => {
-             const text = document.body.innerText || ''
-             let flag = null
-             try { flag = localStorage.getItem('closeUnsafeEnvWarn') } catch {}
-             return JSON.stringify({
-               modalVisible: /使用环境异常|Abnormal usage environment/.test(text),
-               dismissFlag: flag,
-               ua: navigator.userAgent.slice(0, 160),
-               uaHasElectron: navigator.userAgent.toLowerCase().includes('electron'),
-               title: document.title,
-               href: location.href,
-             })
-           })()`,
-          true,
-        )
-        push(`重载后 ${asText(verdict)}`)
-        report('wv-env-recheck', { verdict: asText(verdict) })
-        setStatus('对照实验完成')
-      }
-
-      async function fill() {
-        const text = 'Bubble Ask 内嵌验证：请只回复 ok'
-        const result = await callDriver(
-          (cfg) => `globalThis.__bubbleAskDriver.fill(${cfg}, ${JSON.stringify(text)})`,
-        )
-        push(`fill → ${asText(result)}`)
-        await new Promise((resolve) => setTimeout(resolve, 400))
-        const state = await callDriver((cfg) => `globalThis.__bubbleAskDriver.composerState(${cfg})`)
-        push(`composerState → ${asText(state)}`)
-        setStatus('已填入（未发送）')
-      }
-
-      async function send() {
-        const result = await callDriver((cfg) => `globalThis.__bubbleAskDriver.send(${cfg})`)
-        push(`send → ${asText(result)}`)
-        setStatus('已点发送')
-      }
-
-      /**
-       * 登录后发一条真消息，验证整条链路（不只是「找得到输入框」）。
-       *
-       * 只有点发送并确认消息真的发出去了，才算这条路走通 —— 前面 17 步
-       * 全是「能读写 DOM」，而用户要的是「能对话」。
-       */
-      async function sendProbe() {
-        const guest = held()
-        const { cfg } = guest.cfg ? { cfg: guest.cfg } : await fetchDriver()
-        if (!guest.cfg) guest.cfg = cfg
-        const json = JSON.stringify(cfg)
-        const element = guest.element
-
-        const before = await element.executeJavaScript('location.href', true)
-        push(`发送前 href=${asText(before)}`)
-
-        const filled = await element.executeJavaScript(
-          `globalThis.__bubbleAskDriver.fill(${json}, 'Bubble Ask 内嵌验证：请只回复 ok')`,
-          true,
-        )
-        push(`fill → ${asText(filled)}`)
-        await new Promise((resolve) => setTimeout(resolve, 500))
-
-        const clicked = await element.executeJavaScript(
-          `globalThis.__bubbleAskDriver.send(${json})`,
-          true,
-        )
-        push(`send → ${asText(clicked)}`)
-        setStatus('已点发送，等回复…')
-
-        // 等页面发生变化（URL 变成 /a/chat/… 或输入框被清空）—— 用轮询而不是
-        // 一次读取，因为发请求和渲染都要时间。
-        let verdict = 'unknown'
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000))
-          const after = await element.executeJavaScript(
-            `(() => {
-               const box = globalThis.__bubbleAskDriver.findComposer(${json})
-               return JSON.stringify({
-                 href: location.href,
-                 len: box ? (globalThis.__bubbleAskDriver.composerText(${json}) || '').length : -1,
-                 hasBox: !!box,
-               })
-             })()`,
-            true,
-          )
-          const info = JSON.parse(asText(after) || '{}')
-          if (info.href !== String(before) || info.len === 0) {
-            verdict = JSON.stringify(info)
-            break
-          }
-          verdict = JSON.stringify(info)
-        }
-        push(`发送后 ${verdict}`)
-        report('wv-send-probe', { verdict, clicked: asText(clicked) })
-        setStatus('发送验证完成')
-      }
-
-      function teardown() {
-        const heldValue = guestRef.current
-        guestRef.current = null
-        setLog('')
-        setStatus('已断开')
-        if (!heldValue) return
-        try {
-          heldValue.element.remove()
-        } catch {
-          /* 忽略 */
-        }
-        try {
-          Promise.resolve(heldValue.bridge.release(heldValue.lease)).catch(() => {})
-        } catch {
-          /* 忽略 */
-        }
-      }
-
-      const button = (label, task) =>
-        h('button', { className: 'dba-wv-btn', disabled: busy, onClick: () => { void run(label, task) } }, label)
 
       return h(React.Fragment, null,
-        h('button', {
-          className: 'dba-spike',
-          onClick: () => setOpen((value) => !value),
-          title: '验证插件内嵌 webview 是否可行（spike 分支）',
-        }, open ? '收起内嵌验证' : '内嵌验证'),
-        // 常驻挂载：收起只隐藏，guest 仍然活着（登录态留着，下次少走一遍）。
-        h('div', { className: 'dba-wv', style: open ? undefined : { display: 'none' } },
-          h('div', { className: 'dba-wv-head' },
-            h('span', { className: 'dba-wv-title' }, 'webview'),
-            h('span', { className: 'dba-wv-status', title: status }, status),
-            h('button', { className: 'dba-wv-btn', onClick: () => setOpen(false) }, '×')),
-          h('div', { className: 'dba-wv-tools' },
+        // 收起时留一个小入口重新打开；没建过 guest 时不显示，避免平白多一个悬浮按钮。
+        open || !hasGuest
+          ? null
+          : h('button', {
+            key: 'peek',
+            className: 'dba-pane-open',
+            title: '打开内嵌 DeepSeek 窗口',
+            onClick: () => setOpen(true),
+          }, 'DeepSeek'),
+        h('div', {
+          key: 'pane',
+          className: 'dba-pane',
+          'data-dba-root': '1',
+          // 收起只隐藏：guest 保持存活，登录态与页面状态都不丢。
+          style: { display: open ? 'flex' : 'none' },
+        },
+          h('div', { className: 'dba-pane-head' },
+            h('span', { className: 'dba-pane-title' }, 'DeepSeek'),
+            h('span', { className: 'dba-pane-status', title: status }, status),
             h('button', {
-              className: 'dba-wv-btn',
-              disabled: busy,
-              title: '自动跑完「建 guest → 注入驱动 → 读状态 → 填入」，每步结果上报给 Host',
-              onClick: () => { void run('自检', selftest) },
-            }, '一键自检'),
-            button('连接', connect),
-            button('检查 API', check),
-            button('注入驱动', inject),
-            button('页面状态', probe),
-            button('填入测试', fill),
-            button('点发送', send),
+              className: 'dba-pane-btn',
+              onClick: () => setOpen(false),
+              title: '收起（窗口保持存活）',
+            }, '收起'),
             h('button', {
-              className: 'dba-wv-btn',
+              className: 'dba-pane-btn',
               disabled: busy,
-              title: '清掉「已关闭提示条」标记后重载，看「使用环境异常」是否还会出现',
-              onClick: () => { void run('环境复检', recheckEnv) },
-            }, '环境复检'),
-            h('button', { className: 'dba-wv-btn', disabled: busy, onClick: teardown }, '断开')),
-          log ? h('pre', { className: 'dba-wv-pre' }, log) : null,
-          h('div', { className: 'dba-wv-host', ref: hostRef })))
+              title: '清掉保存的登录态，下次要重新登录',
+              onClick: () => { void forgetSession() },
+            }, '清除登录')),
+          h('div', { className: 'dba-pane-host', ref: hostRef })))
     }
     //#endregion
 
@@ -1173,12 +1077,12 @@ window.__ModuleLoader__.load({
           id: 'bubble-ask',
           order: 900,
         }, BubbleAsk))
-        // spike：验证插件自己开 guest 打开网页版是否可行（走 lease 通道）。
+        // 内嵌网页版面板：插件自己经 lease 通道开 guest，发送不再需要托盘 exe。
         context.slots.inject('shell.overlay', () => context.slots.register({
           name: 'shell.overlay',
-          id: 'bubble-ask-webview-spike',
+          id: 'bubble-ask-webview',
           order: 901,
-        }, WebviewSpike))
+        }, WebPane))
         report('loaded', { href: window.location.href })
       },
     }
