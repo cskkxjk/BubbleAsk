@@ -5,6 +5,7 @@
  * 1. 选中即出卡片，中间没有第二次点击。换服务方、打开窗口这些配置放在工具栏弹窗里。
  * 2. 影子 DOM 承载 UI，页面 CSS 进不来，我们的样式也漏不出去。
  * 3. 卡片里的 mousedown 只 stopPropagation 不 preventDefault —— 输入框要能聚焦。
+ *    卡片出现时不主动聚焦输入框：焦点落进输入框会折叠选区，用户就看不到选中的是哪一段。
  * 4. 每种收起都有对应事件（点别处、滚动、改窗口、Esc），不留残留卡片。
  */
 ;(() => {
@@ -21,7 +22,7 @@
   /** 卡片与选区的间距。 */
   const GAP = 8
   /** 卡片空闲时的提示。 */
-  const HINT_IDLE = '回车发送 · 留空用默认问题 · Esc 取消'
+  const HINT_IDLE = '回车用默认问题 · 点输入框写自己的问题 · Esc 取消'
 
   const host = document.createElement('div')
   host.setAttribute('data-bubble-ask', 'bubble')
@@ -221,7 +222,8 @@
     go.disabled = false
     setHint(HINT_IDLE, '')
     placeAt(card, found.rect)
-    input.focus()
+    // 这里不调用 input.focus()：焦点一旦落进输入框，浏览器会把选区折叠，
+    // 用户就看不到自己刚选中的是哪一段了。改由下面的 keydown 在第一次按键时接管焦点。
   }
 
   function hide() {
@@ -264,6 +266,37 @@
       if (event.button !== 0) return
       if (event.composedPath && event.composedPath().includes(host)) return
       setTimeout(show, 10)
+    },
+    true,
+  )
+
+  /**
+   * 卡片出现时不抢焦点，选区才能保持高亮。第一次按键时才把焦点交给输入框：
+   * 可打印字符直接补进输入框，回车用默认问题发送。
+   * 输入法组字期间（keydown 为 Process / keyCode 229）不抢，避免打断中文输入。
+   */
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (mode !== 'open') return
+      if (event.composedPath && event.composedPath().includes(host)) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        hide()
+        return
+      }
+      if (event.ctrlKey || event.altKey || event.metaKey) return
+      if (event.isComposing || event.keyCode === 229) return
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        send('')
+        return
+      }
+      if (event.key.length === 1) {
+        input.focus()
+        input.value += event.key
+        event.preventDefault()
+      }
     },
     true,
   )
