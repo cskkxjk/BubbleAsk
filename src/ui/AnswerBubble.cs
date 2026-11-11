@@ -49,6 +49,9 @@ namespace BubbleAsk
         /// <summary>自测里置真：DrawToBitmap 抓不到 WebView2 的内容，渲染断言仍需原生那套。</summary>
         public static bool ForceNativeUi;
 
+        /// <summary>自测里置假：离屏测试窗口的位置不该写进用户配置。</summary>
+        public static bool PersistPosition = true;
+
         /// <summary>诊断用：HTML 版启用失败时的原因。</summary>
         public string WebUiError;
 
@@ -326,11 +329,42 @@ namespace BubbleAsk
 
             FormClosed += delegate
             {
+                RememberPosition();
                 if (Dismissed != null)
                 {
                     Dismissed();
                 }
             };
+        }
+
+        /// <summary>
+        /// 关窗时把位置记进配置：下次开起来还在原地（网页版小窗也读这一份）。
+        /// 窗口被拖到屏幕外/最小化状态就跳过，别把 -32000 存进去。
+        /// </summary>
+        private void RememberPosition()
+        {
+            if (!PersistPosition || _config == null || WindowState != FormWindowState.Normal)
+            {
+                return;
+            }
+            if (Left < -20000 || Top < -20000)
+            {
+                return;
+            }
+            if (_config.WindowX == Left && _config.WindowY == Top)
+            {
+                return;
+            }
+            _config.WindowX = Left;
+            _config.WindowY = Top;
+            try
+            {
+                _config.Save();
+            }
+            catch
+            {
+                /* 配置写不进去（只读目录等）不影响使用 */
+            }
         }
 
         //#region HTML 版：WebView2 承载内嵌的 answer.html
@@ -677,47 +711,13 @@ namespace BubbleAsk
             }
         }
 
-        /// <summary>贴到鼠标右下角，越界时翻转，保证整块可见。</summary>
-        public void PlaceNearCursor()
-        {
-            Point cursor = Cursor.Position;
-            Rectangle screen = Screen.FromPoint(cursor).WorkingArea;
-            int x = cursor.X + 14;
-            int y = cursor.Y + 14;
-            if (x + Width > screen.Right - 8)
-            {
-                x = cursor.X - Width - 14;
-            }
-            if (y + Height > screen.Bottom - 8)
-            {
-                y = cursor.Y - Height - 14;
-            }
-            if (x < screen.Left + 8)
-            {
-                x = screen.Left + 8;
-            }
-            if (y < screen.Top + 8)
-            {
-                y = screen.Top + 8;
-            }
-            Location = new Point(x, y);
-        }
-
         /// <summary>只在第一次显示时定位；后续换问题沿用用户拖到的位置。</summary>
         public void ShowForAsk()
         {
             if (!Visible)
             {
-                if (_config.ShowBubble)
-                {
-                    PlaceNearCursor();
-                }
-                else
-                {
-                    Rectangle screen = Screen.FromPoint(Cursor.Position).WorkingArea;
-                    Location = new Point(screen.Left + (screen.Width - Width) / 2,
-                        screen.Top + (screen.Height - Height) / 2);
-                }
+                // 和网页版小窗同一个位置：存过的位置优先，没有就右侧居中；拖动会记住。
+                Location = WindowPlacement.Resolve(_config, Size);
                 Show();
             }
             else

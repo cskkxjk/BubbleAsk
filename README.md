@@ -285,6 +285,7 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 | `HotkeySummon` / `HotkeyAsk` / `HotkeyShot` | Ctrl+Alt+D / Q / A | 格式如 `Ctrl+Shift+F2` |
 | `ChatUrl` | chat.deepseek.com | 自定义服务方（`WebProvider=custom`）时打开的地址；预设服务方忽略此项 |
 | `WindowWidth` / `WindowHeight` | 480×720 | 网页版小窗与 API 气泡共用的尺寸（两种模式看到的是同样大的面板） |
+| `WindowX` / `WindowY` | `-1` / `-1` | 两个窗口共用的位置（`-1` = 还没定过，默认右侧居中）；拖动后自动记住 |
 | `TopMost` | `true` | 网页版窗口置顶 |
 | `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera → Chromium） |
 | `ProfileDir` | 空 | 登录数据目录；留空则按浏览器分别存储（Edge 使用 `edge-profile`，其余使用 `profile-<名称>`） |

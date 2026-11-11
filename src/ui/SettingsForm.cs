@@ -43,7 +43,6 @@ namespace BubbleAsk
         private TextBox _edgePath;
         private TextBox _profileDir;
         private NumericUpDown _cdpPort;
-        private CheckBox _showBubble;
 
         private TextBox _hotkeySummon;
         private TextBox _hotkeyAsk;
@@ -386,11 +385,7 @@ namespace BubbleAsk
 
             // API 模式的气泡尺寸已与上面的「窗口尺寸」统一，这里不再单独配置。
 
-            _showBubble = new CheckBox();
-            _showBubble.Text = "气泡贴着鼠标出现（不勾选则屏幕居中）";
-            _showBubble.AutoSize = true;
-            _showBubble.ForeColor = Ink;
-            AddRow(table, "气泡位置", _showBubble, null);
+
 
             _browser = new ComboBox();
             _browser.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -565,7 +560,6 @@ namespace BubbleAsk
             _height.Value = Clamp(_config.WindowHeight, _height);
             SetNumber(_height, _config.WindowHeight);
             _topMost.Checked = _config.TopMost;
-            _showBubble.Checked = _config.ShowBubble;
             _edgePath.Text = _config.BrowserPath;
             RefreshBrowsers();
             _profileDir.Text = _config.ProfileDir;
@@ -757,7 +751,6 @@ namespace BubbleAsk
             _config.WindowWidth = ReadNumber(_width);
             _config.WindowHeight = ReadNumber(_height);
             _config.TopMost = _topMost.Checked;
-            _config.ShowBubble = _showBubble.Checked;
             _config.BrowserPath = _edgePath.Text.Trim();
             _config.ProfileDir = _profileDir.Text.Trim();
             _config.CdpPort = ReadNumber(_cdpPort);

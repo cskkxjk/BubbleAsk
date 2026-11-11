@@ -84,6 +84,8 @@ namespace BubbleAsk
             // 自测里强制用原生气泡：DrawToBitmap 抓不到 WebView2 的内容，
             // 排版断言得在那套自绘界面上做。HTML 版另有独立的前端测试（见 docs 说明）。
             AnswerBubble.ForceNativeUi = true;
+            // 离屏测试窗口的位置别写进用户配置
+            AnswerBubble.PersistPosition = false;
 
             try
             {
@@ -962,6 +964,7 @@ namespace BubbleAsk
         private static int RunBubbleWeb(string outDir)
         {
             Directory.CreateDirectory(outDir);
+            AnswerBubble.PersistPosition = false;
             try
             {
                 using (AnswerBubble bubble = new AnswerBubble(new AppConfig()))
@@ -1172,6 +1175,23 @@ namespace BubbleAsk
                     Check("bubble fixed width", longBubble.Width == config.WindowWidth, longBubble.Width + " vs " + config.WindowWidth);
                     Check("bubble fixed height", longBubble.Height == config.WindowHeight, longBubble.Height + " vs " + config.WindowHeight);
                     longBubble.Close();
+                }
+
+                // 位置：和网页版小窗共用 WindowX/WindowY，存过就照原样出来（夹进工作区）。
+                AppConfig placed = new AppConfig();
+                placed.WindowX = 200;
+                placed.WindowY = 150;
+                using (AnswerBubble positioned = new AnswerBubble(placed))
+                {
+                    positioned.ShowForAsk();
+                    Application.DoEvents();
+                    Point expect = WindowPlacement.Fit(
+                        Screen.FromPoint(new Point(200, 150)).WorkingArea,
+                        positioned.Size,
+                        new Point(200, 150));
+                    Check("bubble uses saved position", positioned.Location == expect,
+                        positioned.Location + " vs " + expect);
+                    positioned.Close();
                 }
 
                 // 第二段：短内容 + 报错，出一张能看全的图。

@@ -231,29 +231,10 @@ namespace BubbleAsk
 
         private Point ComputePosition()
         {
-            Point cursor = Cursor.Position;
-            Rectangle area = Screen.FromPoint(cursor).WorkingArea;
-            int width = _config.WindowWidth;
-            int height = _config.WindowHeight;
-            int x = cursor.X + 20;
-            int y = cursor.Y + 20;
-            if (x + width > area.Right)
-            {
-                x = cursor.X - width - 20;
-            }
-            if (x < area.Left)
-            {
-                x = area.Left + 10;
-            }
-            if (y + height > area.Bottom)
-            {
-                y = area.Bottom - height - 10;
-            }
-            if (y < area.Top)
-            {
-                y = area.Top + 10;
-            }
-            return new Point(x, y);
+            // 和 API 气泡共用同一个位置（WindowX/WindowY），拖过之后两边都在同一个地方；
+            // 没定过位置就走 WindowPlacement 的默认位置（右侧居中），不再跟着鼠标跑。
+            Size size = new Size(_config.WindowWidth, _config.WindowHeight);
+            return WindowPlacement.Resolve(_config, size);
         }
 
         private IntPtr FindWindowHandle()

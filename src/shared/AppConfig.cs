@@ -23,6 +23,9 @@ namespace BubbleAsk
 
         public int WindowWidth = 480;
         public int WindowHeight = 720;
+        /// <summary>网页版小窗与 API 气泡共用的位置；-1 表示还没定过。</summary>
+        public int WindowX = -1;
+        public int WindowY = -1;
         public int CdpPort = 9333;
 
         /// <summary>浏览器 exe 路径。空着就自动检测（Edge → Chrome → 其它 Chromium 内核）。</summary>
@@ -134,6 +137,8 @@ namespace BubbleAsk
                 config.HotkeyShot = Json.GetString(data, "HotkeyShot", config.HotkeyShot);
                 config.WindowWidth = Json.GetInt(data, "WindowWidth", config.WindowWidth);
                 config.WindowHeight = Json.GetInt(data, "WindowHeight", config.WindowHeight);
+            config.WindowX = Json.GetInt(data, "WindowX", config.WindowX);
+            config.WindowY = Json.GetInt(data, "WindowY", config.WindowY);
                 config.CdpPort = Json.GetInt(data, "CdpPort", config.CdpPort);
                 // 老配置里这个字段叫 EdgePath，读一次做兼容；新写入一律用 BrowserPath。
                 config.BrowserPath = Json.GetString(data, "BrowserPath", config.BrowserPath);
@@ -184,6 +189,8 @@ namespace BubbleAsk
                 data["HotkeyShot"] = HotkeyShot;
                 data["WindowWidth"] = WindowWidth;
                 data["WindowHeight"] = WindowHeight;
+            data["WindowX"] = WindowX;
+            data["WindowY"] = WindowY;
                 data["CdpPort"] = CdpPort;
                 data["BrowserPath"] = BrowserPath;
                 data["ProfileDir"] = ProfileDir;
