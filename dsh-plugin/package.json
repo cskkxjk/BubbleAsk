@@ -15,6 +15,7 @@
     "client.js",
     "lib/ask-client.mjs",
     "lib/providers.data.js",
+    "lib/driver.source.mjs",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.png"

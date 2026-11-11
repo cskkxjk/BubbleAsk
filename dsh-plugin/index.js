@@ -99,7 +99,8 @@ const DEFAULTS = {
  *
  * 改服务方请改真源并运行 `node tools/gen-providers.mjs`，不要改生成物。
  */
-import { PROVIDERS } from './lib/providers.data.js'
+import { PROVIDERS, GENERIC_COMPOSER_SELECTORS, GENERIC_SEND_ARIA_LABELS } from './lib/providers.data.js'
+import { DRIVER_SOURCE } from './lib/driver.source.mjs'
 
 const PROVIDER_IDS = PROVIDERS.map((provider) => provider.id)
 
@@ -177,6 +178,8 @@ const ROUTE_PROMPT = '/bubble-ask/prompt'
 const ROUTE_SEND = '/bubble-ask/send'
 const ROUTE_HEALTH = '/bubble-ask/health'
 const ROUTE_DIAG = '/bubble-ask/diag'
+/** 内嵌 webview（spike）用：把页面驱动源码与服务方配置交给 Client 半。 */
+const ROUTE_DRIVER = '/bubble-ask/driver'
 const MAX_BODY_BYTES = 128 * 1024
 
 /** Client 半上报的记录（最近若干条，用于无人值守自检）。 */
@@ -1105,6 +1108,25 @@ export function apply(ctx, config = {}) {
       }
     },
   }), 'bubble-ask: diag route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_DRIVER,
+    async handler(_req, res) {
+      // 只有一份实现：源码来自真源 shared/driver.js（生成物只做转手），
+      // 配置来自真源 shared/providers.json（同样生成）。Client 半据此注入 guest。
+      sendJson(res, 200, {
+        ok: true,
+        driver: DRIVER_SOURCE,
+        generic: {
+          composerSelectors: GENERIC_COMPOSER_SELECTORS,
+          sendAriaLabels: GENERIC_SEND_ARIA_LABELS,
+        },
+        providers: PROVIDERS,
+        defaultId: DEFAULTS.provider,
+      })
+    },
+  }), 'bubble-ask: driver route')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',

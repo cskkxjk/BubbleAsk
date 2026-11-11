@@ -135,15 +135,22 @@ export const PROVIDERS = ${JSON.stringify(providers, null, 2)}
 `
 }
 
-/** 生成插件用的数据模块（只含下拉展示与兜底地址需要的字段）。 */
+/**
+ * 生成插件用的数据模块。
+ *
+ * 与扩展不同，插件的「发送」默认交给桌面端托盘应用，所以过去只下发 id/名称/入口地址。
+ * 但内嵌 webview 这条路径下**执行者在插件自己这边**，需要完整的选择器配置才能驱动页面，
+ * 因此这里下发合并后的全量定义。多出来的字段对桌面端路径无副作用（那边只读 id）。
+ */
 function buildPluginModule(data) {
-  const providers = data.providers.map((provider) => {
-    const merged = applyOverrides(provider, 'plugin')
-    const item = { id: merged.id, name: merged.name, url: merged.url }
-    if (merged.prefillParam) item.prefillParam = merged.prefillParam
-    return item
-  })
+  const providers = data.providers.map((provider) => applyOverrides(provider, 'plugin'))
   return `${BANNER('DSH 插件')}
+
+export const DEFAULT_PROVIDER_ID = ${JSON.stringify(data.defaultId)}
+
+export const GENERIC_COMPOSER_SELECTORS = ${JSON.stringify(data.generic.composerSelectors, null, 2)}
+
+export const GENERIC_SEND_ARIA_LABELS = ${JSON.stringify(data.generic.sendAriaLabels, null, 2)}
 
 export const PROVIDERS = ${JSON.stringify(providers, null, 2)}
 `
@@ -189,6 +196,17 @@ function main() {
   targets.push({
     path: join(root, 'chrome-extension', 'content', 'driver.js'),
     content: `${BANNER('Chrome 扩展')}\n\n${readFileSync(driverPath, 'utf8')}`,
+  })
+
+  // 插件的内嵌 webview 路径下，驱动要由 Client 半注入 guest 页面（executeJavaScript），
+  // 所以把原文包成一个 ESM 字符串常量带进插件；Host 通过路由交给 Client，仍只有一份实现。
+  targets.push({
+    path: join(root, 'dsh-plugin', 'lib', 'driver.source.mjs'),
+    content: `${BANNER('DSH 插件')}
+
+/** 页面驱动源码：真源 shared/driver.js 的原文，供 Host 分发给 Client 注入 guest。 */
+export const DRIVER_SOURCE = ${JSON.stringify(readFileSync(driverPath, 'utf8'))}
+`,
   })
 
   let drifted = 0
