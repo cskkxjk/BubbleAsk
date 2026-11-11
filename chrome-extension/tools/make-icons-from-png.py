@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 PLATE_TOP = (237, 241, 255)
 PLATE_BOTTOM = (215, 224, 255)
@@ -84,16 +84,6 @@ def plate(size: int) -> Image.Image:
     return base
 
 
-def solid_plate(size: int) -> Image.Image:
-    """纯品牌蓝底板（小尺寸用，保证对比度）。"""
-    base = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * 0.22), fill=255)
-    fill = Image.new("RGBA", (size, size), (77, 107, 254, 255))
-    base.paste(fill, (0, 0), mask)
-    return base
-
-
 def compose(master: Image.Image, size: int) -> Image.Image:
     """底板 + 居中鲸鱼。"""
     canvas = plate(size)
@@ -104,35 +94,12 @@ def compose(master: Image.Image, size: int) -> Image.Image:
     return canvas
 
 
-def compose_small(master: Image.Image, size: int) -> Image.Image:
-    """
-    小尺寸专用：把鲸鱼压成单色剪影。
-
-    16px 下细节必然丢失，硬缩只会得到一团糊。这里取 alpha 当遮罩、略微加粗，
-    再填白色贴纯蓝底 —— 对比度高、轮廓清楚，牺牲的都是本来也看不见的细节。
-    """
-    inner = int(size * (1 - 2 * PADDING_RATIO * 0.6))
-    scaled = master.resize((inner, inner), Image.LANCZOS)
-    alpha = scaled.split()[-1]
-
-    # 轻微膨胀，补回缩放时被吃掉的细笔画（尾巴、鳍）
-    alpha = alpha.filter(ImageFilter.MaxFilter(3 if size <= 16 else 5))
-
-    silhouette = Image.new("RGBA", (inner, inner), (255, 255, 255, 0))
-    silhouette.putalpha(alpha)
-
-    canvas = solid_plate(size)
-    offset = (size - inner) // 2
-    canvas.paste(silhouette, (offset, offset), silhouette)
-    return canvas
-
-
 def compose_bare(master: Image.Image, size: int, fill_ratio: float = 0.96) -> Image.Image:
     """
     不铺底板，鲸鱼直接放透明画布上。
 
-    16px 下底板反而吃掉对比和空间：浅底+蓝鲸太糊，纯蓝底+白剪影又把细节挤没。
-    官方 favicon 也是裸字形，靠浏览器/工具栏自身的底色提供对比。
+    16px 下底板会压缩鲸鱼可用空间：浅底加蓝鲸对比不足，纯蓝底加白剪影又占掉细节。
+    官方 favicon 同样只用字形本身，对比由工具栏底色提供。
     """
     inner = max(1, int(size * fill_ratio))
     whale = master.resize((inner, inner), Image.LANCZOS)

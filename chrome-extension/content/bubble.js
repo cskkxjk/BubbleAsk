@@ -2,12 +2,10 @@
  * 划词鲸鱼气泡：选中一段文字，鲸鱼提问卡片直接浮出来，想好问题回车就发。
  *
  * 设计要点：
- * 1. **没有「问这段」这一步**。以前的流程是「选中 → 点气泡 → 再弹大卡片」，
- *    多一次点击、还多一层配置（换服务方、复制提问）挡在提问前面；现在选中即提问，
- *    换服务方 / 打开窗口这些配置全部交给工具栏弹窗（浏览器右上角那块）。
+ * 1. 选中即出卡片，中间没有第二次点击。换服务方、打开窗口这些配置放在工具栏弹窗里。
  * 2. 影子 DOM 承载 UI，页面 CSS 进不来，我们的样式也漏不出去。
  * 3. 卡片里的 mousedown 只 stopPropagation 不 preventDefault —— 输入框要能聚焦。
- * 4. 一切「消失」都有对应事件（点别处、滚动、改窗口、Esc），不留僵尸卡片。
+ * 4. 每种收起都有对应事件（点别处、滚动、改窗口、Esc），不留残留卡片。
  */
 ;(() => {
   if (globalThis.__bubbleAskSelectionBubble) return
@@ -16,13 +14,14 @@
   /**
    * 少于这么多字不弹。
    *
-   * 原先是 8，结果像 crxsoso 顶部那种「EDGE / CHROME / FIREFOX」的短标签选中后
-   * 永远不弹 —— 而双击选词、短拖选本身就是明确的意图，不该被字数卡住。
-   * 现在只挡「单字」这种明显误触。
+   * 原先是 8，crxsoso 顶部那种「EDGE / CHROME / FIREFOX」短标签选中后永远不弹；
+   * 双击选词、短拖选都是明确意图，字数门槛只挡单字这种明显误触。
    */
   const MIN_CHARS = 2
   /** 卡片与选区的间距。 */
   const GAP = 8
+  /** 卡片空闲时的提示。 */
+  const HINT_IDLE = '回车发送 · 留空用默认问题 · Esc 取消'
 
   const host = document.createElement('div')
   host.setAttribute('data-bubble-ask', 'bubble')
@@ -106,7 +105,7 @@
   const input = document.createElement('input')
   input.type = 'text'
   input.className = 'ask-input'
-  input.placeholder = '想问什么？（留空就用默认问题）'
+  input.placeholder = '想问什么？留空用默认问题'
   input.autocomplete = 'off'
   input.spellcheck = false
   const go = document.createElement('button')
@@ -116,21 +115,22 @@
   row.append(whale, input, go)
   const hint = document.createElement('div')
   hint.className = 'ask-hint'
-  hint.textContent = '回车发送 · 留空用默认问题 · Esc 取消'
+  hint.textContent = HINT_IDLE
   card.append(row, hint)
 
   shadow.append(style, card)
 
   /** 当前卡片对应的选区文本。 */
   let pendingText = ''
-  /** 选区周围的文字（卡片弹出那一刻的快照；等后台去读时就没了）。 */
+  /** 选区周围的文字与 DOM 路径（卡片出现那一刻的快照；等后台去读时就没了）。 */
   let pendingLocal = null
-  /** 卡片对齐的选区矩形。 */
-  let anchorRect = null
-  /** idle：没有卡片；open：卡片可输入；sending：已提交，等结果。 */
+  let pendingAncestors = []
+  /** idle：没有卡片；open：卡片可输入；sending：已提交，等结果；done：已发出，等收起。 */
   let mode = 'idle'
   /** 收起时的定时器（成功提示留一会儿再收）。 */
   let hideTimer = null
+  /** 每次弹出或收起都加一，用来丢掉上一轮发送的回复，避免写到新卡片上。 */
+  let session = 0
 
   function isEditable(node) {
     let element = node && node.nodeType === 1 ? node : node && node.parentElement
@@ -175,24 +175,30 @@
     element.style.top = `${Math.round(top)}px`
   }
 
-  /** 抓一份「选区周围的文字」。采集器没加载就返回 null，后端会退回整页文本。 */
-  function snapshotLocal() {
-    const collect = globalThis.__bubbleAskSelectionContext
-    if (typeof collect !== 'function') return null
+  /**
+   * 抓一份「选区周围的文字 + 选区 DOM 路径」。
+   * 采集器没加载时返回空值，后端退回整页文本。
+   */
+  function snapshotSelection() {
+    const local = globalThis.__bubbleAskSelectionContext
+    const ancestors = globalThis.__bubbleAskSelectionAncestors
+    const snapshot = { local: null, ancestors: [] }
     try {
-      return collect({})
+      if (typeof local === 'function') snapshot.local = local({})
+      if (typeof ancestors === 'function') snapshot.ancestors = ancestors(4) || []
     } catch (error) {
       console.warn('[BubbleAsk] 局部上下文采集失败', error)
-      return null
     }
+    return snapshot
   }
 
-  function setHint(text, tone) {
+  function setHint(text, tone, detail) {
     hint.textContent = text
     hint.dataset.tone = tone || ''
+    hint.title = detail || ''
   }
 
-  /** 选中就弹卡片：不再有「问这段」这一层。 */
+  /** 选中就弹卡片。 */
   function show() {
     if (mode !== 'idle') return
     const found = readSelection()
@@ -204,28 +210,31 @@
       clearTimeout(hideTimer)
       hideTimer = null
     }
+    const snapshot = snapshotSelection()
+    session += 1
     pendingText = found.text
-    anchorRect = found.rect
-    pendingLocal = snapshotLocal()
+    pendingLocal = snapshot.local
+    pendingAncestors = snapshot.ancestors
     mode = 'open'
     input.value = ''
     input.disabled = false
     go.disabled = false
-    setHint('回车发送 · 留空用默认问题 · Esc 取消', '')
+    setHint(HINT_IDLE, '')
     placeAt(card, found.rect)
     input.focus()
   }
 
   function hide() {
+    session += 1
     pendingText = ''
     pendingLocal = null
-    anchorRect = null
+    pendingAncestors = []
     mode = 'idle'
     card.dataset.state = 'hidden'
     input.value = ''
     input.disabled = false
     go.disabled = false
-    setHint('回车发送 · 留空用默认问题 · Esc 取消', '')
+    setHint(HINT_IDLE, '')
   }
 
   function hideSoon(delayMs) {
@@ -290,30 +299,27 @@
   })
 
   /**
-   * 把后台返回的 stage 翻成人话。
-   *
-   * 只显示「失败」等于没说 —— 用户既不知道断在哪，我也没法远程判断。
+   * 把后台返回的 stage 翻成短标签，阶段名与细节放到悬停提示里。
    */
   function describeFailure(result) {
     const stage = result && result.stage ? String(result.stage) : ''
     const detail = result && result.detail ? String(result.detail) : ''
     const labels = {
-      login: '未登录',
-      collect: '读不到页面',
-      window: '窗口没起来',
-      'no-composer': '找不到输入框',
-      'no-button': '找不到发送键',
-      unverified: '发送未确认',
-      filled: '已填入未确认',
-      fill: '没填进去',
-      error: '失败',
+      login: '请先在窗口里登录',
+      collect: '读不到这个页面',
+      window: '服务方窗口没打开',
+      'no-composer': '页面里找不到输入框',
+      'no-button': '找不到发送按钮',
+      unverified: '发送结果未确认',
+      fill: '文字没填进输入框',
+      error: '发送失败',
     }
-    const label = labels[stage] || (stage ? `失败(${stage})` : '失败')
-    return { label, detail: detail ? `${stage || 'error'}：${detail}` : stage || '未知原因' }
+    const label = labels[stage] || (stage ? `发送失败（${stage}）` : '发送失败')
+    return { label, detail: detail ? `${stage || 'error'}：${detail}` : stage || '没有返回原因' }
   }
 
   /**
-   * 真正发出去。question 为空 → 后端按「有没有选区」套默认问题；
+   * 真正发出去。question 为空 → 后台按「有没有选区」套默认问题；
    * 有内容 → 用户自己写的问题会被放进 prompt 的「我的问题」一节。
    */
   async function send(question) {
@@ -322,34 +328,42 @@
       hide()
       return
     }
+    const mine = session
     mode = 'sending'
     input.disabled = true
     go.disabled = true
     setHint('发送中…', '')
     try {
       // 走兼容层：Chromium 99 以前 runtime.sendMessage 不返回 Promise（老机器常见）
-      const send = globalThis.__baSendMessage
-        || ((message) => chrome.runtime.sendMessage(message))
-      const result = await send({
+      const post = globalThis.__baSendMessage || ((message) => chrome.runtime.sendMessage(message))
+      const result = await post({
         type: 'BA_ASK_SELECTION',
         selection: text,
         question: String(question || ''),
         local: pendingLocal,
+        ancestors: pendingAncestors,
       })
+      // 等回复期间卡片被收起或换成了新选区：这一轮结果已经没有对应卡片了
+      if (mine !== session) return
       if (result && result.ok) {
-        mode = 'open'
-        setHint('已发送到网页版', 'ok')
-        input.disabled = false
-        go.disabled = false
+        // 成功提示期间保持不可提交，避免回车把同一段选区再发一次
+        mode = 'done'
+        setHint('已发送到网页版窗口', 'ok')
         hideSoon(1200)
         return
       }
-      const failure = describeFailure(result)
-      setHint(failure.label + '：' + failure.detail, 'error')
-      console.warn('[BubbleAsk] 发送失败', result)
+      if (!result) {
+        // 兼容层等到超时也没拿到回复：后台可能还在发，按未确认处理
+        setHint('还没收到结果，请到右侧窗口核对', 'error')
+        console.warn('[BubbleAsk] 等回复超时')
+      } else {
+        const failure = describeFailure(result)
+        setHint(failure.label, 'error', failure.detail)
+        console.warn('[BubbleAsk] 发送失败', result)
+      }
     } catch (error) {
-      const detail = String(error && error.message ? error.message : error)
-      setHint('失败：' + detail, 'error')
+      if (mine !== session) return
+      setHint('发送失败，请重试', 'error', String(error && error.message ? error.message : error))
       console.warn('[BubbleAsk] 发送异常', error)
     }
     // 失败：卡片留着，问题也留着，改一改可以重发
@@ -376,9 +390,8 @@
   /**
    * 采集请求的处理者。
    *
-   * 为什么不让后台注入：Maxthon 这类 Chromium 分支**没有实现 `chrome.scripting`**
-   * （连老的 `chrome.tabs.executeScript` 也没有），点的时候再注入必然失败。
-   * 而内容脚本本身是正常运行的 —— 所以改成「后台问一句，页面自己把上下文交出来」。
+   * Maxthon 这类 Chromium 分支没有实现 `chrome.scripting`（连老的 `chrome.tabs.executeScript`
+   * 也没有），需要时再注入必然失败；内容脚本本身正常运行，所以由后台问一句、页面把上下文交出来。
    */
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.type !== 'BA_COLLECT') return false

@@ -1,14 +1,13 @@
 /**
  * 扩展侧适配层：只做「消息收发 + 等待/重试 + 阶段判定」。
  *
- * 页面里的具体动作（找输入框、填充、找发送键、回读）全部在 `driver.js` 里 ——
- * 那是与桌面端共用的唯一实现（真源 `shared/driver.js`，由 tools/gen-providers.mjs 同步）。
- * 这里以前有 390 行自己的一套 DOM 逻辑，与 C# 里的另一套并行维护，现已删除。
+ * 页面里的具体动作（找输入框、填充、找发送键、回读）全部在 `driver.js` 里，那是与桌面端
+ * 共用的唯一实现（真源 `shared/driver.js`，由 tools/gen-providers.mjs 同步到本目录）。
  *
  * 加载顺序：manifest 的 content_scripts 保证 driver.js 在本文件之前加载。
  */
 
-/** 内容脚本没有 ESM，直接取全局；driver 没加载时给出可诊断的失败而不是静默报错。 */
+/** 内容脚本没有 ESM，直接取全局；driver 没加载时给出可诊断的失败信息。 */
 function getDriver() {
   return globalThis.__bubbleAskDriver || null
 }
@@ -27,7 +26,6 @@ function normalizeProvider(raw) {
     sendClassHints: list(source.sendClassHints),
     sendSvgPaths: list(source.sendSvgPaths),
     sendAriaLabels: list(source.sendAriaLabels),
-    enterSends: source.enterSends === true,
     loginMarkers: list(source.loginMarkers),
     verifyUrlRegex: typeof source.verifyUrlRegex === 'string' ? source.verifyUrlRegex : '',
     genericComposerSelectors: list(source.genericComposerSelectors),
@@ -40,12 +38,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 /**
  * 把本页的 favicon 换成扩展自己的 PNG。
  *
- * 为什么要做：服务方站点普遍只提供 SVG favicon，DeepSeek 甚至把 rel 的 type 写成
- * `image/x-icon` 而文件其实是 SVG —— 格式声明与实际不符，Chromium 在**窗口/任务栏**
- * 这一层常常不认，于是退回系统默认的空白文档图标，用户看到的就是「一个文件图标」。
+ * 服务方站点普遍只提供 SVG favicon，DeepSeek 还把 rel 的 type 写成 `image/x-icon`
+ * 而文件是 SVG。格式声明与实际不符时，Chromium 在窗口/任务栏这一层常常不认，退回系统
+ * 默认的空白文档图标。
  *
- * 页面可以改自己的 `<link rel="icon">`，指向 web_accessible_resources 里的 PNG 即可；
- * Chromium 会在 favicon 变化后更新窗口图标。拿不到扩展资源时静默保持站点原样。
+ * 页面可以改自己的 `<link rel="icon">`，指向 web_accessible_resources 里的 PNG；
+ * Chromium 会在 favicon 变化后更新窗口图标。拿不到扩展资源时保持站点原样。
  */
 function applyFavicon() {
   try {
@@ -100,7 +98,7 @@ async function ask(driver, cfg, prompt) {
     return {
       ok: false,
       stage: 'no-composer',
-      detail: `25 秒内没找到 ${cfg.name} 的输入框（${document.readyState}，${location.href}），页面可能还在加载或已改版`,
+      detail: `25 秒内没找到 ${cfg.name} 的输入框（${document.readyState}），页面可能还在加载或已改版`,
     }
   }
 
@@ -110,6 +108,8 @@ async function ask(driver, cfg, prompt) {
     return { ok: false, stage: 'fill', detail: `文字没能写进输入框（${filled}），页面结构可能已改版` }
   }
 
+  // 点击前记下地址：点击可能同步跳转到会话页，点完再记就看不到这次变化了
+  const startedUrl = location.href
   // 按钮可能比输入框晚就绪（发送键常按内容启用）
   let action = 'nobutton'
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -119,7 +119,6 @@ async function ask(driver, cfg, prompt) {
   }
 
   if (action.indexOf('clicked:') === 0) {
-    const startedUrl = location.href
     if (await waitSent(driver, cfg, startedUrl, 8000)) {
       return { ok: true, stage: 'sent', detail: `已发送到 ${cfg.name}` }
     }
@@ -147,7 +146,7 @@ async function waitSent(driver, cfg, startedUrl, timeoutMs) {
   return false
 }
 
-/** 把消息里的 provider 与通用兜底组合成 driver 需要的 cfg。 */
+/** 把消息里的 provider 与通用选择器组合成 driver 需要的 cfg。 */
 function buildProvider(message) {
   const raw = message.provider && typeof message.provider === 'object' ? message.provider : {}
   const generic = message.generic && typeof message.generic === 'object' ? message.generic : {}

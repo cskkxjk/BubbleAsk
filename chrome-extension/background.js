@@ -1,16 +1,15 @@
 /**
  * 扩展的后台调度（多网页服务方，1.2.0 起）。
  *
- * 三步：① 从当前标签页采集页面上下文 → ② 拼成提问 → ③ 交给**当前服务方**的
- * 右侧独立窗口（真实标签页，所以复用浏览器已有登录态）填入并发送。
+ * 三步：① 从当前标签页采集页面上下文 → ② 拼成提问 → ③ 交给当前服务方的右侧独立窗口
+ * 填入并发送。窗口是真实站点标签页，登录态来自浏览器已有的 cookie。
  *
- * 为什么侧边窗口必须是独立窗口而不是 iframe：各服务方站点都禁止被 iframe 嵌入
- * （如 chat.deepseek.com 返回 `Content-Security-Policy: frame-ancestors 'none'`），
- * 且登录 cookie 为 `SameSite=Strict` —— 跨站 iframe 里既渲染不出来、也带不上登录态。
+ * 窗口形态：服务方站点用 CSP `frame-ancestors 'none'` 禁止被 iframe 嵌入，登录 cookie
+ * 又是 `SameSite=Strict`，跨站 iframe 既渲染不出来也取不到登录态，所以用
+ * `chrome.windows.create` 建弹窗（见 README「窗口形态与站点限制」）。
  *
- * 窗口策略：每家服务方一个由扩展自己 `chrome.windows.create` 出来的弹窗，窗口 id
- * 记录在存储里；只复用记录在案、且窗口仍存活的弹窗，**不会复用/劫持用户自己打开
- * 的标签页**（1.1.x 会复用任意 chat.deepseek.com 标签，1.2.0 起不再这样做）。
+ * 窗口策略：每家服务方一个弹窗，窗口 id 记录在存储里；只复用记录在案、且窗口仍存活的
+ * 弹窗，用户自己打开的标签页不参与填充和发送。
  */
 import { buildPrompt, DEFAULT_QUESTION, DEFAULT_QUESTION_NO_SELECTION, CONTEXT_BUDGET, describeContext } from './lib/prompt.js'
 import {
@@ -23,7 +22,7 @@ import {
 } from './lib/providers.js'
 
 /**
- * 内容脚本不 import 任何模块（MV3 限制），通用兜底要随消息一起发过去。
+ * 内容脚本不 import 任何模块（MV3 限制），通用选择器要随消息一起发过去。
  * 数据同样来自真源 shared/providers.json（经 providers.data.js）。
  */
 const GENERIC_CONFIG = {
@@ -31,8 +30,7 @@ const GENERIC_CONFIG = {
   sendAriaLabels: GENERIC_SEND_ARIA_LABELS,
 }
 
-const RESULT_KEY = 'lastResult'
-/** 各服务方窗口的记录：{ [providerId]: { windowId, tabId, at } }。 */
+/** 各服务方窗口的记录：{ [providerId]: { windowId, tabId } }。 */
 const WINDOWS_KEY = 'bubble-ask.windows'
 
 /** 侧边窗口的目标宽度；太窄看不清对话，太宽挤掉原页面。 */
@@ -43,15 +41,29 @@ const log = (...args) => console.log('[BubbleAsk]', ...args)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
+ * 串行执行窗口相关任务。
+ *
+ * 窗口记录的读—改—写和「没有记录就新建窗口」都没有原子性：两个发送请求并发时会各建
+ * 一个窗口，后写的记录覆盖先写的，先建的那个窗口就没人认领了。
+ */
+let windowQueue = Promise.resolve()
+function serializeWindowTask(task) {
+  const run = windowQueue.then(task, task)
+  windowQueue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
+/**
  * 向标签页里的内容脚本发消息。
  *
- * 为什么不用 `await chrome.tabs.sendMessage(...)`：并非所有 Chromium 分支都实现了
- * 它的 Promise 形式 —— Maxthon 下直接返回 `undefined`，回调形式则可能报
- * "The message port closed before a response was received"。这里统一用回调 + 超时，
- * 并把 `runtime.lastError` 读掉（不读会污染控制台），对两边都能用。
+ * 不用 `await chrome.tabs.sendMessage(...)`：部分 Chromium 分支没有实现它的 Promise
+ * 形式（Maxthon 直接返回 undefined），回调形式还可能报 "The message port closed before
+ * a response was received"。这里统一用回调 + 超时，并读掉 `runtime.lastError`。
  *
- * 注意：本函数**永远 resolve**（拿不到回复就是 null），不会 reject —— 调用方不能靠
- * catch 判断「没回复」，必须自己检查返回值（ensureBridge 的注入兜底曾经因此变成死代码）。
+ * 本函数永远 resolve（拿不到回复就是 null），调用方要按返回值判断，不能靠 catch。
  */
 function sendToTab(tabId, message, timeoutMs = 30000) {
   return new Promise((resolve) => {
@@ -95,7 +107,7 @@ function withTimeout(call, fallback, timeoutMs = 4000) {
     const timer = setTimeout(() => finish(fallback), timeoutMs)
     try {
       const returned = call(finish)
-      // 有些实现不发回调却给 Promise，两边都兜住
+      // 有些实现不发回调却返回 Promise，两种返回方式都要兼容
       if (returned && typeof returned.then === 'function') {
         returned.then((value) => finish(value === undefined ? fallback : value), () => finish(fallback))
       }
@@ -161,6 +173,41 @@ function queryTabsInWindow(windowId, timeoutMs = 3000) {
   )
 }
 
+/** 用回调形式按条件查标签页（Promise 形式在 Chromium 88 上拿不到结果）。 */
+function queryTabs(filter, timeoutMs = 3000) {
+  return withTimeout(
+    (done) => {
+      chrome.tabs.query(filter, (tabs) => {
+        void chrome.runtime.lastError
+        done(Array.isArray(tabs) ? tabs : [])
+      })
+    },
+    [],
+    timeoutMs,
+  )
+}
+
+/** 读该窗口里某个标签页的当前地址（拿不到就是空串）。 */
+async function tabUrlOf(windowId, tabId) {
+  const tabs = await queryTabsInWindow(windowId)
+  const tab = tabs.find((item) => item && item.id === tabId)
+  return tab ? String(tab.url || tab.pendingUrl || '') : ''
+}
+
+/** 用回调形式注入脚本，返回执行结果数组（失败返回 null）。 */
+function injectScript(tabId, injection, timeoutMs = 8000) {
+  return withTimeout(
+    (done) => {
+      chrome.scripting.executeScript({ target: { tabId }, ...injection }, (results) => {
+        void chrome.runtime.lastError
+        done(Array.isArray(results) ? results : null)
+      })
+    },
+    null,
+    timeoutMs,
+  )
+}
+
 /** 用回调形式列出所有窗口（带 tabs，用于认领「创建超时但实际已建成」的窗口）。 */
 function getAllWindows(timeoutMs = 5000) {
   return withTimeout(
@@ -203,7 +250,7 @@ function removeWindow(windowId) {
   )
 }
 
-/** 把侧边窗口贴到当前窗口的右侧。 */
+/** 把侧边窗口放到当前窗口的右侧。 */
 async function panelBounds() {
   let width = PANEL_WIDTH
   let height = 900
@@ -220,13 +267,13 @@ async function panelBounds() {
     null,
     2500,
   )
-  if (current && current.width) {
+  if (current && current.width && current.height) {
     width = Math.min(PANEL_WIDTH, Math.max(360, Math.floor(current.width / 2)))
     height = Math.max(480, current.height - PANEL_GAP * 2)
     left = current.left + current.width - width - PANEL_GAP
     top = current.top + PANEL_GAP
   }
-  // 只在主屏坐标范围内夹取：负坐标（副屏在主屏左侧）保留，否则窗口会被拉回主屏
+  // 坐标原样使用：负坐标是副屏在主屏左侧时的正常值，夹到主屏会把窗口拉走
   return { width, height, left, top }
 }
 
@@ -238,14 +285,10 @@ async function loadProviderId() {
 }
 
 /**
- * 解析消息里的服务方参数：既接受 provider id 字符串（popup 用），
- * 也接受完整 provider 对象（少见的内部调用）；都没有时读存储里的默认服务方。
+ * 解析消息里的服务方参数：消息带 provider id（popup 与气泡都这样传），
+ * 没带就读取存储里的默认服务方。
  */
 async function resolveProviderParam(value) {
-  if (value && typeof value === 'object') {
-    const provider = resolveProvider(value.id)
-    if (provider) return provider
-  }
   if (typeof value === 'string' && value) return resolveProvider(value)
   return resolveProvider(await loadProviderId())
 }
@@ -275,17 +318,17 @@ async function findRecordedWindow(provider) {
   if (!record || typeof record.windowId !== 'number') return null
 
   const win = await getWindow(record.windowId)
-  if (!win) {
-    // 窗口已被用户关掉（部分分支如 Maxthon 的 tabs.query 仍会返回死标签，所以查窗口）
+  // 窗口已被用户关掉，或这个编号已经被别的窗口复用（部分分支的 tabs.query 仍会返回
+  // 死标签，所以查窗口本身）
+  if (!win || (win.type && win.type !== 'popup')) {
     await saveWindowRecord(provider.id, null)
     return null
   }
 
   const tabs = await queryTabsInWindow(record.windowId)
+  // 记录里的标签页优先；用户在这个窗口里换过标签时，只接受仍属于该服务方的地址
   let tab = tabs.find((item) => item && item.id !== undefined && item.id === record.tabId)
-  // 用户在窗口里换了标签页也认：窗口是扩展开的，里面哪个标签都算这个服务方的入口
   if (!tab) tab = tabs.find((item) => item && item.id !== undefined && isProviderUrl(provider, item.url || item.pendingUrl || ''))
-  if (!tab) tab = tabs.find((item) => item && item.id !== undefined)
   if (!tab) {
     await saveWindowRecord(provider.id, null)
     return null
@@ -296,7 +339,7 @@ async function findRecordedWindow(provider) {
   return { windowId: record.windowId, tabId: tab.id }
 }
 
-/** 创建超时也可能其实建成功了：认领「不在记录里、URL 属于该服务方」的新弹窗。 */
+/** 创建超时也可能已经建成：认领「不在记录里、URL 属于该服务方」的新弹窗。 */
 async function findAdoptableWindow(provider) {
   const records = await loadWindowRecords()
   const known = new Set(
@@ -347,39 +390,40 @@ async function createProviderWindow(provider) {
   if (!win || typeof win.id !== 'number' || !tab || tab.id === undefined) {
     throw new Error(`没能创建 ${provider.name} 窗口`)
   }
-  await saveWindowRecord(provider.id, { windowId: win.id, tabId: tab.id, at: Date.now() })
+  await saveWindowRecord(provider.id, { windowId: win.id, tabId: tab.id })
   return { windowId: win.id, tabId: tab.id }
 }
 
-/** 找到（或创建）该服务方的窗口；forceNew=true 时忽略已记录窗口强制重建。 */
-async function ensureProviderWindow(provider, options) {
+/** 找到（或创建）该服务方的窗口；forceNew=true 时先关掉记录里的旧窗口。 */
+function ensureProviderWindow(provider, options) {
   const forceNew = Boolean(options && options.forceNew)
-  if (!forceNew) {
-    const live = await findRecordedWindow(provider)
-    if (live) {
-      await focusWindow(live.windowId)
-      return live
+  return serializeWindowTask(async () => {
+    if (!forceNew) {
+      const live = await findRecordedWindow(provider)
+      if (live) {
+        await focusWindow(live.windowId)
+        return live
+      }
+    } else {
+      const records = await loadWindowRecords()
+      const record = records[provider.id]
+      if (record && typeof record.windowId === 'number') await removeWindow(record.windowId)
+      await saveWindowRecord(provider.id, null)
     }
-  }
-  const created = await createProviderWindow(provider)
-  await focusWindow(created.windowId)
-  return created
+    const created = await createProviderWindow(provider)
+    await focusWindow(created.windowId)
+    return created
+  })
 }
 
 /**
- * 确保服务方页面里的执行器就绪（冷启动时内容脚本可能还没注入）。
- *
- * 1.1.x 这里写成 `try { await sendToTab(...) } catch { 注入 }`，但 sendToTab 永不
- * reject，catch 从未执行 —— 注入兜底是死代码。现在改为**显式判断 pong 为空**：
- * 第一次拿不到回复就注入 content/chat-bridge.js 再继续重试。
- */
-/**
  * 确保服务方页面里有可用的执行器。
  *
- * 重试节奏（2026-11-10 调整）：以前是 60×250ms ≈ 15s + 再 24 次 ≈ 6s 才去重建窗口，
- * 用户侧表现为「点了没反应、卡一会儿」后才好。现在 12 次（≈3s）就重建，
- * 因为「页面缺执行器」几乎只有两种情况：页面还没加载完（3s 足够）、或标签页是
- * 扩展更新前就开着的（内容脚本已失效，等再久也不会自己出现）。
+ * 第一次 ping 拿不到回复就注入 content/driver.js + content/chat-bridge.js，再继续重试
+ * （sendToTab 永远 resolve，所以按 ping 的返回值判断，不用 try/catch）。
+ *
+ * 重试 12 次（约 3 秒）就重建窗口：页面缺执行器只有两种情况 —— 页面还没加载完，
+ * 或标签页在扩展更新前就开着（内容脚本已失效，等再久也不会自己出现）。
  */
 async function ensureBridge(tabId, provider, attempts = 12) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -389,17 +433,10 @@ async function ensureBridge(tabId, provider, attempts = 12) {
       if (typeof chrome.scripting === 'undefined') {
         log('当前浏览器不支持脚本注入（如 Maxthon），只能等页面自然加载内容脚本')
       } else {
-        try {
-          // 必须连 driver.js 一起注入：chat-bridge 依赖它提供的 __bubbleAskDriver。
-          // 只注 chat-bridge 会得到「有执行器但没驱动」的僵尸状态，ping 永远不就绪。
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ['content/driver.js', 'content/chat-bridge.js'],
-          })
-          log('已注入执行器（driver + chat-bridge）', provider.id, tabId)
-        } catch (error) {
-          log('注入执行器失败', error && error.message ? error.message : error)
-        }
+        // 必须连 driver.js 一起注入：chat-bridge.js 依赖它提供的 __bubbleAskDriver，
+        // 只注 chat-bridge 会得到「有执行器但没驱动」的状态，ping 永远不就绪
+        const injected = await injectScript(tabId, { files: ['content/driver.js', 'content/chat-bridge.js'] })
+        log(injected ? '已注入执行器（driver + chat-bridge）' : '注入执行器失败', provider.id, tabId)
       }
     }
     await sleep(250)
@@ -411,11 +448,11 @@ async function ensureBridge(tabId, provider, attempts = 12) {
  * 从标签页采集上下文。
  *
  * 首选「问页面里的内容脚本」：`chrome.tabs.sendMessage` 在所有 Chromium 分支上都可用，
- * 而 `chrome.scripting` 并非如此 —— Maxthon 就没实现它（连 MV2 的
- * `chrome.tabs.executeScript` 也没有），点的时候再注入必然失败。
+ * 而 Maxthon 这类分支没有实现 `chrome.scripting`（连 MV2 的 `chrome.tabs.executeScript`
+ * 也没有），点的时候再注入必然失败。
  *
  * 只有页面里没有内容脚本时（比如扩展装上之前就打开的标签页）才退回注入；
- * 注入也不可用时给出能看懂的提示，而不是一句「失败」。
+ * 注入也不可用时给出能看懂的提示。
  */
 async function collectFromTab(tabId) {
   try {
@@ -427,16 +464,17 @@ async function collectFromTab(tabId) {
   }
 
   if (typeof chrome.scripting === 'undefined') {
-    throw new Error('这个页面里没有内容脚本，而当前浏览器不支持脚本注入（如 Maxthon）。请刷新页面后重试。')
+    throw new Error('这个页面里没有内容脚本，当前浏览器也不支持脚本注入（如 Maxthon）。请刷新页面后重试。')
   }
 
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['content/collect.js'] })
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
+  // 先注入采集器，再在同一个隔离世界里调用它
+  const injected = await injectScript(tabId, { files: ['content/collect.js'] })
+  if (!injected) throw new Error('注入采集器失败，这个页面可能不允许注入脚本')
+  const results = await injectScript(tabId, {
     func: (limits) => globalThis.__bubbleAskCollect(limits),
     args: [CONTEXT_BUDGET],
   })
-  const context = result && result.result
+  const context = results && results[0] ? results[0].result : null
   if (!context) throw new Error('页面没有返回上下文（可能是浏览器内置页面或 PDF）')
   return context
 }
@@ -448,14 +486,10 @@ async function preview(tabId, question, providerParam) {
   const prompt = buildPrompt(context, question)
   return {
     ok: true,
-    providerId: provider.id,
     providerName: provider.name,
-    title: context.title,
-    url: context.url,
     selection: context.selection ? context.selection.text : '',
     summary: describeContext(context),
     defaultQuestion: context.selection && context.selection.text ? DEFAULT_QUESTION : DEFAULT_QUESTION_NO_SELECTION,
-    promptChars: prompt.length,
     prompt,
   }
 }
@@ -463,22 +497,24 @@ async function preview(tabId, question, providerParam) {
 /**
  * 采集 + 拼 prompt + 交给指定服务方的窗口发送。
  *
- * @param selectionOverride 划词气泡带来的选区文本。点气泡时页面选区可能已经被
- *        收起，所以以气泡记住的那份为准。
- * @param providerParam 服务方 id（popup 传），缺省时用存储里的默认服务方。
- * @param localOverride 气泡在**弹出那一刻**抓下的「选区周围的文字」。等这里再去读
- *        DOM 时选区早就没了，祖先链和局部上下文都会是空的 —— 所以只能由气泡带过来。
+ * @param selectionOverride 划词气泡带来的选区文本。卡片出现时页面选区可能已经被收起，
+ *        所以以气泡记住的那份为准。
+ * @param providerParam 服务方 id（popup 与气泡传），缺省时用存储里的默认服务方。
+ * @param localOverride 气泡在卡片出现那一刻抓下的「选区周围的文字」。等这里再去读 DOM 时
+ *        选区早就没了，局部上下文会是空的，所以只能由气泡带过来。
+ * @param ancestorsOverride 气泡在同一时刻抓下的选区 DOM 路径，理由同上。
  */
-async function ask(tabId, question, selectionOverride, providerParam, localOverride) {
+async function ask(tabId, question, selectionOverride, providerParam, localOverride, ancestorsOverride) {
   const provider = await resolveProviderParam(providerParam)
   const context = await collectFromTab(tabId)
   const selectionText = String(selectionOverride || '').trim()
   if (selectionText) {
-    const local = localOverride || (context.selection && context.selection.local) || null
-    context.selection = {
-      text: selectionText,
-      ancestors: (context.selection && context.selection.ancestors) || [],
-    }
+    const collected = context.selection || {}
+    const ancestors = Array.isArray(ancestorsOverride) && ancestorsOverride.length > 0
+      ? ancestorsOverride
+      : collected.ancestors || []
+    const local = localOverride || collected.local || null
+    context.selection = { text: selectionText, ancestors }
     if (local) context.selection.local = local
   }
   // question 为空时 buildPrompt 会按「有没有选区」自动选默认问题。
@@ -492,9 +528,16 @@ async function ask(tabId, question, selectionOverride, providerParam, localOverr
     ready = await ensureBridge(target.tabId, provider, 8)
   }
   if (!ready) {
+    // 窗口里如果不是该服务方页面（例如停在第三方登录页），重建只会打断登录
+    const url = await tabUrlOf(target.windowId, target.tabId)
+    if (url && !isProviderUrl(provider, url)) {
+      return {
+        ok: false,
+        stage: 'login',
+        detail: `窗口当前打开的不是 ${provider.name} 页面（可能停在登录页），请完成登录后重试`,
+      }
+    }
     log('执行器始终没就绪，重建窗口', provider.id)
-    await removeWindow(target.windowId)
-    await saveWindowRecord(provider.id, null)
     target = await ensureProviderWindow(provider, { forceNew: true })
     ready = await ensureBridge(target.tabId, provider)
   }
@@ -502,11 +545,13 @@ async function ask(tabId, question, selectionOverride, providerParam, localOverr
     return {
       ok: false,
       stage: 'window',
-      detail: `${provider.name} 窗口没能就绪，请稍后重试（也可以点扩展图标里的「打开窗口」）`,
+      detail: `${provider.name} 窗口没能就绪，请稍后重试，也可以点扩展图标里的「打开该服务方窗口」`,
     }
   }
 
-  const reply = await sendToTab(target.tabId, { type: 'BA_ASK', prompt, provider, generic: GENERIC_CONFIG }, 120000)
+  // 内容脚本侧最长约 40 秒（等输入框 25 秒 + 点发送 + 回读 8 秒），留 50 秒足够；
+  // 这个上限要小于调用方（compat.js 的 120 秒）的等待时间，否则两边同时超时
+  const reply = await sendToTab(target.tabId, { type: 'BA_ASK', prompt, provider, generic: GENERIC_CONFIG }, 50000)
   const result = reply || {
     ok: false,
     stage: 'unverified',
@@ -516,18 +561,13 @@ async function ask(tabId, question, selectionOverride, providerParam, localOverr
     ...result,
     providerId: provider.id,
     providerName: provider.name,
-    at: Date.now(),
-    pageTitle: context.title,
-    pageUrl: context.url,
-    promptChars: prompt.length,
   }
-  await storageSet({ [RESULT_KEY]: record })
   if (chrome.action && chrome.action.setBadgeText) {
     chrome.action.setBadgeText({ text: result && result.ok ? '✓' : '!' })
     chrome.action.setBadgeBackgroundColor({ color: result && result.ok ? '#2f7d32' : '#b3261e' })
     setTimeout(() => chrome.action.setBadgeText({ text: '' }), 4000)
   }
-  return { ...record, prompt }
+  return record
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -560,18 +600,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, stage: 'collect', detail: '没有拿到选区' })
       return false
     }
-    ask(tabId, String(message.question || ''), selection, message.provider, message.local || null)
+    ask(tabId, String(message.question || ''), selection, message.provider, message.local || null, message.ancestors || null)
       .then(sendResponse)
       .catch((error) =>
         sendResponse({ ok: false, stage: 'error', detail: String(error && error.message ? error.message : error) }),
       )
-    return true
-  }
-
-  if (message.type === 'BA_LAST') {
-    storageGet(RESULT_KEY).then((data) =>
-      sendResponse({ ok: true, record: (data && data[RESULT_KEY]) || null }),
-    )
     return true
   }
 
@@ -590,11 +623,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false
 })
 
-/** 快捷键直接问（不问问题，用默认问题与当前默认服务方）。 */
+/** 快捷键直接问（用默认问题与当前默认服务方）。 */
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== 'ask-page') return
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const tabs = await queryTabs({ active: true, currentWindow: true })
+    const tab = tabs[0]
     if (!tab || tab.id === undefined) return
     await ask(tab.id, '')
   } catch (error) {

@@ -1,9 +1,9 @@
 /**
  * 扩展弹窗：预览页面上下文 → 选服务方 → 填问题 → 发送。
  *
- * 采集与发送都在后台做（popup 关掉也不影响任务继续）。服务方列表来自
- * lib/providers.js；当前选择存在 chrome.storage.local（PROVIDER_STORAGE_KEY），
- * 后台发送时读同一份存储，因此划词气泡与快捷键也跟随这里的默认服务方。
+ * 采集与发送都在后台做（popup 关掉不影响任务继续）。服务方列表来自 lib/providers.js，
+ * 当前选择存在 chrome.storage.local（PROVIDER_STORAGE_KEY），后台发送时读同一份存储，
+ * 因此划词气泡与快捷键也跟随这里的默认服务方。
  */
 /** 兼容层：老的 Chromium 里 runtime.sendMessage 没有 Promise（见 content/compat.js）。 */
 const sendMessage = globalThis.__baSendMessage || ((message) => chrome.runtime.sendMessage(message))
@@ -36,6 +36,59 @@ let providerId = DEFAULT_PROVIDER_ID
 /** 页面规模摘要（不含服务方前缀，渲染时再拼）。 */
 let pageSummary = ''
 
+/**
+ * 回调形式的 chrome.* 调用。
+ *
+ * Chromium 88 这类老内核上 tabs/storage 的 Promise 形式取不到结果，所以统一用回调 + 超时，
+ * 拿不到结果时返回 fallback，调用方按返回值判断。
+ */
+function callApi(invoke, fallback, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(fallback), timeoutMs)
+    try {
+      const returned = invoke(finish)
+      if (returned && typeof returned.then === 'function') {
+        returned.then((value) => finish(value === undefined ? fallback : value), () => finish(fallback))
+      }
+    } catch (error) {
+      finish(fallback)
+    }
+  })
+}
+
+function storageGet(keys, timeoutMs = 3000) {
+  return callApi(
+    (done) => {
+      chrome.storage.local.get(keys, (data) => {
+        void chrome.runtime.lastError
+        done(data || null)
+      })
+    },
+    null,
+    timeoutMs,
+  )
+}
+
+function storageSet(items, timeoutMs = 3000) {
+  return callApi(
+    (done) => {
+      chrome.storage.local.set(items, () => {
+        void chrome.runtime.lastError
+        done(true)
+      })
+    },
+    false,
+    timeoutMs,
+  )
+}
+
 function currentProvider() {
   return getProvider(providerId) || getProvider(DEFAULT_PROVIDER_ID)
 }
@@ -60,19 +113,24 @@ function renderSummary() {
 }
 
 async function currentTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
-  return tabs && tabs[0] ? tabs[0] : null
+  const tabs = await callApi(
+    (done) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (found) => {
+        void chrome.runtime.lastError
+        done(Array.isArray(found) ? found : [])
+      })
+    },
+    [],
+    3000,
+  )
+  return tabs[0] || null
 }
 
 /** 读记住的默认服务方；存储值非法/读取失败时回落到 deepseek。 */
 async function loadStoredProvider() {
-  try {
-    const data = await chrome.storage.local.get(PROVIDER_STORAGE_KEY)
-    const stored = data && data[PROVIDER_STORAGE_KEY]
-    providerId = getProvider(stored) ? stored : DEFAULT_PROVIDER_ID
-  } catch (error) {
-    providerId = DEFAULT_PROVIDER_ID
-  }
+  const data = await storageGet(PROVIDER_STORAGE_KEY)
+  const stored = data ? data[PROVIDER_STORAGE_KEY] : undefined
+  providerId = getProvider(stored) ? stored : DEFAULT_PROVIDER_ID
 }
 
 function fillProviderOptions() {
@@ -133,15 +191,15 @@ els.provider.addEventListener('change', async () => {
   renderSummary()
   const provider = currentProvider()
   setStatus(`将发送到 ${provider.name}`)
-  try {
-    await chrome.storage.local.set({ [PROVIDER_STORAGE_KEY]: provider.id })
-  } catch (error) {
-    setStatus(`保存服务方失败：${error && error.message ? error.message : error}`, true)
-  }
+  const saved = await storageSet({ [PROVIDER_STORAGE_KEY]: provider.id })
+  if (!saved) setStatus('没能保存服务方选择，下次打开弹窗可能回到默认值', true)
 })
 
 els.send.addEventListener('click', async () => {
-  if (activeTabId === null) return
+  if (activeTabId === null) {
+    setStatus('当前页面不能读取，请切换到普通网页再试', true)
+    return
+  }
   const provider = currentProvider()
   setBusy(true)
   setStatus(`正在发送到 ${provider.name} 窗口…`)
@@ -152,12 +210,14 @@ els.send.addEventListener('click', async () => {
       question: els.question.value,
       provider: provider.id,
     })
-    if (result && result.ok) {
+    if (!result) {
+      setStatus('还没收到结果，请到右侧服务方窗口核对', true)
+    } else if (result.ok) {
       setStatus(`已发送到 ${result.providerName || provider.name}，去右侧窗口看回答`)
-    } else if (result && result.stage === 'unverified') {
+    } else if (result.stage === 'unverified') {
       setStatus(result.detail || '已点击发送但没能确认，请在窗口里核对', true)
     } else {
-      setStatus((result && result.detail) || '发送失败', true)
+      setStatus(result.detail || '发送失败', true)
     }
   } catch (error) {
     setStatus(`发送失败：${error && error.message ? error.message : error}`, true)

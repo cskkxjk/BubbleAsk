@@ -4,7 +4,7 @@
  * Chromium 99 之前，扩展里的 `await chrome.runtime.sendMessage(...)` 拿不到 Promise
  * （最早要到 Chrome 99 才支持）；Maxthon 这类分支甚至直接返回 `undefined`。
  * 而 Windows 7 上能装的最后一个 Chrome 就是 109，实际很多老机器停在 88 附近，
- * 所以这里统一走「回调 + 超时」，并顺手兼容仍然返回 Promise 的新内核。
+ * 所以这里统一走「回调 + 超时」，同时兼容仍然返回 Promise 的新内核。
  *
  * 约定：**永远 resolve**（拿不到回复就是 null），调用方靠返回值判断，不靠 catch。
  *

@@ -9,7 +9,7 @@
     <header>
       <img src="../icons/icon32.png" alt="" width="20" height="20" />
       <div class="titles">
-        <strong>用这个页面提问</strong>
+        <strong>页面提问</strong>
         <span id="page-title" class="muted">正在读取页面…</span>
       </div>
     </header>
@@ -29,7 +29,7 @@
     </section>
 
     <section>
-      <label class="label" for="question">我的问题（留空则用默认问题）</label>
+      <label class="label" for="question">我的问题（留空用默认问题）</label>
       <textarea id="question" rows="3" placeholder="例如：这段配置的作用是什么？"></textarea>
     </section>
 
@@ -45,11 +45,11 @@
     <p id="status" class="muted"></p>
 
     <footer class="muted">
-      每家服务方一个独立的右侧窗口，只复用它自己开的窗口，不会占用你已有的标签页。关掉窗口后再发送或点上面的按钮都会重新打开；某家首次使用需在窗口里登录一次。
+      每家服务方一个独立窗口，扩展只复用它自己创建的窗口，已打开的标签页保持原样。关掉窗口后再次发送或点上面的按钮会重新打开。首次使用某家服务方需要在窗口里登录一次。
     </footer>
 
     <!-- 兼容层要在模块脚本之前加载：老的 Chromium 里 runtime.sendMessage 没有 Promise -->
-  <script src="../content/compat.js"></script>
-  <script type="module" src="popup.js"></script>
+    <script src="../content/compat.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

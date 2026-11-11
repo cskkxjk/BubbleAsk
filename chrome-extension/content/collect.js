@@ -1,11 +1,10 @@
 /**
  * 页面上下文采集器。
  *
- * 作为声明式内容脚本随普通页面加载（也在 background 的兜底路径里被
- * chrome.scripting 注入），运行在扩展的隔离世界（isolated world）中，
- * 因此既能自由读取 DOM，又不受页面自身 CSP 限制。
+ * 作为声明式内容脚本随普通页面加载（background 在内容脚本缺失时也会注入它），
+ * 运行在扩展的隔离世界（isolated world）中：既能自由读取 DOM，又不受页面自身 CSP 限制。
  *
- * 设计取舍：一个页面轻松上万节点，**不可能全量塞进提问**。这里按「结构 → 文字 →
+ * 设计取舍：一个页面轻松上万节点，全量放进提问没有意义。这里按「结构 → 文字 →
  * 交互元素 → 表单 → 选中文字」分层提取，再各自限流；调用方（lib/prompt.js）负责
  * 最终字符预算与版式。AI 服务方页面不在本脚本的注入范围内（见 manifest）。
  */
@@ -66,31 +65,6 @@
       headings.push({ level, text: text.slice(0, 160) })
     }
     return headings
-  }
-
-  /** 统计标签分布，用来表达「页面都有哪些元素」。 */
-  function collectTagCounts(limit) {
-    const counts = new Map()
-    for (const element of document.getElementsByTagName('*')) {
-      const tag = (element.tagName || '').toLowerCase()
-      if (!tag) continue
-      counts.set(tag, (counts.get(tag) || 0) + 1)
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, limit)
-      .map(([tag, count]) => ({ tag, count }))
-  }
-
-  /** 统计语义区块数量。 */
-  function collectLandmarks() {
-    const names = ['header', 'nav', 'main', 'aside', 'footer', 'section', 'article', 'form', 'table', 'iframe']
-    const result = {}
-    for (const name of names) {
-      const count = document.getElementsByTagName(name).length
-      if (count > 0) result[name] = count
-    }
-    return result
   }
 
   /** 收集可交互元素（按钮 / 链接 / 各角色控件）。 */
@@ -261,12 +235,10 @@
     return result
   }
 
-  /** 选区及其所在的 DOM 路径、以及周围的文字。 */
-  function collectSelection(ancestorDepth, limits) {
-    const selection = window.getSelection()
-    const text = selection ? tidy(selection.toString()) : ''
-    if (!text) return { text: '', ancestors: [] }
+  /** 选区 Anchor 所在元素的 DOM 路径（由近到远，带语义标注）。 */
+  function collectAncestors(selection, ancestorDepth) {
     const ancestors = []
+    if (!selection) return ancestors
     let node = selection.anchorNode
     let element = node && node.nodeType === 1 ? node : node && node.parentElement
     let depth = 0
@@ -285,19 +257,37 @@
       element = element.parentElement
       depth += 1
     }
+    return ancestors
+  }
+
+  /** 选区文本、DOM 路径与周围的文字。 */
+  function collectSelection(ancestorDepth, limits) {
+    const selection = window.getSelection()
+    const text = selection ? tidy(selection.toString()) : ''
+    if (!text) return { text: '', ancestors: [] }
+    const ancestors = collectAncestors(selection, ancestorDepth)
     const local = collectLocal(selection, limits)
     return local ? { text, ancestors, local } : { text, ancestors }
   }
 
   /**
-   * 只取「选区周围的文字」。气泡在**弹出那一刻**调用它 —— 那时选区一定还在；
-   * 等后台发 BA_COLLECT 回来时选区多半已经收起，祖先和局部上下文都会是空的。
+   * 只取「选区周围的文字」。气泡在卡片出现那一刻调用它 —— 那时选区一定还在；
+   * 等后台发 BA_COLLECT 回来时选区多半已经收起，局部上下文会是空的。
    */
   globalThis.__bubbleAskSelectionContext = function __bubbleAskSelectionContext(limits) {
     try {
       return collectLocal(window.getSelection(), limits || {})
     } catch (error) {
       return null
+    }
+  }
+
+  /** 只取选区的 DOM 路径，调用时机与 __bubbleAskSelectionContext 相同。 */
+  globalThis.__bubbleAskSelectionAncestors = function __bubbleAskSelectionAncestors(ancestorDepth) {
+    try {
+      return collectAncestors(window.getSelection(), ancestorDepth || 4)
+    } catch (error) {
+      return []
     }
   }
 
@@ -319,8 +309,6 @@
       lang: document.documentElement ? document.documentElement.lang || '' : '',
       description,
       headings: collectHeadings(budget.headings || 40),
-      tagCounts: collectTagCounts(12),
-      landmarks: collectLandmarks(),
       interactive: collectInteractive(budget.interactive || 80),
       forms: collectForms(budget.forms || 40),
       selection,

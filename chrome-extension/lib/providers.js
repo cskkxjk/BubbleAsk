@@ -5,7 +5,7 @@
  * 的生成物（唯一真源）。本文件只放「怎么用」的纯函数，改服务方请改真源再跑
  * `node tools/gen-providers.mjs`，不要手改 `providers.data.js`。
  *
- * 扩展侧的差异（如 DeepSeek 不用合成 Enter 兜底）写在真源的 `overrides.extension` 里，
+ * 扩展侧的差异（如 DeepSeek 不合成 Enter 事件）写在真源的 `overrides.extension` 里，
  * 生成时已合并，这里不需要再分支。
  *
  * 内容脚本不 import 本模块（MV3 内容脚本不支持 ESM），由 background 在消息里把
