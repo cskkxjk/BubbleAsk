@@ -150,12 +150,18 @@ window.__ModuleLoader__.load({
       '.dba-pane-btn:disabled{opacity:.5;cursor:default}',
       '.dba-pane-host{flex:auto;min-height:0;display:flex;background:#fff}',
       '.dba-pane-host webview{flex:auto;width:100%;height:100%;border:0}',
-      '.dba-pane-open{position:fixed;right:12px;bottom:12px;pointer-events:auto;height:26px;padding:0 10px;',
-      'border-radius:13px;cursor:pointer;font:var(--dsw-font-xxs-12,12px/1.4 system-ui);',
-      'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));',
-      'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#555);',
-      'box-shadow:0 2px 8px rgba(0,0,0,.1)}',
-      '.dba-pane-open:hover{color:var(--dsw-alias-label-primary,#111)}',
+      // 输入框右侧的常驻开关：跟 DSH 自己的小控件同高，靠状态点区分开/关。
+      '.dba-toggle{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 9px;',
+      'border-radius:8px;cursor:pointer;font:var(--dsw-font-xxs-12,12px/1.4 system-ui);',
+      'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
+      'color:var(--dsw-alias-label-secondary,#555);white-space:nowrap}',
+      '.dba-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05));',
+      'color:var(--dsw-alias-label-primary,#111)}',
+      '.dba-toggle-on{border-color:transparent;background:var(--dsw-alias-label-accent,#247bbf);color:#fff}',
+      '.dba-toggle-on:hover{filter:brightness(1.06);color:#fff}',
+      '.dba-toggle-dot{width:6px;height:6px;border-radius:50%;flex:none;',
+      'background:currentColor;opacity:.45}',
+      '.dba-toggle-on .dba-toggle-dot{opacity:1}',
     ].join('')
 
     //#region 工具函数
@@ -643,14 +649,20 @@ window.__ModuleLoader__.load({
     const NOT_ATTACHED = /must be attached to the DOM|dom-ready event emitted/i
 
     /**
-     * 气泡与内嵌面板之间的总线。
+     * 气泡、内嵌面板与常驻开关之间的总线。
      *
-     * 两者都挂在 `shell.overlay` 上，是同一层里的两个 slot 条目，拿不到彼此的 ref，
-     * 所以用一个模块级的单槽转交：面板挂载时登记 handler，气泡点「发送」时调用它。
-     * 面板不在（例如浏览器里打开、没有桌面桥）就返回 null，气泡退回桌面端 exe 那条路。
+     * 三者是三个独立的 slot 条目（`shell.overlay` 两条 + `conversation.input.right` 一条），
+     * 互相拿不到 ref，所以用一个模块级单槽转交：
+     *   - 面板挂载时登记 handler（发送）与 setOpen（开关）
+     *   - 气泡点「发送」调 ask()；拿不到面板就退回桌面端 exe
+     *   - 输入框右侧那颗小按钮调 toggle()，并订阅 open 显示当前状态
      */
     const paneBus = {
       handler: null,
+      /** 面板当前是否展开：由面板维护，小按钮订阅它。 */
+      open: false,
+      setOpen: null,
+      subscribers: new Set(),
       available() {
         return typeof this.handler === 'function' && takeDesktopBrowser() !== null
       },
@@ -658,6 +670,31 @@ window.__ModuleLoader__.load({
       async ask(payload) {
         if (!this.available()) throw new Error('内嵌窗口不可用')
         return this.handler(payload)
+      },
+      /** 面板登记自己的开关实现。 */
+      bind(setOpen) {
+        this.setOpen = typeof setOpen === 'function' ? setOpen : null
+      },
+      /** 小按钮订阅展开状态；返回取消订阅。 */
+      subscribe(fn) {
+        this.subscribers.add(fn)
+        fn(this.open)
+        return () => this.subscribers.delete(fn)
+      },
+      /** 面板状态变化时广播。 */
+      publish(open) {
+        this.open = open
+        for (const fn of this.subscribers) {
+          try {
+            fn(open)
+          } catch {
+            /* 订阅者报错不影响面板 */
+          }
+        }
+      },
+      /** 小按钮点击：有面板就切换，没面板就先把面板叫起来（它挂载后会登记）。 */
+      toggle() {
+        if (typeof this.setOpen === 'function') this.setOpen(!this.open)
       },
     }
 
@@ -717,8 +754,6 @@ window.__ModuleLoader__.load({
      */
     function WebPane() {
       const [open, setOpen] = useState(false)
-      /** 是否已经建过 guest：没建过就别在界面上多一个小按钮。 */
-      const [hasGuest, setHasGuest] = useState(false)
       const [status, setStatus] = useState('待命')
       const [busy, setBusy] = useState(false)
       const hostRef = useRef(null)
@@ -751,13 +786,14 @@ window.__ModuleLoader__.load({
             partition: reservation.partition,
             cfg: null,
             driver: '',
-            /** 每次导航换一个代次：异步回来的旧代结果直接丢弃。 */
-            generation: 0,
+            /** 是否已经导航过（「开面板」与「发送」共用同一次导航）。 */
+            navigated: false,
+            /** 初始化中的 Promise，保证并发调用只跑一次。 */
+            readyPromise: null,
             /** 页面是否已经到过 dom-ready（没到之前 executeJavaScript 会抛错）。 */
             attached: false,
           }
           guestRef.current = held
-          setHasGuest(true)
           await blankReady
           // 约束 2：等主进程认领完 lease（它读的是同一时刻的 URL）。
           await sleep(400)
@@ -866,50 +902,68 @@ window.__ModuleLoader__.load({
        * 顺序是关键：先导航（同源才能写 localStorage）→ 判断是否已登录 →
        * 没登录但有存档就写进去再 reload → 仍然没登录就把窗口交给用户手动登录，
        * 并轮询到登录完成。最后注入驱动、抓一次登录态存档。
+       *
+       * 幂等：已经就绪直接返回 cfg；正在跑就复用同一个 Promise。
+       * 「手动开面板」和「气泡发送」都会调它，不幂等就会出现两个并发初始化。
        */
       async function ensureReady(held, onProgress) {
-        const step = onProgress || (() => {})
-        step('正在打开网页版…')
-        await navigate(held)
-        let state = await probeLogin(held)
-        report('pane-probe', state)
-        if (state.needLogin) {
-          const saved = await readSavedSession()
-          if (saved) {
-            step('正在恢复登录态…')
-            const count = await writeSession(held, saved)
-            report('pane-session-restored', { keys: Object.keys(saved), written: count })
-            const ready = waitGuest(held.element, 'dom-ready', 60000)
-            held.element.reload()
-            await ready
-            await sleep(2500)
-            state = await probeLogin(held)
-            report('pane-probe-after-restore', state)
+        if (held.cfg) return held.cfg
+        if (held.readyPromise) return held.readyPromise
+        held.readyPromise = (async () => {
+          const step = onProgress || (() => {})
+          if (!held.navigated) {
+            step('正在打开网页版…')
+            await navigate(held)
+            held.navigated = true
           }
-        }
-        if (state.needLogin) {
-          // 手动登录：窗口就在面板里，用户登完这里轮询到状态变化再继续。
-          step('请在内嵌窗口里登录 DeepSeek')
-          setOpen(true)
-          const deadline = Date.now() + 10 * 60 * 1000
-          while (Date.now() < deadline) {
-            await sleep(3000)
-            state = await probeLogin(held)
-            if (!state.needLogin) break
+          let state = await probeLogin(held)
+          report('pane-probe', state)
+          if (state.needLogin) {
+            const saved = await readSavedSession()
+            if (saved) {
+              step('正在恢复登录态…')
+              const count = await writeSession(held, saved)
+              report('pane-session-restored', { keys: Object.keys(saved), written: count })
+              const ready = waitGuest(held.element, 'dom-ready', 60000)
+              held.element.reload()
+              await ready
+              await sleep(2500)
+              state = await probeLogin(held)
+              report('pane-probe-after-restore', state)
+            }
           }
-          if (state.needLogin) throw new Error('等待登录超时')
-          await sleep(1500)
-        }
-        step('正在装载页面驱动…')
-        const cfg = await injectDriver(held)
-        // 登录成功就顺手存一次，下次换分区免登录。
+          if (state.needLogin) {
+            // 手动登录：窗口就在面板里，用户登完这里轮询到状态变化再继续。
+            step('请在内嵌窗口里登录 DeepSeek')
+            setOpen(true)
+            const deadline = Date.now() + 10 * 60 * 1000
+            while (Date.now() < deadline) {
+              await sleep(3000)
+              state = await probeLogin(held)
+              if (!state.needLogin) break
+            }
+            if (state.needLogin) throw new Error('等待登录超时')
+            await sleep(1500)
+          }
+          step('正在装载页面驱动…')
+          const cfg = await injectDriver(held)
+          // 登录成功就顺手存一次，下次换分区免登录。
+          try {
+            const saved = await captureSession(held)
+            if (saved) report('pane-session-cached', { saved })
+          } catch {
+            /* 存档失败不影响本次发送 */
+          }
+          step('就绪')
+          return cfg
+        })()
         try {
-          const saved = await captureSession(held)
-          if (saved) report('pane-session-cached', { saved })
-        } catch {
-          /* 存档失败不影响本次发送 */
+          return await held.readyPromise
+        } catch (error) {
+          // 失败要清掉，否则后续一次重试永远拿到同一个失败 Promise。
+          held.readyPromise = null
+          throw error
         }
-        return cfg
       }
 
       /**
@@ -993,15 +1047,57 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 登记到总线：气泡据此判断走内嵌还是走桌面端 exe。
+      // 登记到总线：气泡据此判断走内嵌还是走桌面端 exe；小按钮据此开关面板。
       useEffect(() => {
         paneBus.handler = handleAsk
+        paneBus.bind(setOpen)
         // 上报一次是否可用：/health 的 diag 里能看出「发送会走哪条路」。
         report('pane-bus-ready', { available: paneBus.available() })
         return () => {
           if (paneBus.handler === handleAsk) paneBus.handler = null
+          paneBus.bind(null)
         }
       }, [])
+
+      // 展开状态广播给输入框右侧那颗小按钮（它据此显示「问 DeepSeek」/「收起」）。
+      useEffect(() => {
+        paneBus.publish(open)
+      }, [open])
+
+      /**
+       * 手动展开面板时把它启动起来。
+       *
+       * 只是「显示一个 div」是不够的：guest 还没建，用户会看到一片空白。
+       * 所以这里走和发送相同的初始化（connect → ensureReady），差别只在最后不填不发。
+       * 已经初始化过就直接返回，切开关不会重复加载页面。
+       */
+      useEffect(() => {
+        if (!open) return
+        let cancelled = false
+        setBusy(true)
+        void (async () => {
+          try {
+            await sleep(120) // 等这一帧渲染完，容器才有尺寸
+            if (cancelled) return
+            setStatus('准备内嵌网页版…')
+            const held = await connect()
+            if (cancelled) return
+            await ensureReady(held, setStatus)
+            if (!cancelled) report('pane-opened', {})
+          } catch (error) {
+            if (!cancelled) {
+              const detail = errorText(error)
+              setStatus(`失败：${detail}`)
+              report('pane-open-error', { detail })
+            }
+          } finally {
+            if (!cancelled) setBusy(false)
+          }
+        })()
+        return () => {
+          cancelled = true
+        }
+      }, [open])
 
       // 卸载时释放 lease 并摘元素，避免留下悬挂的 guest。
       useEffect(() => function () {
@@ -1031,38 +1127,60 @@ window.__ModuleLoader__.load({
         }
       }
 
-      return h(React.Fragment, null,
-        // 收起时留一个小入口重新打开；没建过 guest 时不显示，避免平白多一个悬浮按钮。
-        open || !hasGuest
-          ? null
-          : h('button', {
-            key: 'peek',
-            className: 'dba-pane-open',
-            title: '打开内嵌 DeepSeek 窗口',
-            onClick: () => setOpen(true),
-          }, 'DeepSeek'),
-        h('div', {
-          key: 'pane',
-          className: 'dba-pane',
-          'data-dba-root': '1',
-          // 收起只隐藏：guest 保持存活，登录态与页面状态都不丢。
-          style: { display: open ? 'flex' : 'none' },
+      return h('div', {
+        key: 'pane',
+        className: 'dba-pane',
+        'data-dba-root': '1',
+        // 收起只隐藏：guest 保持存活，登录态与页面状态都不丢。
+        style: { display: open ? 'flex' : 'none' },
+      },
+        h('div', { className: 'dba-pane-head' },
+          h('span', { className: 'dba-pane-title' }, 'DeepSeek'),
+          h('span', { className: 'dba-pane-status', title: status }, status),
+          h('button', {
+            className: 'dba-pane-btn',
+            onClick: () => setOpen(false),
+            title: '收起（窗口保持存活）',
+          }, '收起'),
+          h('button', {
+            className: 'dba-pane-btn',
+            disabled: busy,
+            title: '清掉保存的登录态，下次要重新登录',
+            onClick: () => { void forgetSession() },
+          }, '清除登录')),
+        h('div', { className: 'dba-pane-host', ref: hostRef }))
+    }
+
+    /**
+     * 输入框右侧那颗常驻小按钮：不选文字也能开/关内嵌面板。
+     *
+     * 位置是 `conversation.input.right`（发送键前的小控件位，DSH 自己在这里放
+     * 「联网搜索」「深度思考」之类）。没有桌面桥时（浏览器里打开 GUI）不渲染 ——
+     * 那种环境下内嵌面板本来就不可用，放个按钮只会误导。
+     */
+    function PaneToggle() {
+      const [open, setOpen] = useState(paneBus.open)
+      const [supported, setSupported] = useState(false)
+
+      useEffect(() => {
+        // 桌面桥只在 dsh-app://app 主框架里有；没有就不显示按钮。
+        const ok = takeDesktopBrowser() !== null
+        setSupported(ok)
+        report('pane-toggle-mount', { supported: ok })
+        return paneBus.subscribe(setOpen)
+      }, [])
+
+      if (!supported) return null
+      return h('button', {
+        className: 'dba-toggle' + (open ? ' dba-toggle-on' : ''),
+        title: open ? '收起 DeepSeek 内嵌窗口' : '打开 DeepSeek 内嵌窗口（不用先选文字）',
+        onClick: () => {
+          report('pane-toggle-click', { open: !paneBus.open })
+          paneBus.toggle()
         },
-          h('div', { className: 'dba-pane-head' },
-            h('span', { className: 'dba-pane-title' }, 'DeepSeek'),
-            h('span', { className: 'dba-pane-status', title: status }, status),
-            h('button', {
-              className: 'dba-pane-btn',
-              onClick: () => setOpen(false),
-              title: '收起（窗口保持存活）',
-            }, '收起'),
-            h('button', {
-              className: 'dba-pane-btn',
-              disabled: busy,
-              title: '清掉保存的登录态，下次要重新登录',
-              onClick: () => { void forgetSession() },
-            }, '清除登录')),
-          h('div', { className: 'dba-pane-host', ref: hostRef })))
+      },
+        h('span', { className: 'dba-toggle-dot', 'aria-hidden': true }),
+        h('span', null, 'DeepSeek'))
     }
     //#endregion
 
@@ -1085,6 +1203,12 @@ window.__ModuleLoader__.load({
           id: 'bubble-ask-webview',
           order: 901,
         }, WebPane))
+        // 输入框右侧的常驻开关：不选文字也能开/关内嵌面板。
+        context.slots.inject('conversation.input.right', () => context.slots.register({
+          name: 'conversation.input.right',
+          id: 'bubble-ask-pane-toggle',
+          order: 900,
+        }, PaneToggle))
         report('loaded', { href: window.location.href })
       },
     }
