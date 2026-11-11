@@ -11,8 +11,19 @@ namespace BubbleAsk
     /// </summary>
     public class AnswerBubble : Form
     {
+        // 和抓词提问卡片、扩展、DSH 插件同一套色板
+        private static readonly Color Ink = Color.FromArgb(31, 41, 55);
+        private static readonly Color Dim = Color.FromArgb(122, 131, 148);
+        private static readonly Color Line = Color.FromArgb(226, 230, 239);
+        private static readonly Color Hover = Color.FromArgb(243, 245, 250);
+        private static readonly Color Belly = Color.FromArgb(239, 243, 255);
+        private static readonly Color BellyLine = Color.FromArgb(214, 222, 252);
+        private static readonly Color Accent = Color.FromArgb(77, 107, 254);
+        private const int CardRadius = 14;
+
         private readonly AppConfig _config;
         private readonly Panel _header;
+        private readonly PictureBox _mascot;
         private readonly Label _title;
         private readonly Label _thinking;
         private readonly RichTextBox _body;
@@ -50,73 +61,101 @@ namespace BubbleAsk
 
             _header = new Panel();
             _header.Dock = DockStyle.Top;
-            _header.Height = 40;
-            _header.BackColor = Color.FromArgb(238, 242, 255);
+            _header.Height = 46;
+            _header.BackColor = Color.White;
             _header.Cursor = Cursors.SizeAll;
             _header.MouseDown += HeaderMouseDown;
             _header.MouseMove += HeaderMouseMove;
             _header.MouseUp += HeaderMouseUp;
 
+            // 小鲸鱼：和抓词提问卡片、DSH 插件同一个形象
+            PictureBox mascot = new PictureBox();
+            mascot.Dock = DockStyle.Left;
+            mascot.Width = 42;
+            mascot.SizeMode = PictureBoxSizeMode.Zoom;
+            mascot.BackColor = Color.Transparent;
+            mascot.Cursor = Cursors.SizeAll;
+            mascot.MouseDown += HeaderMouseDown;
+            mascot.MouseMove += HeaderMouseMove;
+            mascot.MouseUp += HeaderMouseUp;
+            try
+            {
+                mascot.Image = IconFactory.Mascot();
+            }
+            catch (InvalidOperationException)
+            {
+                mascot.Width = 10;
+            }
+            _mascot = mascot;
+
             _title = new Label();
             _title.AutoSize = false;
             _title.Dock = DockStyle.Fill;
             _title.TextAlign = ContentAlignment.MiddleLeft;
-            _title.Padding = new Padding(12, 0, 0, 0);
-            _title.Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
-            _title.ForeColor = Color.FromArgb(31, 41, 55);
+            _title.Padding = new Padding(4, 0, 0, 0);
+            _title.Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold);
+            _title.ForeColor = Ink;
             _title.Cursor = Cursors.SizeAll;
             _title.MouseDown += HeaderMouseDown;
             _title.MouseMove += HeaderMouseMove;
             _title.MouseUp += HeaderMouseUp;
 
             _close = new Button();
-            _close.Text = "×";
-            _close.Bounds = new Rectangle(60, 4, 36, 30);
+            _close.Text = "✕";
+            _close.Bounds = new Rectangle(60, 9, 30, 28);
             _close.FlatStyle = FlatStyle.Flat;
             _close.FlatAppearance.BorderSize = 0;
-            _close.Font = new Font("Microsoft YaHei UI", 12f);
-            _close.ForeColor = Color.FromArgb(75, 85, 99);
+            _close.Font = new Font("Microsoft YaHei UI", 10f);
+            _close.ForeColor = Dim;
+            _close.BackColor = Color.White;
             _close.TabStop = false;
+            _close.Cursor = Cursors.Hand;
             _close.Click += delegate { Close(); };
+            AddHover(_close, Color.White, Hover);
 
             _copy = new Button();
             _copy.Text = "复制";
-            _copy.Bounds = new Rectangle(12, 9, 48, 24);
+            _copy.Bounds = new Rectangle(8, 12, 48, 24);
             _copy.FlatStyle = FlatStyle.Flat;
             _copy.FlatAppearance.BorderSize = 0;
             _copy.Font = new Font("Microsoft YaHei UI", 8.5f);
-            _copy.ForeColor = Color.FromArgb(55, 65, 81);
+            _copy.ForeColor = Dim;
+            _copy.BackColor = Color.White;
             _copy.TabStop = false;
+            _copy.Cursor = Cursors.Hand;
             _copy.Click += delegate { CopyAll(); };
+            AddHover(_copy, Color.White, Hover);
 
             Panel headerRight = new Panel();
             headerRight.Dock = DockStyle.Right;
-            headerRight.Width = 100;
+            headerRight.Width = 96;
             headerRight.BackColor = Color.Transparent;
             headerRight.Controls.Add(_copy);
             headerRight.Controls.Add(_close);
 
             _header.Controls.Add(_title);
             _header.Controls.Add(headerRight);
+            _header.Controls.Add(_mascot);
 
             _thinking = new Label();
             _thinking.Dock = DockStyle.Top;
             _thinking.Height = 0;
             _thinking.AutoSize = false;
-            _thinking.Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Italic);
-            _thinking.ForeColor = Color.FromArgb(120, 120, 130);
-            _thinking.Padding = new Padding(12, 4, 12, 0);
+            _thinking.Font = new Font("Microsoft YaHei UI", 9f);
+            _thinking.ForeColor = Dim;
+            _thinking.BackColor = Color.White;
+            _thinking.Padding = new Padding(18, 6, 18, 0);
             _thinking.Visible = false;
 
-            _bodyFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular);
-            _italicFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Italic);
+            _bodyFont = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Regular);
+            _italicFont = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Italic);
 
             _body = new RichTextBox();
             _body.Dock = DockStyle.Fill;
             _body.BorderStyle = BorderStyle.None;
             _body.ReadOnly = true;
             _body.BackColor = Color.White;
-            _body.ForeColor = Color.FromArgb(31, 41, 55);
+            _body.ForeColor = Ink;
             _body.Font = _bodyFont;
             _body.DetectUrls = true;
             _body.Margin = new Padding(0);
@@ -126,38 +165,85 @@ namespace BubbleAsk
             Panel bodyHost = new Panel();
             bodyHost.Dock = DockStyle.Fill;
             bodyHost.BackColor = Color.White;
-            bodyHost.Padding = new Padding(14, 8, 10, 6);
+            bodyHost.Padding = new Padding(18, 10, 12, 8);
             bodyHost.Controls.Add(_body);
 
+            // 页脚：白底、上一条细线，输入框做成浅蓝「鱼肚」，发送键是圆角实心蓝。
             _footer = new Panel();
             _footer.Dock = DockStyle.Bottom;
-            _footer.Height = 54;
-            _footer.BackColor = Color.FromArgb(249, 250, 251);
-            _footer.Padding = new Padding(10, 10, 10, 10);
+            _footer.Height = 62;
+            _footer.BackColor = Color.White;
+            _footer.Padding = new Padding(14, 12, 14, 12);
+
+            Panel belly = new Panel();
+            belly.Dock = DockStyle.Fill;
+            belly.BackColor = Belly;
+            belly.Padding = new Padding(10, 5, 10, 5);
+            belly.Resize += delegate
+            {
+                using (GraphicsPath path = Rounded(new Rectangle(0, 0, belly.Width - 1, belly.Height - 1), 12))
+                {
+                    belly.Region = new Region(path);
+                }
+            };
+            belly.Paint += delegate(object sender, PaintEventArgs args)
+            {
+                Panel panel = (Panel)sender;
+                args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (GraphicsPath path = Rounded(new Rectangle(1, 1, panel.Width - 3, panel.Height - 3), 11))
+                using (Pen pen = new Pen(BellyLine))
+                {
+                    args.Graphics.DrawPath(pen, path);
+                }
+            };
 
             _input = new TextBox();
             _input.Dock = DockStyle.Fill;
-            _input.BorderStyle = BorderStyle.FixedSingle;
+            _input.BorderStyle = BorderStyle.None;
+            _input.BackColor = Belly;
+            _input.ForeColor = Ink;
             _input.Font = new Font("Microsoft YaHei UI", 10f);
             _input.KeyDown += InputKeyDown;
+            belly.Controls.Add(_input);
 
             _send = new Button();
             _send.Text = "追问";
-            _send.Dock = DockStyle.Right;
-            _send.Width = 64;
             _send.FlatStyle = FlatStyle.Flat;
             _send.FlatAppearance.BorderSize = 0;
-            _send.BackColor = Color.FromArgb(77, 107, 254);
+            _send.BackColor = Accent;
             _send.ForeColor = Color.White;
             _send.Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold);
+            _send.Cursor = Cursors.Hand;
             _send.Click += delegate { SubmitFollowUp(); };
+            _send.Resize += delegate
+            {
+                using (GraphicsPath path = Rounded(new Rectangle(0, 0, _send.Width - 1, _send.Height - 1), 10))
+                {
+                    _send.Region = new Region(path);
+                }
+            };
 
-            _footer.Controls.Add(_input);
-            _footer.Controls.Add(_send);
+            Panel sendHost = new Panel();
+            sendHost.Dock = DockStyle.Right;
+            sendHost.Width = 84;
+            sendHost.BackColor = Color.White;
+            sendHost.Padding = new Padding(12, 0, 0, 0);
+            _send.Dock = DockStyle.Fill;
+            sendHost.Controls.Add(_send);
+
+            _footer.Controls.Add(belly);
+            _footer.Controls.Add(sendHost);
 
             Controls.Add(bodyHost);
             Controls.Add(_footer);
             Controls.Add(_thinking);
+            // 标题栏和正文之间的 1px 分隔：用一条实体 Panel 而不是 OnPaint 画线，
+            // 因为标题栏和正文都是子控件，会盖住窗体自己画的那条线。
+            Panel divider = new Panel();
+            divider.Dock = DockStyle.Top;
+            divider.Height = 1;
+            divider.BackColor = Line;
+            Controls.Add(divider);
             Controls.Add(_header);
 
             FormClosed += delegate
@@ -407,13 +493,24 @@ namespace BubbleAsk
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // 卡片外描边（标题栏与正文之间的分隔由 divider 那条 Panel 负责）
             using (GraphicsPath path = RoundedPath())
+            using (Pen pen = new Pen(Line))
             {
-                using (Pen pen = new Pen(Color.FromArgb(203, 213, 225)))
-                {
-                    e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                    e.Graphics.DrawPath(pen, path);
-                }
+                e.Graphics.DrawPath(pen, path);
+            }
+        }
+
+        /// <summary>无边框窗口也给一点系统投影，别像贴在桌面上的纸片。</summary>
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams parameters = base.CreateParams;
+                parameters.ClassStyle = parameters.ClassStyle | 0x00020000; // CS_DROPSHADOW
+                return parameters;
             }
         }
 
@@ -429,20 +526,42 @@ namespace BubbleAsk
                     old.Dispose();
                 }
             }
+            Invalidate();
         }
 
         private GraphicsPath RoundedPath()
         {
-            int radius = 10;
             GraphicsPath path = new GraphicsPath();
-            int width = Math.Max(radius * 2 + 1, Width - 1);
-            int height = Math.Max(radius * 2 + 1, Height - 1);
-            path.AddArc(0, 0, radius, radius, 180, 90);
-            path.AddArc(width - radius, 0, radius, radius, 270, 90);
-            path.AddArc(width - radius, height - radius, radius, radius, 0, 90);
-            path.AddArc(0, height - radius, radius, radius, 90, 90);
+            int width = Math.Max(CardRadius * 2 + 1, Width - 1);
+            int height = Math.Max(CardRadius * 2 + 1, Height - 1);
+            path.AddArc(0, 0, CardRadius, CardRadius, 180, 90);
+            path.AddArc(width - CardRadius, 0, CardRadius, CardRadius, 270, 90);
+            path.AddArc(width - CardRadius, height - CardRadius, CardRadius, CardRadius, 0, 90);
+            path.AddArc(0, height - CardRadius, CardRadius, CardRadius, 90, 90);
             path.CloseFigure();
             return path;
+        }
+
+        /// <summary>圆角矩形路径（按钮 / 鱼肚输入框用）。</summary>
+        private static GraphicsPath Rounded(Rectangle bounds, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int diameter = Math.Max(2, radius);
+            int width = Math.Max(diameter + 1, bounds.Width);
+            int height = Math.Max(diameter + 1, bounds.Height);
+            path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90);
+            path.AddArc(bounds.X + width - diameter, bounds.Y, diameter, diameter, 270, 90);
+            path.AddArc(bounds.X + width - diameter, bounds.Y + height - diameter, diameter, diameter, 0, 90);
+            path.AddArc(bounds.X, bounds.Y + height - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        /// <summary>给无边框按钮补一个悬停底色（原生 FlatButton 不会自己画）。</summary>
+        private static void AddHover(Button button, Color normal, Color hover)
+        {
+            button.MouseEnter += delegate { button.BackColor = hover; };
+            button.MouseLeave += delegate { button.BackColor = normal; };
         }
 
         protected override void Dispose(bool disposing)

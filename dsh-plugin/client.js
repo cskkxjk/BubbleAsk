@@ -99,7 +99,9 @@ window.__ModuleLoader__.load({
      * 规则和以前下拉框一致：桌面端说支持哪些就只列哪些，没手选过就沿用配置默认值。
      */
     function useProviderChoice() {
-      const [provider, setProvider] = useState(() => readStoredProvider() || PROVIDERS[0].id)
+      // '' = 还没定：既没在本机选过，也还没从 /health 问到桌面端的配置。
+      // 这种时候不要假装是 DeepSeek —— 卡片的标题和实际发送都得诚实。
+      const [provider, setProvider] = useState(() => readStoredProvider())
       const [providers, setProviders] = useState(PROVIDERS)
       const [note, setNote] = useState('')
 
@@ -141,9 +143,11 @@ window.__ModuleLoader__.load({
 
     /** 服务方下拉（设置页与右键面板共用）。 */
     function ProviderSelect({ provider, providers, onChange }) {
+      // provider 为空表示「还没定」：下拉先显示第一个，但没选之前不会写回存储。
+      const value = provider || (providers[0] ? providers[0].id : '')
       return h('select', {
         className: 'dba-select',
-        value: provider,
+        value,
         onChange: (event) => onChange(event.currentTarget.value),
       }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))
     }
@@ -341,16 +345,21 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       /** 失败时留着完整提问，给「复制全文」兜底。 */
       const [failedPrompt, setFailedPrompt] = useState('')
-      /** 当前要发到的网页版服务方；默认沿用上次选择，其次是插件默认（DeepSeek）。 */
-      const [provider, setProvider] = useState(() => readStoredProvider() || 'deepseek')
-      const [providers, setProviders] = useState(PROVIDERS)
+      /**
+       * 发到哪家：存储里的选择 > /health 报的桌面端配置 > 还没定。
+       * 和设置页、右键面板共用同一份状态（同一个 hook），不各存一套。
+       */
+      const { provider, providers } = useProviderChoice()
       /** 抑制选区重算的截止时间戳：点了气泡按钮后，同一次手势的 mouseup 不该把卡片打回去。 */
       const suppressRef = useRef(0)
       const bubbleRef = useRef(bubble)
       bubbleRef.current = bubble
-      // 服务方可能在「设置 › Bubble Ask」里被改过：渲染时以存储为准，标题不会停在旧值。
+      // provider 为空 = 还没定：标题别硬写成 DeepSeek，也先别把 provider 钉死发出去。
+      // 存储优先（设置页/右键面板改完要立刻反映到标题），其次是 /health 给的默认值。
       const activeProviderId = readStoredProvider() || provider
-      const providerInfo = providers.find((item) => item.id === activeProviderId) || providers[0] || PROVIDERS[0]
+      const providerInfo = activeProviderId
+        ? providers.find((item) => item.id === activeProviderId) || null
+        : null
 
       useEffect(() => {
         /** 最近一次显示气泡的时间：拖选文字常伴随滚动，刚弹出时不要被滚动藏掉。 */
@@ -423,40 +432,8 @@ window.__ModuleLoader__.load({
        *   - 新桌面端按它支持的 id 列表取交集；
        *   - 没手动选过服务方时，沿用 Host 配置的默认值。
        */
-      useEffect(() => {
-        let cancelled = false
-        void (async () => {
-          try {
-            const response = await fetch('/bubble-ask/health')
-            if (!response.ok) return
-            const payload = await response.json()
-            if (cancelled || !payload || payload.ok !== true) return
-            const app = payload.app || {}
-            const switchable = app.providerSwitchable === true
-            const ids = switchable && Array.isArray(app.providers) ? app.providers : []
-            const known = switchable
-              ? (ids.length > 0 ? PROVIDERS.filter((item) => ids.includes(item.id)) : PROVIDERS)
-              : PROVIDERS.filter((item) => item.id === 'deepseek')
-            if (known.length > 0) setProviders(known)
-            const configured = payload.settings && typeof payload.settings.provider === 'string'
-              ? payload.settings.provider
-              : ''
-            if (!readStoredProvider() && known.some((item) => item.id === configured)) setProvider(configured)
-          } catch {
-            /* health 不可用：保留内置列表与本地选择 */
-          }
-        })()
-        return () => { cancelled = true }
-      }, [])
-
-      // 桌面端不支持当前选择时（例如从新版本回退），自动落到第一项，避免下拉框显示空白。
-      useEffect(() => {
-        if (providers.length > 0 && !providers.some((item) => item.id === provider)) {
-          const fallback = providers[0].id
-          setProvider(fallback)
-          storeProvider(fallback)
-        }
-      }, [providers, provider])
+      // 服务方 / 列表 / 默认值现在统一由 useProviderChoice 管（设置页、右键面板、
+      // 这张卡片共用一份），这里不再各存一套，免得三处状态互相打架。
 
       function closeBubble() {
         setBubble({ visible: false, expanded: false, text: '', x: 0, y: 0 })
@@ -470,10 +447,14 @@ window.__ModuleLoader__.load({
        */
       async function runAsk(send) {
         const selection = bubbleRef.current.text
-        // 服务方在「设置 › Bubble Ask」里改：现读一次，改完下一句就生效。
+        // 服务方在「设置 › Bubble Ask」或鲸鱼按钮右键面板里改：现读一次，改完下一句生效。
+        // 空串 = 还没定：此时不钉死 provider，交给桌面端按它自己的配置发，避免发错站。
         const stored = readStoredProvider()
         const providerId = stored || provider
-        const providerName = (providers.find((item) => item.id === providerId) || providerInfo).name
+        const providerName = providerId
+          ? ((providers.find((item) => item.id === providerId) || providerInfo || { name: providerId }).name)
+          : '桌面端配置的网页版'
+        const providerField = providerId ? { provider: providerId } : {}
         setBusy(true)
         setStatus(send ? `正在整理轨迹并发送到 ${providerName}…` : `正在整理会话轨迹（发到 ${providerName}）…`)
         setFailedPrompt('')
@@ -493,7 +474,7 @@ window.__ModuleLoader__.load({
                 sessionId: currentSessionId,
                 selection,
                 question,
-                provider: providerId,
+                ...providerField,
               })
               const panePrompt = typeof payload.prompt === 'string' ? payload.prompt : ''
               if (!payload.ok || !panePrompt) throw new Error(payload.detail || payload.error || '整理提问失败')
@@ -514,7 +495,7 @@ window.__ModuleLoader__.load({
             sessionId: currentSessionId,
             selection,
             question,
-            provider: providerId,
+            ...providerField,
           })
           const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
           const actualName = typeof payload.providerName === 'string' && payload.providerName ? payload.providerName : providerName
@@ -576,7 +557,7 @@ window.__ModuleLoader__.load({
         },
           h('div', { className: 'dba-head' },
             h('img', { className: 'dba-whale', src: WHALE_ICON, alt: '', draggable: false }),
-            h('span', { className: 'dba-title' }, `问 ${providerInfo.name}`),
+            h('span', { className: 'dba-title' }, providerInfo ? `问 ${providerInfo.name}` : '问网页版（可在设置里选）'),
             h('button', { className: 'dba-x', title: '关闭', onClick: closeBubble }, '✕')),
           h('div', { className: 'dba-body' },
             h('div', { className: 'dba-quote' }, quote),
@@ -596,7 +577,7 @@ window.__ModuleLoader__.load({
               h('button', {
                 className: 'dba-send',
                 disabled: busy,
-                title: `注入并自动发送到 ${providerInfo.name} 网页版`,
+                title: providerInfo ? `注入并自动发送到 ${providerInfo.name} 网页版` : '注入并自动发送到桌面端配置的网页版',
                 onClick: () => { void runAsk(true) },
               }, busy ? '…' : '发送'))),
           status ? h('div', { className: 'dba-status' }, status) : null,
