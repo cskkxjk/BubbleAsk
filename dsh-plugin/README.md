@@ -107,12 +107,15 @@ curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 
 ```text
 index.js               Host 端：HTTP 路由、轨迹精简、prompt 拼装、服务方注册表
-client.js              Client 端：选区气泡（shell.overlay，含「发到」下拉）、会话 id 探针（conversation.input.dock）
+client.js              Client 端：选区气泡（shell.overlay，含「发到」下拉）、内嵌网页版面板
+                       （shell.overlay）、会话 id 探针（conversation.input.dock）
 lib/ask-client.mjs     与托盘应用的通信（Windows 命名管道客户端 + 自动拉起 + 可选 provider，惰性加载）
+lib/driver.source.mjs  页面驱动源码（由 shared/driver.js 生成，经 Host 下发给内嵌面板）
+lib/providers.data.js  服务方定义（由 shared/providers.json 生成）
 cordis.patch.yml       插入 bubble-ask 条目
 ```
 
-插件只在 DSH 里画一个气泡，不在右侧栏渲染任何页面 —— 原因见[已知限制](#为什么不用右侧栏的内嵌浏览器)。
+插件在 DSH 里画一个气泡，并可选地开一个**内嵌网页版面板**（DeepSeek 走这条）；托盘应用仍是其它服务方与内嵌失败时的执行者。两者的边界见[两条发送路径](#两条发送路径)。
 
 ## 与后台服务的协作
 
@@ -137,14 +140,44 @@ CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service
 - 服务方：`send` 新增可选 `provider`（`deepseek` / `qwen` / `doubao` / `chatgpt` / `gemini` / `grok`）。插件总是显式带上当前选择（包括 DeepSeek），保证用户明确选了 DeepSeek 时不会因为桌面端配置了别家默认值而发错站点；桌面端低于 2.1.0 会忽略该字段、按本机配置的入口发送，插件对旧桌面端只提供 DeepSeek，选择非 DeepSeek 时也会提前拦截（不会静默发错站点）。
 - 登录态：所有客户端共用同一份持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效。
 
+## 两条发送路径
+
+气泡点「发送到 DeepSeek」时有两套执行者，按顺序择一：
+
+| 路径 | 执行者 | 何时走 | 登录态 |
+| --- | --- | --- | --- |
+| 内嵌网页版面板 | 插件**自己**经桌面端 lease 通道开的 Electron guest | 当前是 DeepSeek，且运行在 DSH 桌面端主框架里（有 `dshDesktop.browser`） | 存在 DSH 凭证存储，跨重启保留 |
+| 托盘应用 | `BubbleAsk.exe --service` 通过 CDP 驱动 Edge | 非 DeepSeek；或无桌面桥（浏览器打开 GUI）；或内嵌这条路发送失败 | 存在 `%APPDATA%\BubbleAsk\edge-profile` |
+
+内嵌这条路失败不会直接判死：面板返回 `{ok:false, stage, detail}` 后气泡自动回退到托盘应用，两者都不行才提示「复制全文」手动粘贴。面板里点了「发送」的同时，DeepSeek 窗口会在屏幕右侧展开，看得见消息发出去。
+
+### 内嵌面板怎么绕开宿主的三道门
+
+这三条都是实测出来的，代码注释里也有：
+
+1. **准入**：主进程在 `will-attach-webview` 里校验 `src` 必须是 `about:blank#<lease>`、`partition` 必须等于该 lease 的 partition，否则 `preventDefault()`。lease 只能由 `dshDesktop.browser.acquire(workspace)` 签发，所以插件必须走 lease 而不是裸 `createElement('webview')`。
+2. **认领时序**：主进程在 `did-attach-webview` 里等同一个 `dom-ready` 后读 URL 认领 lease。立刻 `loadURL` 会让它读到的 URL 对不上 lease，guest 直接被关掉 —— 所以 `dom-ready` 之后要多等一拍（400ms）再导航。
+3. **环境判定**：站点按 UA 判定「使用环境异常」（UA 含 `electron`，或 `window.process.type === 'renderer'`）。lease 的 UA 带 `Electron/44.7.0`，必须在首个文档建立之前 `element.setUserAgent()` 脱敏。`setUserAgent` 是运行时方法，不受 `will-attach-webview` 清除 preferences 的影响。
+
+### 登录态怎么跨重启
+
+lease 的 partition 由主进程生成（`dsh-sidebar-browser-<uuid>`，无 `persist:` 前缀、不落盘），所以 **DSH 一重启就是全新分区**，这个限制插件绕不过。
+
+绕过办法是搬登录态而不是搬分区：实测网页版的登录态**完全在 localStorage、不依赖 cookie**，其中真正需要的只有 7 个键、不到 1KB（`userToken` / `settingsJwt` / `smidV2` / `deepseek-device-id:chat` / `__appKit_userInfo` / `__ds_remote_feature_did` / `hif_leim_cached`），全量 29 个键里 37KB 大部分是可再生的 feature store 缓存。把 7 个键灌进一个全新分区再 reload，就能直接进主界面并正常对话。
+
+于是流程是：登录一次 → 自动抓这 7 个键存进 **DSH 自己的凭证存储**（`ctx.credentials`，落盘在 `~/.dsh/.credentials.yaml`）→ 下次建好 guest 后写回 localStorage 再 reload 一次即可免登录。面板右上角的「清除登录」删掉存档。
+
 ## HTTP 路由
 
 路由同源，且仅监听本机：
 
 | 路由 | 作用 |
 | --- | --- |
-| `POST /bubble-ask/prompt` | `{sessionId, selection, question, provider?}` → `{ok, provider, providerName, mode, prompt, url, stats}` |
+| `POST /bubble-ask/prompt` | `{sessionId, selection, question, provider?}` → `{ok, provider, providerName, mode, prompt, url, stats}`；只整理不发送，内嵌面板与「复制提问」都用它 |
 | `POST /bubble-ask/send` | 同上，但会经管道让托盘应用实际注入网页版并发送；非 DeepSeek 时先校验桌面端版本，旧版返回可复制的错误 |
+| `GET /bubble-ask/driver` | 内嵌面板取驱动源码与服务方配置：`{ok, driver, generic:{composerSelectors, sendAriaLabels}, providers, defaultId}`；内容全部来自唯一真源 |
+| `GET/POST/DELETE /bubble-ask/session` | 内嵌面板的登录态存档：`GET` 只报键名、`POST` 存（走 `ctx.credentials`）、`DELETE` 清除 |
+| `POST /bubble-ask/session-data` | 取回完整登录态（内嵌面板写回 guest 的 localStorage 用） |
 | 任意方法 `/bubble-ask/health` | 自检：托盘应用是否连通（`cdpReady`）、协议版本、profile 目录、最近的自检记录、当前/可选服务方（`provider`、`providers`、`app.*Provider*`）（该路由不校验方法） |
 | `POST /bubble-ask/diag` | Client 端上报自检记录（最多保留 40 条），可通过 `/health` 的 `diag` 字段读取 |
 
@@ -174,26 +207,25 @@ CDP 驱动只有一份实现，跑在无界面身份的 `BubbleAsk.exe --service
 
 ## 已知限制
 
-### 为什么不用右侧栏的内嵌浏览器
+### 内嵌面板只支持 DeepSeek
 
-DSH 桌面端右侧栏的 Browser（`Ctrl+T`）看起来是更省事的位置，但它有两处由宿主决定、插件无法绕开的限制：
+「自己开 guest 打开网页版」这条路目前只接了 DeepSeek：登录态迁移的 7 个键、UA 脱敏、环境判定都是对 `chat.deepseek.com` 实测出来的，其它 5 家没有逐个验证（各自的登录存储、环境判定、页面结构都不同）。选非 DeepSeek 时气泡直接走托盘应用，不会尝试内嵌。
 
-- **登录不跨重启**。WebView 的存储分区由主进程生成：`dsh-sidebar-browser-${randomUUID()}`，没有 `persist:` 前缀，因此只存在于进程内存。应用重启后 Cookie 与 Web Storage 一并消失，需要重新登录；同时同一工作目录的多个标签页共享该分区。
-- **网页版会判定环境异常**。该 guest 运行在 Electron 内核中，`chat.deepseek.com` 会弹出「使用环境异常 / 可能存在数据和隐私泄露风险」的横幅。该横幅已通过实验归因到 **UA 字符串中的 `Electron` 标记**（改 UA 即消失、改回即复现，`userAgentData.brands` 与 `navigator.webdriver` 均已排除），实验记录见 [docs/ua-banner-finding.md](../docs/ua-banner-finding.md)。但侧边栏 webview 的 UA 由宿主控制，插件不便插手，故仍走原生窗口。
+### 内嵌面板依赖 DSH 桌面端
 
-插件的原生窗口链路用独立持久化 profile（默认 `%APPDATA%\BubbleAsk\edge-profile`），登录一次长期有效，也没有上述横幅。
+`dshDesktop.browser` 只在 `dsh-app://app` **主框架**里暴露（`preload-app.cjs` 的判断是 `location.protocol === 'dsh-app:' && location.hostname === 'app' && process.isMainFrame`）。在浏览器里打开 GUI（`http://127.0.0.1:60922`）时只有 `{protocolVersion: 1}`，拿不到 `browser`，内嵌这条路自动降级为托盘应用。
 
 ### 无法把原生窗口"嵌"进 GUI
 
-以下三条是本版 DSH 桌面壳的硬约束，决定了原生窗口只能作为独立窗口存在：
+以下三条是本版 DSH 桌面壳的硬约束：
 
-- 自建 `<webview>` 会被拒绝：主进程在 `will-attach-webview` 中校验 `src` 必须为 `about:blank#<lease>`、且 `partition` 与签发时一致，否则 `preventDefault()`。lease 只能由主进程的 `dsh-desktop:browser-acquire` 签发。
+- 自建 `<webview>` 需要 lease（见上），不能裸建。
 - Host 插件拿不到 Electron API：DSH Host 是独立 node 子进程（`spawn(node, dsh-desktop-host/lib/index.js)`），不是 Electron 主进程，因此无法使用 `WebContentsView` 之类的主进程嵌入能力。
-- `chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，任何 iframe 都无法嵌入。
+- `chat.deepseek.com` 返回 `Content-Security-Policy: frame-ancestors 'none'`，任何 iframe 都无法嵌入 —— 所以走的是 `<webview>` 而不是 `<iframe>`。
 
 ### 其他
 
-- **必须同时安装托盘应用**。插件自身不驱动浏览器；`BubbleAsk.exe` 未安装或未启动时，「发送到 <服务方>」会失败并说明原因，「复制提问」仍然可用。
+- **托盘应用不再是无条件必需**。DeepSeek 且运行在 DSH 桌面端时，发送走内嵌面板，`BubbleAsk.exe` 没装也能发；非 DeepSeek、或在浏览器里打开 GUI、或内嵌失败时才需要它。「复制提问」始终不依赖任何执行者。
 - **切换服务方需要桌面端 2.1.0+**。更旧的桌面端会忽略 `send` 里的 `provider` 字段、按本机配置的入口发送（旧版插件的行为，不会静默换成 DeepSeek）；插件的下拉在旧桌面端下只显示 DeepSeek，选不到非 DeepSeek。升级桌面端后无需重启 DSH：下一次发送前会重新校验版本。
 - **旧桌面端 + 自定义入口**：桌面端 2.0.0 配置过自定义 `ChatUrl` 时，气泡标着 DeepSeek 但实际仍会发到那个自定义入口（旧行为）。需要按服务方切换时请把桌面端升级到 2.1.0+。
 - **`custom`（自定义服务方）不在插件提供**。需要自定义入口时在桌面端「设置 → 窗口与网页 → 网页版服务方」里配置，插件侧没有对应下拉项。

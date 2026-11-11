@@ -3,17 +3,18 @@
  *
  * 职责：把当前会话的「精简轨迹」取出来，和用户选中的文字一起拼成一段带上下文的提问，
  * 再交给网页版（默认 DeepSeek，气泡里可切换千问/豆包/ChatGPT/Gemini/Grok）。
- * Client 半只负责选词和气泡，通过本进程的 HTTP 路由拿结果。
+ * Client 半只负责选词、气泡和内嵌面板，通过本进程的 HTTP 路由拿结果。
  *
- * 投递方式只有一条（外加一个纯手动兜底）：
- *   app      —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
+ * 投递方式有两条（外加固化兜底）：
+ *   pane      —— Client 半自己经桌面端 lease 通道开 Electron guest 打开网页版，
+ *                注入本进程下发的页面驱动后直接填入并发送；只在 DeepSeek 上走这条
+ *   app       —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
  *   clipboard —— 只组上下文、不发送，把完整提问复制到剪贴板供手动粘贴
  *
- * 不在右侧栏渲染任何东西。内嵌浏览器（ctrl+T Browser）不可用：那套 Electron guest
- * 环境的存储分区由主进程按进程生命周期生成（无 persist: 前缀），每次重启都要重新登录，
- * 且网页版会把 guest 环境判定为「使用环境异常」；而原生窗口是独立 OS 窗口，无法内嵌。
+ * 内嵌面板绕开了三处宿主限制（准入 lease、认领时序、UA 环境判定），并把登录态搬进
+ * DSH 凭证存储以跨分区恢复；详细机制与实测见 dsh-plugin/README.md。
  *
- * 也不自己驱动 CDP：托盘应用持有唯一一份持久化登录 profile，是网页版窗口的唯一权威，
+ * 托盘应用仍是其它服务方（及内嵌失败时）的执行者：它持有唯一一份持久化登录 profile，
  * 插件只当薄客户端（见 lib/ask-client.mjs）。
  */
 /**
@@ -178,10 +179,10 @@ const ROUTE_PROMPT = '/bubble-ask/prompt'
 const ROUTE_SEND = '/bubble-ask/send'
 const ROUTE_HEALTH = '/bubble-ask/health'
 const ROUTE_DIAG = '/bubble-ask/diag'
-/** 内嵌 webview（spike）用：把页面驱动源码与服务方配置交给 Client 半。 */
+/** 内嵌面板用：把页面驱动源码与服务方配置交给 Client 半。 */
 const ROUTE_DRIVER = '/bubble-ask/driver'
 /**
- * 内嵌 webview 的登录态存取。
+ * 内嵌面板的登录态存取。
  *
  * 为什么要这一层：lease 的 partition 由桌面端主进程生成，没有 `persist:` 前缀、
  * 也不落盘，DSH 一重启就换新分区 —— 用户必须重新登录。实测证明把网页版的
@@ -1066,7 +1067,7 @@ export function apply(ctx, config = {}) {
   const sessions = () => ctx.get('sessions')
 
   /**
-   * 内嵌 webview 的登录态记录。
+   * 内嵌面板的登录态记录。
    *
    * 走 DSH 自己的凭证存储（`ctx.credentials`，`@deepseek-ai/dsh-credentials-local`
    * 在 base bundle 里默认挂载），不自己写文件：

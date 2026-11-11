@@ -6,7 +6,18 @@
 
 > 使用环境异常 当前页面的使用环境可能存在数据和隐私泄露风险，为保障安全，建议您使用我们的官方产品。
 
-**由 User-Agent 字符串里的 `Electron` 标记触发**。UA 改成普通浏览器形态后横幅消失，改回去又出现。因此 Bubble Ask 不使用侧边栏内嵌浏览器，改走原生窗口。
+**由 User-Agent 字符串里的 `Electron` 标记触发**。UA 改成普通浏览器形态后横幅消失，改回去又出现。
+
+判据来自站点自己的 minified 包，两处关键代码（`https://fe-static.deepseek.com/chat/static/main.26d4d4c4fd.js`）—— 不是靠猜：
+
+```js
+// 环境判定，只看两条：UA 含 electron（不区分大小写），或 window.process.type === 'renderer'
+IC = typeof navigator !== 'undefined' &&
+     (navigator.userAgent.toLowerCase().includes('electron') ||
+      (typeof window !== 'undefined' && 'process' in window && window.process.type === 'renderer'))
+```
+
+横幅是 Modal，`onClose` 会把 `closeUnsafeEnvWarn` 写进 localStorage（关一次就不再弹）；该键可被清除，所以「关过了」会污染观察——这一点在做对照实验时必须处理。
 
 ## 实验方法
 
@@ -38,33 +49,47 @@
 - **不是 `navigator.webdriver`**：三次均为 `false`。
 - **不是插件数量**：三次 `navigator.plugins.length` 均为 5。
 
-结论：判据落在 UA 字符串本身，具体是 `Electron/<version>` 这一段的出现。
+结论：判据落在 UA 字符串本身，具体是 `Electron/<version>` 这一段的出现（已由 minified 包源码确认）。
 
-## 对设计的含义
+## 在内嵌面板里的落地（已验证）
 
-| 问题 | 是否可解 | 说明 |
-| --- | --- | --- |
-| 「使用环境异常」横幅 | 可解 | 把 guest 的 UA 改成普通浏览器形态即可 |
-| 每次 DSH 重启需重新登录 | 不可解 | 侧边栏 webview 的存储分区由主进程生成 `dsh-sidebar-browser-${randomUUID()}`，无 `persist:` 前缀，仅存活于进程内存；分区名与生命周期均由宿主决定，插件无法干预 |
+插件自己开的 guest（lease 通道）拿到的主进程 UA 是：
 
-因此「DSH GUI 内嵌 DeepSeek 页面」这一形态的现实结果是：**横幅可以消除，但每次重启 DSH 仍需登录一次**。
+```text
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)
+  @deepseek-ai/dsh-desktop/0.2.2-rc.1 Chrome/152.0.7977.130 Electron/44.7.0 Safari/537.36
+```
 
-## 未验证的部分
+脱敏位置在 `dsh-plugin/client.js` 的 `connect()`，**必须在首个文档建立之前**（`loadURL` 之前）：
 
-只验证了「UA 能消除横幅」这一机制，**未验证能否把 UA 改到 DSH 的侧边栏 webview 上**。可行路径是 `<webview>.setUserAgent()`（插件与该元素同处一个渲染进程），但需要等 webview 挂载后再设置并重载，会有一次可见的重新加载。若要走这条路，需单独验证。
+```js
+const ua = await element.executeJavaScript('navigator.userAgent', true)
+element.setUserAgent(String(ua)
+  .replace(/\s*Electron\/[\d.]+/gi, '')
+  .replace(/\s*@deepseek-ai\/[\w.-]+\/[\w.-]+/gi, ''))
+```
 
-## 决策
+`setUserAgent` 是 webview 的**运行时方法**，不受 `will-attach-webview` 里逐键删除 preferences 的影响，所以这条路可行（早先文档里写的「侧边栏 webview 的 UA 由宿主控制、插件不便插手」是错的）。
 
-本仓库当前采用 **原生窗口** 方案：
+对照实验（清掉 `closeUnsafeEnvWarn` 后 reload，排除「关过就不再弹」的污染）实测：
 
-- 无「环境异常」横幅（UA 里没有 Electron 标记）
-- 登录一次长期有效（持久化 profile，默认 `%APPDATA%\BubbleAsk\edge-profile`）
-- 代价：DeepSeek 是独立 OS 窗口，不嵌入 DSH 窗口内部
+```json
+{ "modalVisible": false,
+  "dismissFlag": "{\"value\":false,\"__version\":\"0\"}",
+  "ua": "…Chrome/152.0.7977.130 Safari/537.36",
+  "uaHasElectron": false,
+  "title": "DeepSeek - 探索未至之境" }
+```
 
-若后续 DSH 改为持久化浏览器分区（或暴露 UA 配置），可重新评估内嵌方案。
+清掉的标记被写回 `value:false` 且弹窗不出现 ⇒ 脱敏是真因。
+
+## 关于「每次重启需重新登录」
+
+这个限制**绕不过分区**，但可以绕过去「登录」这件事本身：实测把网页版 localStorage 里 7 个认证键（不到 1KB）灌进全新分区再 reload 就能免登录并正常对话。插件因此把登录态存进 DSH 自己的凭证存储，下次换分区后写回。详见 [`dsh-plugin/README.md`](../dsh-plugin/README.md#登录态怎么跨重启)。
 
 ## 相关代码位置
 
+- 环境判定与横幅：站点 minified 包 `main.26d4d4c4fd.js`（判定 `IC` 在字符偏移 989176，存储键 `closeUnsafeEnvWarn` 的 `create` 在 1405558）
 - 侧边栏浏览器分区（不可持久化的根因）：DSH `lib/main.js:10499`，`partition = \`dsh-sidebar-browser-${randomUUID()}\``
-- guest 准入校验（插件无法自建 webview）：DSH `lib/main.js:10543`，`will-attach-webview` 要求 `src` 为 `about:blank#<lease>` 且分区匹配，否则 `preventDefault()`
-- 原生窗口启动参数（UA 不含 Electron）：`src/engine/EdgeHost.cs` 的 `EnsureStarted()`
+- guest 准入校验：DSH `lib/main.js:10543`，`will-attach-webview` 要求 `src` 为 `about:blank#<lease>` 且分区匹配，否则 `preventDefault()`
+- 脱敏与登录态迁移：`dsh-plugin/client.js`（`connect()` / `ensureReady()`）
