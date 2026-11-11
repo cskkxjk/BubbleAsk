@@ -86,29 +86,37 @@ const repoRoot = path.resolve(extRoot, '..')
 const canonicalPath = path.join(repoRoot, 'shared', 'providers.json')
 assert.ok(existsSync(canonicalPath), `缺唯一真源 ${canonicalPath}`)
 const canonical = JSON.parse(readFileSync(canonicalPath, 'utf8'))
-const { validate, buildExtensionModule, buildPluginModule } = await import(
+const { validate, buildExtensionModule, buildPluginModule, normalizeEol } = await import(
   `file:///${path.join(repoRoot, 'tools', 'gen-providers.mjs').replace(/\\/g, '/')}`
 )
 const sourceProblems = validate(canonical)
 assert.equal(sourceProblems.length, 0, `真源校验失败：${sourceProblems.join('；')}`)
 const generatedExtension = buildExtensionModule(canonical)
 const generatedPlugin = buildPluginModule(canonical)
+// 换行不敏感：Windows 检出让磁盘上是 CRLF，生成的是 LF，逐字节比会误报漂移。
 assert.equal(
-  readFileSync(path.join(extRoot, 'lib', 'providers.data.js'), 'utf8'),
-  generatedExtension,
+  normalizeEol(readFileSync(path.join(extRoot, 'lib', 'providers.data.js'), 'utf8')),
+  normalizeEol(generatedExtension),
   'chrome-extension/lib/providers.data.js 与真源不一致，请运行 node tools/gen-providers.mjs',
 )
 assert.equal(
-  readFileSync(path.join(repoRoot, 'dsh-plugin', 'lib', 'providers.data.js'), 'utf8'),
-  generatedPlugin,
+  normalizeEol(readFileSync(path.join(repoRoot, 'dsh-plugin', 'lib', 'providers.data.js'), 'utf8')),
+  normalizeEol(generatedPlugin),
   'dsh-plugin/lib/providers.data.js 与真源不一致，请运行 node tools/gen-providers.mjs',
 )
 // 页面驱动同样是共享真源：扩展里的副本必须与 shared/driver.js 一致
-const sharedDriver = readFileSync(path.join(repoRoot, 'shared', 'driver.js'), 'utf8')
-const extDriver = readFileSync(path.join(extRoot, 'content', 'driver.js'), 'utf8')
+const sharedDriver = normalizeEol(readFileSync(path.join(repoRoot, 'shared', 'driver.js'), 'utf8'))
+const extDriver = normalizeEol(readFileSync(path.join(extRoot, 'content', 'driver.js'), 'utf8'))
 assert.ok(
   extDriver.endsWith(sharedDriver),
   'chrome-extension/content/driver.js 与 shared/driver.js 不一致，请运行 node tools/gen-providers.mjs',
+)
+// 插件里的驱动源码副本同理（内嵌面板靠它注入 guest）。
+// 生成器会先把驱动归一成 LF 再嵌，所以这里也比归一后的内容。
+const pluginDriverSource = readFileSync(path.join(repoRoot, 'dsh-plugin', 'lib', 'driver.source.mjs'), 'utf8')
+assert.ok(
+  pluginDriverSource.includes(JSON.stringify(sharedDriver)),
+  'dsh-plugin/lib/driver.source.mjs 与 shared/driver.js 不一致，请运行 node tools/gen-providers.mjs',
 )
 record('真源一致性', `${canonical.providers.length} 家服务方 + 页面驱动，生成物无漂移`)
 

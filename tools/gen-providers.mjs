@@ -36,6 +36,14 @@ const BANNER = (host) => `/**
 /** 深拷贝（真源只含 JSON 可表达的类型）。 */
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
+/**
+ * 统一换行后再比较。
+ *
+ * 为什么需要：`core.autocrlf=true` 的 Windows 检出让磁盘上是 CRLF，而这里生成的是 LF。
+ * 只比内容时若逐字节比，干净检出会永远报「漂移」，校验就废了。
+ */
+export const normalizeEol = (text) => String(text).replace(/\r\n/g, '\n')
+
 /** 把 overrides[host] 覆盖到基础定义上；返回新对象，不改原数据。 */
 function applyOverrides(provider, host) {
   const { overrides, notes, ...base } = clone(provider)
@@ -193,9 +201,12 @@ function main() {
     console.error(`找不到页面驱动真源：${driverPath}`)
     process.exit(2)
   }
+  // 统一成 LF 再嵌：驱动本体是一段 JS，换行风格对执行无影响，但若不归一，
+  // 生成物里的转义字节会随检出平台的 autocrlf 变化 —— 产物就不确定了。
+  const driverSource = normalizeEol(readFileSync(driverPath, 'utf8'))
   targets.push({
     path: join(root, 'chrome-extension', 'content', 'driver.js'),
-    content: `${BANNER('Chrome 扩展')}\n\n${readFileSync(driverPath, 'utf8')}`,
+    content: `${BANNER('Chrome 扩展')}\n\n${driverSource}`,
   })
 
   // 插件的内嵌 webview 路径下，驱动要由 Client 半注入 guest 页面（executeJavaScript），
@@ -204,8 +215,8 @@ function main() {
     path: join(root, 'dsh-plugin', 'lib', 'driver.source.mjs'),
     content: `${BANNER('DSH 插件')}
 
-/** 页面驱动源码：真源 shared/driver.js 的原文，供 Host 分发给 Client 注入 guest。 */
-export const DRIVER_SOURCE = ${JSON.stringify(readFileSync(driverPath, 'utf8'))}
+/** 页面驱动源码：真源 shared/driver.js 的原文（换行已统一为 LF），供 Host 分发给 Client 注入 guest。 */
+export const DRIVER_SOURCE = ${JSON.stringify(driverSource)}
 `,
   })
 
@@ -213,7 +224,10 @@ export const DRIVER_SOURCE = ${JSON.stringify(readFileSync(driverPath, 'utf8'))}
   for (const target of targets) {
     const relative = target.path.slice(root.length + 1)
     const current = existsSync(target.path) ? readFileSync(target.path, 'utf8') : null
-    if (current === target.content) {
+    // 比换行不敏感：Windows 上 core.autocrlf=true 会把检出的文件转成 CRLF，
+    // 而这里生成的是 LF。逐字节比会把「内容一致、只是换行风格不同」误报成漂移，
+    // 让校验在干净检出上直接失效。
+    if (current !== null && normalizeEol(current) === normalizeEol(target.content)) {
       if (!checkOnly) console.log(`  = ${relative}`)
       continue
     }
