@@ -150,18 +150,15 @@ window.__ModuleLoader__.load({
       '.dba-pane-btn:disabled{opacity:.5;cursor:default}',
       '.dba-pane-host{flex:auto;min-height:0;display:flex;background:#fff}',
       '.dba-pane-host webview{flex:auto;width:100%;height:100%;border:0}',
-      // 会话标题栏右上角的常驻开关：跟 DSH 自己的小控件同高，靠状态点区分开/关。
-      '.dba-toggle{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 9px;',
-      'border-radius:8px;cursor:pointer;font:var(--dsw-font-xxs-12,12px/1.4 system-ui);',
-      'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
-      'color:var(--dsw-alias-label-secondary,#555);white-space:nowrap}',
-      '.dba-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05));',
-      'color:var(--dsw-alias-label-primary,#111)}',
-      '.dba-toggle-on{border-color:transparent;background:var(--dsw-alias-label-accent,#247bbf);color:#fff}',
-      '.dba-toggle-on:hover{filter:brightness(1.06);color:#fff}',
-      '.dba-toggle-dot{width:6px;height:6px;border-radius:50%;flex:none;',
-      'background:currentColor;opacity:.45}',
-      '.dba-toggle-on .dba-toggle-dot{opacity:1}',
+      // 标题栏右上角的常驻开关：28×28，和 DSH 自己的工具图标同尺寸；开着时描一圈强调色。
+      '.dba-toggle{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;',
+      'padding:0;border:0;border-radius:8px;background:transparent;cursor:pointer;',
+      'transition:background-color .12s ease,box-shadow .12s ease}',
+      '.dba-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}',
+      '.dba-toggle-on{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05));',
+      'box-shadow:inset 0 0 0 1px var(--dsw-alias-label-accent,#247bbf)}',
+      '.dba-toggle-whale{display:block;width:22px;height:auto;pointer-events:none;',
+      '-webkit-user-drag:none;user-select:none}',
     ].join('')
 
     //#region 工具函数
@@ -1152,6 +1149,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 鲸鱼图标：`chrome-extension/tools/art/whale.png`（品牌艺术图）等比缩到 44×27 的内嵌副本。
+     * 44px 是为了 2× 屏下按 22px 显示不糊；内嵌而不是外链，是因为 Client 半拿不到包内资源 URL。
+     */
+    const WHALE_ICON = 'data:image/png;base64,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'
+
+    /**
      * 会话标题栏右上角那颗常驻小按钮：不选文字也能开/关内嵌面板。
      *
      * 位置是 `conversation.session.header.utilities`（右对齐的会话工具位，DSH 自己
@@ -1171,16 +1174,23 @@ window.__ModuleLoader__.load({
       }, [])
 
       if (!supported) return null
+      const label = open ? '收起 DeepSeek 内嵌窗口' : '打开 DeepSeek 内嵌窗口（不用先选文字）'
       return h('button', {
+        type: 'button',
         className: 'dba-toggle' + (open ? ' dba-toggle-on' : ''),
-        title: open ? '收起 DeepSeek 内嵌窗口' : '打开 DeepSeek 内嵌窗口（不用先选文字）',
+        title: label,
+        'aria-label': label,
+        'aria-pressed': open,
         onClick: () => {
           report('pane-toggle-click', { open: !paneBus.open })
           paneBus.toggle()
         },
-      },
-        h('span', { className: 'dba-toggle-dot', 'aria-hidden': true }),
-        h('span', null, 'DeepSeek'))
+      }, h('img', {
+        className: 'dba-toggle-whale',
+        src: WHALE_ICON,
+        alt: '',
+        draggable: false,
+      }))
     }
     //#endregion
 
