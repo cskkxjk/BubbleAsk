@@ -1,11 +1,13 @@
 /**
- * 划词气泡：选中一段文字后，在选区旁浮出「问这段」。
+ * 划词鲸鱼气泡：选中一段文字，鲸鱼提问卡片直接浮出来，想好问题回车就发。
  *
  * 设计要点：
- * 1. 影子 DOM 承载 UI，页面 CSS 进不来，我们的样式也漏不出去。
- * 2. 按下按钮时 preventDefault，否则 mousedown 会清掉页面选区，点完就取不到文字了。
- * 3. 只在真正有正文选区时出现：不打断输入框里的选择、不打断富文本编辑。
- * 4. 一切「消失」都有对应事件（点别处、滚动、改窗口、Esc），不留僵尸气泡。
+ * 1. **没有「问这段」这一步**。以前的流程是「选中 → 点气泡 → 再弹大卡片」，
+ *    多一次点击、还多一层配置（换服务方、复制提问）挡在提问前面；现在选中即提问，
+ *    换服务方 / 打开窗口这些配置全部交给工具栏弹窗（浏览器右上角那块）。
+ * 2. 影子 DOM 承载 UI，页面 CSS 进不来，我们的样式也漏不出去。
+ * 3. 卡片里的 mousedown 只 stopPropagation 不 preventDefault —— 输入框要能聚焦。
+ * 4. 一切「消失」都有对应事件（点别处、滚动、改窗口、Esc），不留僵尸卡片。
  */
 ;(() => {
   if (globalThis.__bubbleAskSelectionBubble) return
@@ -19,10 +21,8 @@
    * 现在只挡「单字」这种明显误触。
    */
   const MIN_CHARS = 2
-  /** 气泡与选区的间距。 */
+  /** 卡片与选区的间距。 */
   const GAP = 8
-
-  const SVG_NS = 'http://www.w3.org/2000/svg'
 
   const host = document.createElement('div')
   host.setAttribute('data-bubble-ask', 'bubble')
@@ -40,31 +40,6 @@
   const style = document.createElement('style')
   style.textContent = `
     :host { all: initial; }
-    .pill {
-      position: fixed;
-      display: none;
-      align-items: center;
-      gap: 6px;
-      padding: 7px 12px;
-      border: none;
-      border-radius: 999px;
-      background: linear-gradient(180deg, #5b78ff, #4d6bfe);
-      color: #fff;
-      font: 500 13px/1.2 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
-      box-shadow: 0 6px 20px rgba(24, 32, 74, 0.28), 0 1px 2px rgba(0, 0, 0, 0.18);
-      cursor: pointer;
-      pointer-events: auto;
-      white-space: nowrap;
-      transition: transform 90ms ease, box-shadow 120ms ease, opacity 120ms ease;
-      opacity: 0;
-    }
-    .pill[data-state="shown"] { display: inline-flex; opacity: 1; }
-    .pill:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(24, 32, 74, 0.34), 0 1px 2px rgba(0, 0, 0, 0.18); }
-    .pill:active { transform: translateY(0); }
-    .pill[data-busy="true"] { cursor: default; opacity: 0.85; }
-    .pill[data-tone="error"] { background: linear-gradient(180deg, #e5605a, #d64a44); }
-    .pill[data-tone="ok"] { background: linear-gradient(180deg, #3f9a5b, #338451); }
-    .pill svg { width: 14px; height: 14px; flex: none; }
     .card {
       position: fixed;
       display: none;
@@ -100,7 +75,7 @@
       height: 30px;
       padding: 0 12px;
       border: none;
-      border-radius: 8px;
+      border-radius: 9px;
       cursor: pointer;
       background: linear-gradient(180deg, #5b78ff, #4d6bfe);
       color: #fff;
@@ -108,28 +83,11 @@
     }
     .ask-go:disabled { opacity: 0.55; cursor: default; }
     .ask-hint { color: #8a90a2; font: 400 11px/1.3 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif; }
+    .ask-hint[data-tone="error"] { color: #d64a44; }
+    .ask-hint[data-tone="ok"] { color: #3f9a5b; }
   `
 
-  const pill = document.createElement('button')
-  pill.type = 'button'
-  pill.className = 'pill'
-  pill.dataset.state = 'hidden'
-
-  const icon = document.createElementNS(SVG_NS, 'svg')
-  icon.setAttribute('viewBox', '0 0 24 24')
-  icon.setAttribute('fill', 'none')
-  icon.setAttribute('aria-hidden', 'true')
-  const path = document.createElementNS(SVG_NS, 'path')
-  path.setAttribute('d', 'M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v7a2.5 2.5 0 0 1-2.5 2.5H9l-4 3.5v-3.5A2.5 2.5 0 0 1 4 12.5v-7Z')
-  path.setAttribute('fill', 'currentColor')
-  icon.appendChild(path)
-
-  const label = document.createElement('span')
-  label.textContent = '问这段'
-
-  pill.append(icon, label)
-
-  // 点气泡后展开的提问框：可以自己写问题，也可以留空直接用默认问题。
+  // 选中即出现的提问卡片：小鲸鱼 + 鱼肚输入框 + 发送
   const card = document.createElement('form')
   card.className = 'card'
   card.dataset.state = 'hidden'
@@ -161,17 +119,17 @@
   hint.textContent = '回车发送 · 留空用默认问题 · Esc 取消'
   card.append(row, hint)
 
-  shadow.append(style, pill, card)
+  shadow.append(style, card)
 
-  /** 当前气泡对应的选区文本。 */
+  /** 当前卡片对应的选区文本。 */
   let pendingText = ''
-  /** 选区周围的文字（气泡弹出那一刻的快照；等后台去读时就没了）。 */
+  /** 选区周围的文字（卡片弹出那一刻的快照；等后台去读时就没了）。 */
   let pendingLocal = null
-  /** 气泡/提问框对齐的选区矩形。 */
+  /** 卡片对齐的选区矩形。 */
   let anchorRect = null
-  /** idle：只有气泡；asking：提问框展开；sending：已提交，等结果。 */
+  /** idle：没有卡片；open：卡片可输入；sending：已提交，等结果。 */
   let mode = 'idle'
-  /** 隐藏时的收尾（清定时器）。 */
+  /** 收起时的定时器（成功提示留一会儿再收）。 */
   let hideTimer = null
 
   function isEditable(node) {
@@ -202,6 +160,7 @@
     return { ok: true, text, rect }
   }
 
+  /** 把卡片摆到选区旁边（优先上方，放不下就下方，再夹进视口）。 */
   function placeAt(element, rect) {
     element.dataset.state = 'shown'
     element.style.left = '0px'
@@ -228,8 +187,13 @@
     }
   }
 
+  function setHint(text, tone) {
+    hint.textContent = text
+    hint.dataset.tone = tone || ''
+  }
+
+  /** 选中就弹卡片：不再有「问这段」这一层。 */
   function show() {
-    // 正在提问 / 发送中时不要把气泡弹回来盖住输入框
     if (mode !== 'idle') return
     const found = readSelection()
     if (!found.ok) {
@@ -243,12 +207,13 @@
     pendingText = found.text
     anchorRect = found.rect
     pendingLocal = snapshotLocal()
-    pill.dataset.tone = ''
-    pill.dataset.busy = 'false'
-    label.textContent = '问这段'
-    // 清掉上一次失败留下的 title，否则成功后悬停仍会显示旧错误
-    pill.title = ''
-    placeAt(pill, found.rect)
+    mode = 'open'
+    input.value = ''
+    input.disabled = false
+    go.disabled = false
+    setHint('回车发送 · 留空用默认问题 · Esc 取消', '')
+    placeAt(card, found.rect)
+    input.focus()
   }
 
   function hide() {
@@ -260,29 +225,7 @@
     input.value = ''
     input.disabled = false
     go.disabled = false
-    pill.dataset.state = 'hidden'
-    pill.dataset.busy = 'false'
-  }
-
-  /** 展开提问框：保留 pendingText / pendingLocal，只换 UI。 */
-  function openAsk() {
-    if (!pendingText || !anchorRect) return
-    mode = 'asking'
-    pill.dataset.state = 'hidden'
-    input.value = ''
-    input.disabled = false
-    go.disabled = false
-    placeAt(card, anchorRect)
-    input.focus()
-  }
-
-  /** 收起提问框、回到气泡（不清选区，用户还能再点）。 */
-  function closeAsk() {
-    if (mode !== 'asking') return
-    card.dataset.state = 'hidden'
-    input.value = ''
-    mode = 'idle'
-    if (pendingText && anchorRect) placeAt(pill, anchorRect)
+    setHint('回车发送 · 留空用默认问题 · Esc 取消', '')
   }
 
   function hideSoon(delayMs) {
@@ -298,7 +241,7 @@
   document.addEventListener(
     'selectionchange',
     () => {
-      if (pill.dataset.busy === 'true') return
+      if (mode !== 'idle') return
       if (selectionTimer) clearTimeout(selectionTimer)
       selectionTimer = setTimeout(show, 120)
     },
@@ -319,7 +262,7 @@
   document.addEventListener(
     'keyup',
     (event) => {
-      // 在自己弹出的输入框里打字，不要触发页面的选词逻辑
+      // 在我们自己的输入框里打字，不要触发页面的选词逻辑
       if (event.composedPath && event.composedPath().includes(host)) return
       if (event.key === 'Escape') {
         hide()
@@ -341,12 +284,7 @@
   window.addEventListener('scroll', () => hide(), { capture: true, passive: true })
   window.addEventListener('resize', () => hide(), { passive: true })
 
-  // 按下时保住选区：否则 mousedown 一到，页面就把 selection 清了
-  pill.addEventListener('mousedown', (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-  })
-  // 输入框里要能正常聚焦，只挡住页面自己的 mousedown 反应
+  // 卡片里的按下不要冒泡给页面（否则页面自己的选择/拖拽逻辑会来抢）
   card.addEventListener('mousedown', (event) => {
     event.stopPropagation()
   })
@@ -355,7 +293,6 @@
    * 把后台返回的 stage 翻成人话。
    *
    * 只显示「失败」等于没说 —— 用户既不知道断在哪，我也没法远程判断。
-   * 短标签放在气泡上，完整原因放进 title（悬停可读）。
    */
   function describeFailure(result) {
     const stage = result && result.stage ? String(result.stage) : ''
@@ -376,7 +313,7 @@
   }
 
   /**
-   * 真正发出去。question 为空 → 后端按「有没有选区」套默认问题，与以前一致；
+   * 真正发出去。question 为空 → 后端按「有没有选区」套默认问题；
    * 有内容 → 用户自己写的问题会被放进 prompt 的「我的问题」一节。
    */
   async function send(question) {
@@ -386,14 +323,9 @@
       return
     }
     mode = 'sending'
-    card.dataset.state = 'hidden'
-    pill.dataset.state = 'shown'
-    pill.dataset.busy = 'true'
-    pill.dataset.tone = ''
-    pill.title = ''
-    label.textContent = '发送中…'
     input.disabled = true
     go.disabled = true
+    setHint('发送中…', '')
     try {
       const result = await chrome.runtime.sendMessage({
         type: 'BA_ASK_SELECTION',
@@ -402,43 +334,32 @@
         local: pendingLocal,
       })
       if (result && result.ok) {
-        pill.dataset.tone = 'ok'
-        label.textContent = '已发送'
-      } else {
-        const failure = describeFailure(result)
-        pill.dataset.tone = 'error'
-        label.textContent = failure.label
-        pill.title = failure.detail
-        console.warn('[BubbleAsk] 发送失败', result)
+        mode = 'open'
+        setHint('已发送到网页版', 'ok')
+        input.disabled = false
+        go.disabled = false
+        hideSoon(1200)
+        return
       }
+      const failure = describeFailure(result)
+      setHint(failure.label + '：' + failure.detail, 'error')
+      console.warn('[BubbleAsk] 发送失败', result)
     } catch (error) {
       const detail = String(error && error.message ? error.message : error)
-      pill.dataset.tone = 'error'
-      label.textContent = '失败'
-      pill.title = detail
+      setHint('失败：' + detail, 'error')
       console.warn('[BubbleAsk] 发送异常', error)
-    } finally {
-      pill.dataset.busy = 'false'
-      input.disabled = false
-      go.disabled = false
-      mode = 'idle'
-      // 出错时多留一会儿，让人能看清 / 悬停读原因
-      hideSoon(pill.dataset.tone === 'error' ? 6000 : 1200)
     }
+    // 失败：卡片留着，问题也留着，改一改可以重发
+    mode = 'open'
+    input.disabled = false
+    go.disabled = false
+    input.focus()
   }
-
-  // 点气泡 → 展开提问框，而不是直接发出去
-  pill.addEventListener('click', (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (mode !== 'idle' || pill.dataset.busy === 'true') return
-    openAsk()
-  })
 
   card.addEventListener('submit', (event) => {
     event.preventDefault()
     event.stopPropagation()
-    if (mode !== 'asking') return
+    if (mode !== 'open') return
     send(input.value.trim())
   })
 
@@ -446,7 +367,7 @@
     if (event.key !== 'Escape') return
     event.preventDefault()
     event.stopPropagation()
-    closeAsk()
+    hide()
   })
 
   /**

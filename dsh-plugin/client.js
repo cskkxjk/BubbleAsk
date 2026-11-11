@@ -36,7 +36,7 @@ window.__ModuleLoader__.load({
       { id: 'gemini', name: 'Gemini' },
       { id: 'grok', name: 'Grok' },
     ]
-    /** 上次在气泡里选的服务方，跨页面刷新记住。 */
+    /** 上次在设置里选的服务方，跨页面刷新记住。 */
     const PROVIDER_STORAGE_KEY = 'bubble-ask.provider'
     function readStoredProvider() {
       try {
@@ -94,12 +94,6 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       '.dba-layer{position:fixed;inset:0;pointer-events:none;z-index:2147483000}',
-      '.dba-pill{position:fixed;pointer-events:auto;display:inline-flex;align-items:center;gap:5px;',
-      'height:28px;padding:0 11px;border-radius:14px;border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));',
-      'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#111);',
-      'font:var(--dsw-font-xxs-12,12px/1.4 system-ui);box-shadow:0 4px 14px rgba(0,0,0,.14);cursor:pointer;',
-      'transform:translate(-50%,0);white-space:nowrap}',
-      '.dba-pill:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}',
       '.dba-card{position:fixed;pointer-events:auto;width:360px;max-width:calc(100vw - 24px);',
       'border-radius:12px;border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));',
       'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#111);',
@@ -116,12 +110,19 @@ window.__ModuleLoader__.load({
       '.dba-ask{display:flex;align-items:center;gap:7px}',
       '.dba-whale{flex:none;width:26px;height:auto;opacity:.9;pointer-events:none;',
       '-webkit-user-drag:none;user-select:none}',
+      '.dba-head .dba-whale{width:18px}',
+      '.dba-send{flex:none;height:30px;padding:0 14px;border:0;border-radius:8px;cursor:pointer;',
+      'background:var(--dsw-alias-label-accent,#247bbf);color:#fff;font:inherit;font-weight:600}',
+      '.dba-send:disabled{opacity:.55;cursor:default}',
+      '.dba-settings{display:flex;flex-direction:column;gap:10px;padding:14px 16px;max-width:560px}',
+      '.dba-set-title{font-weight:600;color:var(--dsw-alias-label-primary,#111)}',
+      '.dba-set-row{display:flex;align-items:center;gap:8px}',
+      '.dba-set-label{color:var(--dsw-alias-label-tertiary,#888);white-space:nowrap}',
+      '.dba-set-hint{color:var(--dsw-alias-label-tertiary,#888);line-height:1.6}',
       '.dba-input{box-sizing:border-box;flex:auto;min-width:0;height:30px;border-radius:8px;padding:0 9px;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:var(--dsw-alias-bg-layer-1,#fff);',
       'color:var(--dsw-alias-label-primary,#111);font:inherit;outline:none}',
       '.dba-input:focus{border-color:var(--dsw-alias-label-accent,#247bbf)}',
-      '.dba-pick{display:flex;align-items:center;gap:6px}',
-      '.dba-pick-label{color:var(--dsw-alias-label-tertiary,#888);white-space:nowrap}',
       '.dba-select{flex:auto;min-width:0;height:28px;border-radius:8px;padding:0 6px;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:var(--dsw-alias-bg-layer-1,#fff);',
       'color:var(--dsw-alias-label-primary,#111);font:inherit;outline:none}',
@@ -131,8 +132,6 @@ window.__ModuleLoader__.load({
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
       'color:var(--dsw-alias-label-primary,#111)}',
       '.dba-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}',
-      '.dba-btn.dba-primary{border-color:transparent;background:var(--dsw-alias-label-accent,#247bbf);color:#fff}',
-      '.dba-btn.dba-primary:hover{filter:brightness(1.06)}',
       '.dba-btn:disabled{opacity:.55;cursor:default}',
       '.dba-status{padding:0 10px 9px;color:var(--dsw-alias-label-tertiary,#888);min-height:14px;word-break:break-word}',
       // ---- 内嵌网页版面板 ----
@@ -250,7 +249,9 @@ window.__ModuleLoader__.load({
       const suppressRef = useRef(0)
       const bubbleRef = useRef(bubble)
       bubbleRef.current = bubble
-      const providerInfo = providers.find((item) => item.id === provider) || providers[0] || PROVIDERS[0]
+      // 服务方可能在「设置 › Bubble Ask」里被改过：渲染时以存储为准，标题不会停在旧值。
+      const activeProviderId = readStoredProvider() || provider
+      const providerInfo = providers.find((item) => item.id === activeProviderId) || providers[0] || PROVIDERS[0]
 
       useEffect(() => {
         /** 最近一次显示气泡的时间：拖选文字常伴随滚动，刚弹出时不要被滚动藏掉。 */
@@ -290,7 +291,9 @@ window.__ModuleLoader__.load({
           const x = Math.min(Math.max(rect.left + rect.width / 2, margin), window.innerWidth - margin)
           const y = Math.min(Math.max(rect.bottom + 8, 8), window.innerHeight - 60)
           shownAt = Date.now()
-          setBubble({ visible: true, expanded: false, text: text.slice(0, 4000), x, y })
+          // 选中即出「鲸鱼提问卡片」：没有中间那层「问这段」气泡，
+          // 所以这里直接把 expanded 置真，渲染分支只有卡片一种。
+          setBubble({ visible: true, expanded: true, text: text.slice(0, 4000), x, y })
           setStatus('')
           setFailedPrompt('')
           report('selection-shown', { chars: text.length, x: Math.round(x), y: Math.round(y) })
@@ -368,9 +371,10 @@ window.__ModuleLoader__.load({
        */
       async function runAsk(send) {
         const selection = bubbleRef.current.text
-        // 本次请求用哪家服务方：用点击时的选择，避免异步期间下拉被改。
-        const providerId = provider
-        const providerName = providerInfo.name
+        // 服务方在「设置 › Bubble Ask」里改：现读一次，改完下一句就生效。
+        const stored = readStoredProvider()
+        const providerId = stored || provider
+        const providerName = (providers.find((item) => item.id === providerId) || providerInfo).name
         setBusy(true)
         setStatus(send ? `正在整理轨迹并发送到 ${providerName}…` : `正在整理会话轨迹（发到 ${providerName}）…`)
         setFailedPrompt('')
@@ -457,27 +461,11 @@ window.__ModuleLoader__.load({
 
       const quote = bubble.text.length > 220 ? bubble.text.slice(0, 220) + '…' : bubble.text
 
-      if (!bubble.expanded) {
-        return h('div', { className: 'dba-layer', 'data-dba-root': '1' },
-          style,
-          h('button', {
-            key: 'pill',
-            className: 'dba-pill',
-            style: { left: bubble.x + 'px', top: bubble.y + 'px' },
-            title: `把这段文字和会话轨迹一起问 ${providerInfo.name} 网页版`,
-            onMouseDown: (event) => event.preventDefault(),
-            onClick: () => {
-              // 先立起抑制窗口，再展开：同一次点击的 mouseup 会把 expanded 覆盖回 false。
-              suppressRef.current = Date.now() + 600
-              report('pill-click', { selectionChars: bubble.text.length })
-              setBubble((prev) => ({ ...prev, expanded: true }))
-            },
-          }, h('span', { 'aria-hidden': true }, '💬'), h('span', null, '问这段')))
-      }
-
       const cardLeft = Math.min(Math.max(bubble.x - 180, 12), Math.max(window.innerWidth - 372, 12))
       const cardTop = Math.min(Math.max(bubble.y + 6, 12), Math.max(window.innerHeight - 200, 12))
 
+      // 卡片只有一种形态：选中就出现，写问题 → 发送。
+      // 换服务方之类的配置不在这里，去「设置 › Bubble Ask」。
       return h('div', { className: 'dba-layer', 'data-dba-root': '1' },
         style,
         h('div', {
@@ -488,26 +476,12 @@ window.__ModuleLoader__.load({
           onMouseDown: () => { suppressRef.current = Date.now() + 600 },
         },
           h('div', { className: 'dba-head' },
-            h('span', { className: 'dba-title' }, `Bubble Ask · 带上会话上下文问 ${providerInfo.name}`),
+            h('img', { className: 'dba-whale', src: WHALE_ICON, alt: '', draggable: false }),
+            h('span', { className: 'dba-title' }, `问 ${providerInfo.name}`),
             h('button', { className: 'dba-x', title: '关闭', onClick: closeBubble }, '✕')),
           h('div', { className: 'dba-body' },
             h('div', { className: 'dba-quote' }, quote),
-            h('div', { className: 'dba-pick' },
-              h('span', { className: 'dba-pick-label' }, '发到'),
-              h('select', {
-                className: 'dba-select',
-                value: provider,
-                disabled: busy,
-                title: '选择要发送到的网页版服务方（由桌面端窗口打开并发送）',
-                onChange: (event) => {
-                  const next = event.currentTarget.value
-                  setProvider(next)
-                  storeProvider(next)
-                  report('provider-change', { provider: next })
-                },
-              }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
             h('div', { className: 'dba-ask' },
-              h('img', { className: 'dba-whale', src: WHALE_ICON, alt: '', draggable: false }),
               h('input', {
                 className: 'dba-input',
                 placeholder: '想问什么？（留空＝解释它在当前上下文中是什么意思）',
@@ -519,28 +493,22 @@ window.__ModuleLoader__.load({
                     if (!busy) void runAsk(true)
                   }
                 },
-              }))),
-          h('div', { className: 'dba-foot' },
-            h('button', {
-              className: 'dba-btn dba-primary',
-              disabled: busy,
-              title: `原生窗口注入并自动发送到 ${providerInfo.name}（带完整上下文）`,
-              onClick: () => { void runAsk(true) },
-            }, busy ? '处理中…' : `发送到 ${providerInfo.name}`),
-            h('button', {
-              className: 'dba-btn',
-              disabled: busy,
-              title: `只整理上下文并复制完整提问，自己去 ${providerInfo.name} 窗口里粘贴`,
-              onClick: () => { void runAsk(false) },
-            }, '复制提问'),
-            failedPrompt
-              ? h('button', {
+              }),
+              h('button', {
+                className: 'dba-send',
+                disabled: busy,
+                title: `注入并自动发送到 ${providerInfo.name} 网页版`,
+                onClick: () => { void runAsk(true) },
+              }, busy ? '…' : '发送'))),
+          status ? h('div', { className: 'dba-status' }, status) : null,
+          failedPrompt
+            ? h('div', { className: 'dba-foot' },
+              h('button', {
                 className: 'dba-btn',
-                title: '再次复制上一次整理好的完整提问',
+                title: '复制上一次整理好的完整提问，自己去网页版窗口粘贴',
                 onClick: () => { void copyFailedPrompt() },
-              }, '复制全文')
-              : null),
-          h('div', { className: 'dba-status' }, status)))
+              }, '复制完整提问'))
+            : null))
     }
 
     //#region 内嵌网页版（自己开 guest，不依赖桌面端 exe）
@@ -1199,9 +1167,77 @@ window.__ModuleLoader__.load({
     }
     //#endregion
 
+    //#region 设置页（划词气泡不再背这些配置）
+    /**
+     * 「设置 › Bubble Ask」。
+     *
+     * 划词卡片现在只有「写问题 + 发送」，换服务方这种事每次提问都要看一遍、
+     * 还容易误触，所以整体挪到 DSH 自己的设置面板：侧边栏底部的设置 →
+     * Bubble Ask。改完立即生效（发送时现读存储）。
+     */
+    function BubbleSettings() {
+      const [provider, setProvider] = useState(() => readStoredProvider() || PROVIDERS[0].id)
+      const [providers, setProviders] = useState(PROVIDERS)
+      const [note, setNote] = useState('')
+
+      useEffect(() => {
+        let cancelled = false
+        void (async () => {
+          try {
+            const response = await fetch('/bubble-ask/health')
+            if (!response.ok) return
+            const payload = await response.json()
+            if (cancelled || !payload || payload.ok !== true) return
+            const app = payload.app || {}
+            const switchable = app.providerSwitchable === true
+            const ids = switchable && Array.isArray(app.providers) ? app.providers : []
+            const known = switchable
+              ? (ids.length > 0 ? PROVIDERS.filter((item) => ids.includes(item.id)) : PROVIDERS)
+              : PROVIDERS.filter((item) => item.id === 'deepseek')
+            if (known.length > 0) setProviders(known)
+            setNote(switchable ? '' : '当前桌面端不支持切换服务方，只能发到 DeepSeek。')
+          } catch {
+            setNote('读不到桌面端状态：非 DeepSeek 的服务方需要桌面端托盘应用在运行。')
+          }
+        })()
+        return () => { cancelled = true }
+      }, [])
+
+      return h('div', { className: 'dba-settings' },
+        h('style', { key: 'style' }, CSS),
+        h('div', { className: 'dba-set-title' }, '划词提问发到哪家网页版'),
+        h('div', { className: 'dba-set-row' },
+          h('span', { className: 'dba-set-label' }, '发到'),
+          h('select', {
+            className: 'dba-select',
+            value: provider,
+            onChange: (event) => {
+              const next = event.currentTarget.value
+              setProvider(next)
+              storeProvider(next)
+              report('settings-provider', { provider: next })
+            },
+          }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
+        h('div', { className: 'dba-set-hint' },
+          'DeepSeek 走插件自己的内嵌窗口，不依赖桌面端；其余服务方由桌面端托盘应用注入它的浏览器窗口。'),
+        note ? h('div', { className: 'dba-set-hint' }, note) : null,
+        h('div', { className: 'dba-set-hint' },
+          '划词后直接出现提问卡片：写问题回车发送，留空回车用默认问题，Esc 取消。'),
+        h('div', { className: 'dba-set-hint' },
+          '提示词模板、API Key、热键等还在桌面端托盘图标 →「设置」里；网页端的登录态在卡片发送后自动复用。'))
+    }
+    //#endregion
+
     return {
       inject: ['slots'],
       apply(context) {
+        // 设置页：服务方等配置从划词卡片里搬到这里
+        context.slots.inject('settings.section', () => context.slots.register({
+          name: 'settings.section',
+          id: 'bubble-ask',
+          order: 25,
+          label: 'Bubble Ask',
+        }, BubbleSettings))
         context.slots.inject('conversation.input.dock', () => context.slots.register({
           name: 'conversation.input.dock',
           id: 'bubble-ask-session',

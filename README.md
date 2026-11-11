@@ -19,7 +19,7 @@ Windows 平台的划词问答工具。在任意程序中选中文本（或框选
 | --- | --- | --- | --- |
 | 产物 | `dist\BubbleAsk.exe`（一个可执行文件，托盘界面 + 可选的后台服务身份），C# 5 / WinForms / .NET Framework | [`dsh-plugin/`](dsh-plugin/README.md)（Node 包，分 Host 与 Client 两部分） | [`chrome-extension/`](chrome-extension/README.md)（MV3 扩展） |
 | 运行环境 | Windows 桌面，任意程序 | DeepSeek Harness 会话 | Chrome / Edge 浏览器 |
-| 触发方式 | 全局热键与托盘常驻 | 选中文本后弹出的「💬 问这段」气泡 | 任意网页划词弹出的「问这段」气泡；或工具栏图标、`Ctrl+Shift+Y` |
+| 触发方式 | 全局热键 `Ctrl+Alt+Q`（取词）→ 鲸鱼提问卡片 | 会话里选中文本 → 鲸鱼提问卡片 | 任意网页划词 → 鲸鱼提问卡片；或工具栏图标、`Ctrl+Shift+Y` |
 | 上下文 | 选中的文字 / 截图 | 精简会话轨迹 | 当前网页的结构与文字 |
 | 依赖条件 | Chromium 内核浏览器（网页版）或 API Key | 已安装 DSH，且已安装并启动桌面端（切到非 DeepSeek 需桌面端 2.1.0+） | 无（复用浏览器自身的网页版登录） |
 
