@@ -3,7 +3,7 @@
   "name": "Bubble Ask — 网页问答",
   "version": "2.3.0",
   "description": "划词即问：选中文字后点气泡，把当前页面的结构与文字作为上下文，在右侧独立窗口里用 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok 网页版提问，复用浏览器已登录的账号。",
-  "minimum_chrome_version": "114",
+  "minimum_chrome_version": "88",
   "permissions": ["scripting", "activeTab", "tabs", "storage", "windows"],
   "host_permissions": [
     "https://chat.deepseek.com/*",
@@ -22,8 +22,7 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.bundle.js"
   },
   "action": {
     "default_popup": "popup/popup.html",
@@ -92,7 +91,7 @@
         "https://*.x.com/*",
         "*://*/bubble-ask/*"
       ],
-      "js": ["content/collect.js", "content/bubble.js"],
+      "js": ["content/compat.js", "content/collect.js", "content/bubble.js"],
       "run_at": "document_idle",
       "all_frames": false
     }

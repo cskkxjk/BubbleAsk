@@ -327,7 +327,10 @@
     go.disabled = true
     setHint('发送中…', '')
     try {
-      const result = await chrome.runtime.sendMessage({
+      // 走兼容层：Chromium 99 以前 runtime.sendMessage 不返回 Promise（老机器常见）
+      const send = globalThis.__baSendMessage
+        || ((message) => chrome.runtime.sendMessage(message))
+      const result = await send({
         type: 'BA_ASK_SELECTION',
         selection: text,
         question: String(question || ''),

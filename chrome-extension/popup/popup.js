@@ -5,6 +5,9 @@
  * lib/providers.js；当前选择存在 chrome.storage.local（PROVIDER_STORAGE_KEY），
  * 后台发送时读同一份存储，因此划词气泡与快捷键也跟随这里的默认服务方。
  */
+/** 兼容层：老的 Chromium 里 runtime.sendMessage 没有 Promise（见 content/compat.js）。 */
+const sendMessage = globalThis.__baSendMessage || ((message) => chrome.runtime.sendMessage(message))
+
 import {
   PROVIDERS,
   DEFAULT_PROVIDER_ID,
@@ -102,7 +105,7 @@ async function init() {
   activeTabId = tab.id
   els.title.textContent = tab.title || tab.url || ''
   try {
-    const preview = await chrome.runtime.sendMessage({ type: 'BA_PREVIEW', tabId: tab.id, provider: providerId })
+    const preview = await sendMessage({ type: 'BA_PREVIEW', tabId: tab.id, provider: providerId })
     if (!preview || !preview.ok) {
       setStatus((preview && preview.detail) || '读取页面失败', true)
       return
@@ -143,7 +146,7 @@ els.send.addEventListener('click', async () => {
   setBusy(true)
   setStatus(`正在发送到 ${provider.name} 窗口…`)
   try {
-    const result = await chrome.runtime.sendMessage({
+    const result = await sendMessage({
       type: 'BA_ASK',
       tabId: activeTabId,
       question: els.question.value,
@@ -181,7 +184,7 @@ els.openWindow?.addEventListener('click', async () => {
   setBusy(true)
   setStatus(`正在打开 ${provider.name} 窗口…`)
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'BA_OPEN_WINDOW', provider: provider.id })
+    const result = await sendMessage({ type: 'BA_OPEN_WINDOW', provider: provider.id })
     if (result && result.ok) {
       setStatus(`已打开 ${result.providerName || provider.name} 窗口`)
     } else {

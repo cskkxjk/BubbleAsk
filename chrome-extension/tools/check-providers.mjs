@@ -216,6 +216,9 @@ record('气泡排除列表', `${excludes.length} 条（覆盖全部 provider 域
 const requiredFiles = [
   'manifest.json',
   'background.js',
+  'background.bundle.js',
+  'content/compat.js',
+  'icons/whale.png',
   'lib/prompt.js',
   'lib/providers.js',
   'content/collect.js',
@@ -235,6 +238,23 @@ for (const file of requiredFiles) {
 }
 assert.ok(!existsSync(path.join(extRoot, 'content', 'deepseek-bridge.js')), '旧的 deepseek-bridge.js 应已改名')
 record('加载文件齐全', `${requiredFiles.length} 个文件存在`)
+
+// 5) background 打包产物必须与源一致（classic service worker，兼容老内核）
+assert.equal(
+  manifest.background && manifest.background.service_worker,
+  'background.bundle.js',
+  'manifest 应指向打包后的 background.bundle.js',
+)
+assert.ok(!(manifest.background && manifest.background.type === 'module'), 'background 不应再声明 type: module')
+const { buildBundle } = await import('../../tools/gen-background.mjs')
+const expectedBundle = buildBundle()
+const actualBundle = readFileSync(path.join(extRoot, 'background.bundle.js'), 'utf8')
+assert.equal(
+  actualBundle.replace(/\r\n/g, '\n'),
+  expectedBundle,
+  'background.bundle.js 与源不一致，请跑 node tools/gen-background.mjs',
+)
+record('background 打包产物', '与源一致（classic service worker）')
 
 console.log('PASS chrome-extension 静态校验')
 for (const line of results) console.log(`  ✓ ${line}`)

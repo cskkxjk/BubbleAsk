@@ -68,6 +68,15 @@ Set-Cookie: ds_session_id=…; HttpOnly; Secure; SameSite=Strict
 
 「选中处上下文」是独立的一层，因为它解决的是整页文本解决不了的问题：feed 类页面（知乎首页、微博、贴吧）里选中处几乎总落在被头尾截断丢掉的中段，虚拟列表里没渲染的卡片更是压根不在 `body.innerText` 里。这一层在**气泡弹出的那一刻**就抓下来（那时选区还在），随消息一起带给后台——等后台再去读 DOM，选区早就没了，祖先链和局部上下文都会是空的。
 
+## 兼容性（老内核 / Windows 7）
+
+目标下限是 **Chromium 88**——Windows 7 上能装的最后一版 Chrome 就是 109，实际很多老机器停在 88 上下。
+
+- `manifest.json` 的 `minimum_chrome_version` 就是 `88`，MV3 本身从 88 起支持。
+- **service worker 打成 classic 单文件**（`background.bundle.js`，由 `node tools/gen-background.mjs` 从 `lib/providers.data.js` + `lib/providers.js` + `lib/prompt.js` + `background.js` 生成）。这样不依赖「模块 service worker」这项较新的能力；改了后台代码记得重跑生成脚本，`tools/check-providers.mjs` 会校验产物是否与源一致。
+- **消息往返走回调**（`content/compat.js` 的 `__baSendMessage`）：`runtime.sendMessage` 的 Promise 形式要到 Chromium 99 才有，老内核上 `await` 会拿到 `undefined`。内容脚本和 popup 都用这一份实现。
+- 其余用到的 API（`chrome.action` / `chrome.storage` / `chrome.windows` / `chrome.tabs.query` / `chrome.scripting` / MV3 的 `web_accessible_resources`）在 88 都已存在；代码里也没有 `??`、`.at()`、`replaceAll`、`structuredClone` 这类更新的语法/API。
+
 AI 服务方站点本身不注入采集气泡（`manifest.json` 的 `exclude_matches` 排除了全部服务方域名），避免在对话页里选中文字又弹一次气泡。
 
 ## 多服务方与登录
