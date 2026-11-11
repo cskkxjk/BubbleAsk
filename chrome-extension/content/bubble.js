@@ -70,7 +70,7 @@
       display: none;
       flex-direction: column;
       gap: 6px;
-      width: min(340px, 86vw);
+      width: min(360px, 90vw);
       padding: 9px 10px;
       border-radius: 12px;
       background: #fff;
@@ -79,20 +79,22 @@
       font: 500 13px/1.3 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
     }
     .card[data-state="shown"] { display: flex; }
-    .ask-row { display: flex; align-items: center; gap: 6px; }
+    .ask-row { display: flex; align-items: center; gap: 7px; }
+    .ask-whale { flex: none; width: 26px; height: auto; opacity: 0.9; pointer-events: none; user-select: none; }
     .ask-input {
       flex: 1 1 auto;
       min-width: 0;
       height: 30px;
-      padding: 0 9px;
-      border-radius: 8px;
-      border: 1px solid #d7dbe8;
-      background: #fff;
+      padding: 0 10px;
+      border-radius: 9px;
+      border: 1px solid #d6defc;
+      background: #eff3ff;
       color: #1b2130;
       font: 500 13px/1.2 "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
       outline: none;
     }
-    .ask-input:focus { border-color: #4d6bfe; box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.16); }
+    .ask-input::placeholder { color: #8a90a2; }
+    .ask-input:focus { border-color: #4d6bfe; background: #fff; box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.16); }
     .ask-go {
       flex: none;
       height: 30px;
@@ -133,6 +135,16 @@
   card.dataset.state = 'hidden'
   const row = document.createElement('div')
   row.className = 'ask-row'
+  // 小鲸鱼：和桌面端、DSH 插件那张卡片同一个形象
+  const whale = document.createElement('img')
+  whale.className = 'ask-whale'
+  whale.alt = ''
+  whale.draggable = false
+  try {
+    whale.src = chrome.runtime.getURL('icons/whale.png')
+  } catch (error) {
+    whale.style.display = 'none'
+  }
   const input = document.createElement('input')
   input.type = 'text'
   input.className = 'ask-input'
@@ -143,7 +155,7 @@
   go.type = 'submit'
   go.className = 'ask-go'
   go.textContent = '发送'
-  row.append(input, go)
+  row.append(whale, input, go)
   const hint = document.createElement('div')
   hint.className = 'ask-hint'
   hint.textContent = '回车发送 · 留空用默认问题 · Esc 取消'

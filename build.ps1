@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$Test,
     [switch]$Clean
 )
@@ -26,6 +26,11 @@ if (-not (Test-Path $iconPng)) {
 $iconIco = Join-Path $root 'assets\bubble-ask.ico'
 if (-not (Test-Path $iconIco)) {
     throw "Missing exe icon: $iconIco（运行 tools/make-ico.py 生成）"
+}
+# 透明底鲸鱼原图：自绘界面（抓词提问框）当吉祥物用
+$whalePng = Join-Path $root 'chrome-extension\tools\art\whale.png'
+if (-not (Test-Path $whalePng)) {
+    throw "Missing mascot source: $whalePng"
 }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -126,6 +131,7 @@ function Build-Target {
     $lines.Add("/resource:`"$providerData`",BubbleAsk.providers.json")
     $lines.Add("/resource:`"$driverScript`",BubbleAsk.driver.js")
     $lines.Add("/resource:`"$iconPng`",BubbleAsk.icon.png")
+    $lines.Add("/resource:`"$whalePng`",BubbleAsk.whale.png")
     # exe 自身的图标（资源管理器 / 任务栏 / 快捷方式）
     $lines.Add("/win32icon:`"$iconIco`"")
     foreach ($source in $Sources) {

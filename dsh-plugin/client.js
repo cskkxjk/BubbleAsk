@@ -113,7 +113,10 @@ window.__ModuleLoader__.load({
       '.dba-quote{max-height:96px;overflow:auto;white-space:pre-wrap;word-break:break-word;',
       'color:var(--dsw-alias-label-secondary,#555);background:var(--dsw-alias-bg-layer-1,rgba(0,0,0,.03));',
       'border-radius:8px;padding:7px 8px}',
-      '.dba-input{box-sizing:border-box;width:100%;height:30px;border-radius:8px;padding:0 9px;',
+      '.dba-ask{display:flex;align-items:center;gap:7px}',
+      '.dba-whale{flex:none;width:26px;height:auto;opacity:.9;pointer-events:none;',
+      '-webkit-user-drag:none;user-select:none}',
+      '.dba-input{box-sizing:border-box;flex:auto;min-width:0;height:30px;border-radius:8px;padding:0 9px;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:var(--dsw-alias-bg-layer-1,#fff);',
       'color:var(--dsw-alias-label-primary,#111);font:inherit;outline:none}',
       '.dba-input:focus{border-color:var(--dsw-alias-label-accent,#247bbf)}',
@@ -503,18 +506,20 @@ window.__ModuleLoader__.load({
                   report('provider-change', { provider: next })
                 },
               }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
-            h('input', {
-              className: 'dba-input',
-              placeholder: '想问什么？（留空＝解释它在当前上下文中是什么意思）',
-              value: question,
-              onChange: (event) => setQuestion(event.currentTarget.value),
-              onKeyDown: (event) => {
-                if (event.key === 'Enter' && !event.nativeEvent?.isComposing) {
-                  event.preventDefault()
-                  if (!busy) void runAsk(true)
-                }
-              },
-            })),
+            h('div', { className: 'dba-ask' },
+              h('img', { className: 'dba-whale', src: WHALE_ICON, alt: '', draggable: false }),
+              h('input', {
+                className: 'dba-input',
+                placeholder: '想问什么？（留空＝解释它在当前上下文中是什么意思）',
+                value: question,
+                onChange: (event) => setQuestion(event.currentTarget.value),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent?.isComposing) {
+                    event.preventDefault()
+                    if (!busy) void runAsk(true)
+                  }
+                },
+              }))),
           h('div', { className: 'dba-foot' },
             h('button', {
               className: 'dba-btn dba-primary',

@@ -20,10 +20,15 @@ namespace BubbleAsk
         /// <summary>内嵌资源名：build.ps1 里用 /resource:...,BubbleAsk.icon.png 指定。</summary>
         private const string ResourceName = "BubbleAsk.icon.png";
 
+        /// <summary>透明底鲸鱼原图：/resource:...whale.png,BubbleAsk.whale.png。</summary>
+        private const string MascotResourceName = "BubbleAsk.whale.png";
+
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern bool DestroyIcon(IntPtr handle);
 
         private static Bitmap _source;
+
+        private static Bitmap _mascot;
 
         private static Bitmap Source()
         {
@@ -79,6 +84,33 @@ namespace BubbleAsk
                     DestroyIcon(handle);
                 }
             }
+        }
+
+        /// <summary>
+        /// 透明底的小鲸鱼（`chrome-extension/tools/art/whale.png` 原图，768px），
+        /// 给自绘界面当吉祥物用：调用方自己按需缩放与调透明度。
+        /// </summary>
+        public static Bitmap Mascot()
+        {
+            if (_mascot == null)
+            {
+                Assembly assembly = Assembly.GetExecutingAssembly();
+                using (Stream stream = assembly.GetManifestResourceStream(MascotResourceName))
+                {
+                    if (stream == null)
+                    {
+                        throw new InvalidOperationException(
+                            "缺少内嵌资源 " + MascotResourceName + "（build.ps1 的 /resource 参数漏了鲸鱼？）");
+                    }
+                    using (MemoryStream buffer = new MemoryStream())
+                    {
+                        stream.CopyTo(buffer);
+                        buffer.Position = 0;
+                        _mascot = new Bitmap(buffer);
+                    }
+                }
+            }
+            return _mascot;
         }
     }
 }

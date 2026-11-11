@@ -986,7 +986,7 @@ namespace BubbleAsk
                     form.Location = new Point(-3000, -3000);
                     form.Show();
                     Application.DoEvents();
-                    Check("question form size", form.ClientSize.Width == 440 && form.ClientSize.Height == 156, form.ClientSize.ToString());
+                    Check("question form size", form.ClientSize.Width == 452 && form.ClientSize.Height == 208, form.ClientSize.ToString());
                     Check("question form has input", HasTextBoxControl(form), "没有 TextBox");
                     string path = Path.Combine(outDir, "question-form.png");
                     RenderForm(form, path);
