@@ -1,4 +1,4 @@
-# 打包脚本：把三个交付物分别打成独立的 zip。
+﻿# 打包脚本：把三个交付物分别打成独立的 zip。
 #
 #   powershell -ExecutionPolicy Bypass -File .\pack.ps1
 #   powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild    # 用已有的 dist
