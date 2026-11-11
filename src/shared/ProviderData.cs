@@ -19,7 +19,7 @@ namespace BubbleAsk
     ///
     /// overrides 语义：真源里每家可带 `overrides.<host>`，**只覆盖它列出的字段**。
     /// 桌面端读 host=desktop（目前没有桌面端专属覆盖）。真实存在的行为差异
-    /// （如 DeepSeek 在扩展端不用合成 Enter）就写在真源里，而不是散落在两套实现中。
+    /// （如 DeepSeek 在扩展端不用合成 Enter）就写在真源里，避免散落在两套实现中。
     /// </summary>
     internal static class ProviderData
     {
@@ -114,8 +114,8 @@ namespace BubbleAsk
         /// 把解析出来的 JSON 数组统一成 List&lt;object&gt;。
         ///
         /// 注意：.NET Framework 的 JavaScriptSerializer 对数组返回的是
-        /// **ArrayList** 而不是 object[]（实测踩过：直接 `as object[]` 会得到 null，
-        /// 于是注册表读成空列表）。这里两种都认，其它 IEnumerable 兜底。
+        /// **ArrayList**，不是 object[]（实测：直接 `as object[]` 会得到 null，
+        /// 于是注册表读成空列表）。这里两种都认，其它 IEnumerable 也接受。
         /// </summary>
         private static List<object> Items(object value)
         {

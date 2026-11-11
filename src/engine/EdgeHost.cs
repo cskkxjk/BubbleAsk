@@ -40,13 +40,6 @@ namespace BubbleAsk
             get { return ResolveBrowser(); }
         }
 
-        /// <summary>兼容旧调用：返回自动检测/配置解析出的浏览器 exe 路径。</summary>
-        public static string FindEdgePath(string configured)
-        {
-            BrowserInfo info = BrowserLocator.Resolve(configured);
-            return info == null ? null : info.ExePath;
-        }
-
         private BrowserInfo ResolveBrowser()
         {
             if (_browser != null && File.Exists(_browser.ExePath))
@@ -70,11 +63,6 @@ namespace BubbleAsk
         public bool IsRunning
         {
             get { return FindWindowHandle() != IntPtr.Zero; }
-        }
-
-        public IntPtr Handle
-        {
-            get { return FindWindowHandle(); }
         }
 
         /// <summary>
@@ -151,15 +139,6 @@ namespace BubbleAsk
             if (_config.TopMost)
             {
                 SetWindowPos(handle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
-            }
-        }
-
-        public void Hide()
-        {
-            IntPtr handle = FindWindowHandle();
-            if (handle != IntPtr.Zero)
-            {
-                ShowWindow(handle, 0);
             }
         }
 

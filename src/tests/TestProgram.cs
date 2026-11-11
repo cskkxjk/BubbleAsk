@@ -100,6 +100,7 @@ namespace BubbleAsk
                 TestPayload(outDir);
                 TestDeltaParsing();
                 TestStreaming();
+            TestStreamingMultiline();
                 TestStreamingError();
                 TestStreamErrorFrame();
                 TestTruncationNotice();
@@ -327,9 +328,6 @@ namespace BubbleAsk
             source.ShotPrompt = "看图说话";
             source.ApiProvider = "ollama";
             source.ApiSystemPrompt = "你是测试助手";
-            source.BubbleWidth = 500;
-            source.BubbleMaxHeight = 480;
-            source.ShowBubble = false;
             source.BrowserPath = @"C:\Browsers\chrome.exe";
             source.SaveTo(path);
 
@@ -342,8 +340,6 @@ namespace BubbleAsk
             Check("config shot prompt", loaded.ShotPrompt == "看图说话", loaded.ShotPrompt);
             Check("config provider", loaded.ApiProvider == "ollama", loaded.ApiProvider);
             Check("config system prompt", loaded.ApiSystemPrompt == "你是测试助手", loaded.ApiSystemPrompt);
-            Check("config bubble", loaded.BubbleWidth == 500 && loaded.BubbleMaxHeight == 480 && !loaded.ShowBubble,
-                loaded.BubbleWidth + "/" + loaded.BubbleMaxHeight);
             Check("config defaults kept", loaded.HotkeySummon == "Ctrl+Alt+D", loaded.HotkeySummon);
             Check("config browser path", loaded.BrowserPath == @"C:\Browsers\chrome.exe", loaded.BrowserPath);
             Check("config web provider", loaded.WebProvider == "gemini", loaded.WebProvider);
@@ -401,7 +397,7 @@ namespace BubbleAsk
             Check("web provider default", WebProviders.DefaultProvider.Id == "deepseek"
                 && WebProviders.DefaultId == "deepseek", WebProviders.DefaultProvider.Id);
 
-            // 注册表必须真的来自真源（shared/providers.json），而不是别处还留了一份。
+            // 注册表必须来自真源（shared/providers.json），别处不应再有第二份。
             // 断言「真源能读出来、id 顺序一致、桌面端用的是基础定义」。
             List<Dictionary<string, object>> source = ProviderData.Providers();
             Check("provider source loads", source.Count == 6, source.Count.ToString());
@@ -423,7 +419,7 @@ namespace BubbleAsk
             }
             Check("provider no auto enter anywhere", !anyAutoEnter, null);
 
-            // overrides 机制本身仍要可用（将来某个「只能回车提交」的站点作逃生口），
+            // overrides 机制本身仍要可用（为将来某个「只能回车提交」的站点保留），
             // 用内存里造的数据验证合并语义，不依赖真源当前是否有覆写。
             Dictionary<string, object> demoBase = new Dictionary<string, object>();
             demoBase["id"] = "demo";
@@ -699,6 +695,29 @@ namespace BubbleAsk
             }
         }
 
+        private static void TestStreamingMultiline()
+        {
+            // SSE 规范允许一条事件里有多行 data，拼起来才是完整负载。
+            // 拆开逐行解析会得到两段非法 JSON，正文会被静默丢掉。
+            string sse =
+                "data: {\"choices\":[{\"delta\":\n" +
+                "data: {\"content\":\"多行拼接\"}}]}\n\n" +
+                "data: [DONE]\n\n";
+
+            using (StubServer server = new StubServer(200, "text/event-stream", sse))
+            {
+                ApiRequest request = new ApiRequest();
+                request.BaseUrl = "http://127.0.0.1:" + server.Port;
+                request.ApiKey = "sk-stub";
+                request.Model = "stub-model";
+                request.Messages.Add(new ApiMessage("user", "hi"));
+
+                string full = ApiClient.StreamAsync(request, null, null, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Check("stream multiline data", full == "多行拼接", full);
+            }
+        }
+
         private static void TestStreamingError()
         {
             using (StubServer server = new StubServer(401, "application/json", "{\"error\":\"bad key\"}"))
@@ -728,7 +747,7 @@ namespace BubbleAsk
             }
         }
 
-        /// <summary>流中途的服务端错误帧（上下文超长、内容过滤）必须让用户看到原因，而不是静默半截。</summary>
+        /// <summary>流中途的服务端错误帧（上下文超长、内容过滤）必须让用户看到原因，不能只留半截正文。</summary>
         private static void TestStreamErrorFrame()
         {
             string sse =
@@ -839,7 +858,6 @@ namespace BubbleAsk
                     config.ApiBaseUrl = "http://127.0.0.1:" + server.Port;
                     config.ApiKey = "sk-stub";
                     config.ApiModel = "stub-model";
-                    config.ShowBubble = true;
 
                     using (ApiChat chat = new ApiChat(config))
                     {
@@ -889,7 +907,6 @@ namespace BubbleAsk
                 config.ApiBaseUrl = "http://127.0.0.1:" + server.Port;
                 config.ApiKey = "sk-stub";
                 config.ApiModel = "stub-model";
-                config.ShowBubble = true;
 
                 using (ApiChat chat = new ApiChat(config))
                 {

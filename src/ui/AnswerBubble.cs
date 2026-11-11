@@ -11,7 +11,8 @@ using Microsoft.Web.WebView2.WinForms;
 namespace BubbleAsk
 {
     /// <summary>
-    /// 自绘的气泡窗口：贴在鼠标旁，流式显示回答，并可以继续追问。
+    /// API 模式的回答窗口：显示流式回答，并支持继续追问。
+    /// 界面优先用 WebView2 渲染 answer.html，没有 WebView2 运行时则改用原生控件。
     /// 所有追加方法都假定在界面线程上调用；跨线程请用 Post。
     /// </summary>
     public class AnswerBubble : Form
@@ -28,7 +29,6 @@ namespace BubbleAsk
 
         private readonly AppConfig _config;
         private readonly Panel _header;
-        private readonly PictureBox _mascot;
         private readonly Label _title;
         private readonly Label _thinking;
         private readonly RichTextBox _body;
@@ -69,6 +69,8 @@ namespace BubbleAsk
         private CoreWebView2 _core;
         private bool _webReady;
         private readonly List<string> _transcript = new List<string>();
+        /// <summary>被 webview 顶掉的原生控件：HTML 版起不来时要按原样恢复。</summary>
+        private readonly List<Control> _hiddenForWeb = new List<Control>();
 
         /// <summary>Windows 上有 WebView2 运行时就用 HTML 版；没有就退回原生自绘。</summary>
         private static bool WebUiAvailable()
@@ -160,7 +162,6 @@ namespace BubbleAsk
             {
                 mascot.Width = 10;
             }
-            _mascot = mascot;
 
             _title = new Label();
             _title.AutoSize = false;
@@ -209,7 +210,7 @@ namespace BubbleAsk
 
             _header.Controls.Add(_title);
             _header.Controls.Add(headerRight);
-            _header.Controls.Add(_mascot);
+            _header.Controls.Add(mascot);
 
             _thinking = new Label();
             _thinking.Dock = DockStyle.Top;
@@ -311,8 +312,8 @@ namespace BubbleAsk
             Controls.Add(bodyHost);
             Controls.Add(_footer);
             Controls.Add(_thinking);
-            // 标题栏和正文之间的 1px 分隔：用一条实体 Panel 而不是 OnPaint 画线，
-            // 因为标题栏和正文都是子控件，会盖住窗体自己画的那条线。
+            // 标题栏和正文之间的 1px 分隔用一条实体 Panel 画：标题栏与正文都是子控件，
+            // 会盖住窗体 OnPaint 画的那条线。
             Panel divider = new Panel();
             divider.Dock = DockStyle.Top;
             divider.Height = 1;
@@ -369,8 +370,8 @@ namespace BubbleAsk
 
         //#region HTML 版：WebView2 承载内嵌的 answer.html
         /// <summary>
-        /// 用 WebView2 盖住原生界面（原生那套仍然在，作为初始化失败时的兜底，
-        /// 也作为 BodyText / 自测渲染断言的来源）。
+        /// 用 WebView2 盖住原生界面。原生那套控件仍然保留，作为 HTML 版起不来时的回退界面，
+        /// 也作为 BodyText 与自测渲染断言的来源。
         /// </summary>
         private void AttachWebUi()
         {
@@ -379,36 +380,69 @@ namespace BubbleAsk
                 _webView = new WebView2();
                 _webView.Dock = DockStyle.Fill;
                 _webView.DefaultBackgroundColor = Color.White;
-                // 把原生那套藏起来（不是删掉）：WinForms 的 Dock 布局只给可见控件留位置，
-                // 藏着它们 webview 才能真正铺满整块；同时它们仍是初始化失败时的兜底。
+                // 隐藏原生控件（不删除）：Dock 布局只给可见控件留位置，藏起来 webview 才能铺满整块。
+                _hiddenForWeb.Clear();
                 foreach (Control child in Controls)
                 {
-                    child.Visible = false;
+                    if (child.Visible)
+                    {
+                        child.Visible = false;
+                        _hiddenForWeb.Add(child);
+                    }
                 }
                 Controls.Add(_webView);
                 _webView.BringToFront();
                 _webView.CoreWebView2InitializationCompleted += OnWebViewInitialized;
                 _webView.EnsureCoreWebView2Async(null);
             }
-            catch
+            catch (Exception error)
             {
-                // 初始化失败：拆掉 webview，回到原生界面
-                _web = false;
-                if (_webView != null)
+                WebUiError = "WebView2 初始化失败：" + error.Message;
+                FallbackToNative();
+            }
+        }
+
+        /// <summary>HTML 版起不来时回到原生界面：拆掉 webview，恢复原生控件的可见性。</summary>
+        private void FallbackToNative()
+        {
+            _web = false;
+            _webReady = false;
+            _transcript.Clear();
+            _core = null;
+            if (_webView != null)
+            {
+                try
                 {
                     Controls.Remove(_webView);
                     _webView.Dispose();
-                    _webView = null;
                 }
-                AdjustHeight();
+                catch
+                {
+                    /* 控件已销毁或仍在初始化：忽略 */
+                }
+                _webView = null;
             }
+            for (int i = 0; i < _hiddenForWeb.Count; i += 1)
+            {
+                _hiddenForWeb[i].Visible = true;
+            }
+            _hiddenForWeb.Clear();
+            AdjustHeight();
         }
 
         private void OnWebViewInitialized(object sender, CoreWebView2InitializationCompletedEventArgs e)
         {
-            if (!e.IsSuccess || _webView == null)
+            // 初始化是异步的：用户可能已经关掉气泡，这时不能再碰控件。
+            if (IsDisposed || _webView == null || _webView.IsDisposed)
             {
-                _web = false;
+                return;
+            }
+            if (!e.IsSuccess)
+            {
+                WebUiError = "WebView2 初始化失败："
+                    + (e.InitializationException == null ? "未知原因" : e.InitializationException.Message);
+                // 事件还没派发完就 Dispose 控件容易踩到已销毁对象，等这一拍结束再拆。
+                Post(FallbackToNative);
                 return;
             }
             _core = _webView.CoreWebView2;
@@ -422,8 +456,15 @@ namespace BubbleAsk
 
         private void OnWebNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
+            if (IsDisposed || _webView == null || _webView.IsDisposed)
+            {
+                return;
+            }
             if (!e.IsSuccess)
             {
+                // 页面没加载起来就是一块空白，不如直接回到原生界面。
+                WebUiError = "answer.html 没能加载：" + e.WebErrorStatus;
+                Post(FallbackToNative);
                 return;
             }
             _webReady = true;
@@ -517,12 +558,6 @@ namespace BubbleAsk
                 SendMessage(Handle, 0xA1, 0x2, 0);
                 return;
             }
-            if (kind == "height")
-            {
-                // 尺寸已固定成「窗口尺寸」，页面报上来的高度不再改变窗口大小
-                // （内容超出时由正文自己滚动）。留这个分支是为了协议完整、方便排查。
-                return;
-            }
         }
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -530,30 +565,6 @@ namespace BubbleAsk
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
-
-        /// <summary>
-        /// 诊断/自测用：把 WebView2 当前画面存成 PNG。没启用 HTML 版（或还没就绪）返回 false。
-        /// DrawToBitmap 抓不到 WebView2 的内容，只能走引擎自己的截图接口。
-        /// </summary>
-        public bool CaptureWebUi(string path)
-        {
-            if (!_web || _core == null || !_webReady || string.IsNullOrEmpty(path))
-            {
-                return false;
-            }
-            try
-            {
-                using (System.IO.FileStream stream = System.IO.File.Create(path))
-                {
-                    _core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream).Wait(8000);
-                }
-            }
-            catch
-            {
-                return false;
-            }
-            return System.IO.File.Exists(path) && new System.IO.FileInfo(path).Length > 0;
-        }
         //#endregion
 
         public bool IsStreaming
@@ -561,7 +572,7 @@ namespace BubbleAsk
             get { return _streaming; }
         }
 
-        /// <summary>气泡是不是当前前台窗口——用来做“再按一次收起”。</summary>
+        /// <summary>气泡是否为当前前台窗口，用于「再按一次收起」。</summary>
         public bool IsForegroundWindow
         {
             get { return !IsDisposed && Visible && GetForegroundWindow() == Handle; }
@@ -778,7 +789,7 @@ namespace BubbleAsk
             }
         }
 
-        /// <summary>无边框窗口也给一点系统投影，别像贴在桌面上的纸片。</summary>
+        /// <summary>无边框窗口加一点系统投影。</summary>
         protected override CreateParams CreateParams
         {
             get
@@ -892,10 +903,9 @@ namespace BubbleAsk
             _body.ScrollToCaret();
         }
 
-        /// <summary>内容变长时跟着长高，最多到配置的上限。</summary>
         /// <summary>
-        /// 尺寸固定为「窗口尺寸」（和网页版小窗一致），不再按内容伸缩 ——
-        /// 回答长了就在正文里自己滚动。这里只负责把被改过的尺寸拉回来。
+        /// 尺寸固定为「窗口尺寸」（和网页版小窗一致），不随内容伸缩；回答变长时由正文自己滚动。
+        /// 这里负责把被改过的尺寸拉回配置值。
         /// </summary>
         private void AdjustHeight()
         {

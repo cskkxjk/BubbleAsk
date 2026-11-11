@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace BubbleAsk
 {
-    /// <summary>一个 OpenAI 兼容的服务方预设。用户也可以选 custom 自己填地址和模型。</summary>
+    /// <summary>一个 OpenAI 兼容的服务方预设。用户也可以选 custom 自己填地址与模型名。</summary>
     public class ApiProvider
     {
         public string Id;
@@ -11,16 +11,14 @@ namespace BubbleAsk
         public string BaseUrl;
         public string Model;
         public bool NeedsKey;
-        public string Note;
 
-        public ApiProvider(string id, string name, string baseUrl, string model, bool needsKey, string note)
+        public ApiProvider(string id, string name, string baseUrl, string model, bool needsKey)
         {
             Id = id;
             Name = name;
             BaseUrl = baseUrl;
             Model = model;
             NeedsKey = needsKey;
-            Note = note;
         }
     }
 
@@ -34,20 +32,15 @@ namespace BubbleAsk
         static ApiProviders()
         {
             Items.Add(new ApiProvider("deepseek", "DeepSeek 官方",
-                "https://api.deepseek.com", "deepseek-chat", true,
-                "deepseek-chat 通用；deepseek-reasoner 会先给推理过程"));
+                "https://api.deepseek.com", "deepseek-chat", true));
             Items.Add(new ApiProvider("openai", "OpenAI",
-                "https://api.openai.com", "gpt-4o-mini", true,
-                "需要能直连 api.openai.com"));
+                "https://api.openai.com", "gpt-4o-mini", true));
             Items.Add(new ApiProvider("siliconflow", "硅基流动",
-                "https://api.siliconflow.cn", "deepseek-ai/DeepSeek-V3", true,
-                "国内中转，模型名以控制台为准"));
+                "https://api.siliconflow.cn", "deepseek-ai/DeepSeek-V3", true));
             Items.Add(new ApiProvider("ollama", "本地 Ollama",
-                "http://127.0.0.1:11434/v1", "llama3.1", false,
-                "本机跑模型，key 随便填或留空"));
+                "http://127.0.0.1:11434/v1", "llama3.1", false));
             Items.Add(new ApiProvider(CustomId, "自定义",
-                "", "", false,
-                "自己填接口地址与模型名"));
+                "", "", false));
         }
 
         public static List<ApiProvider> All

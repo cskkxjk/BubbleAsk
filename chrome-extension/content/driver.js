@@ -17,9 +17,8 @@
  *   扩展：  tools/gen-providers.mjs 把它复制成 chrome-extension/content/driver.js，
  *           作为 content script 先于 chat-bridge.js 加载，后者只做消息收发适配
  *
- * 为什么合并：以前这段逻辑写了两遍 —— C# 用字符串拼 JS（PageScripts.cs 399 行），
- * 扩展手写 JS（chat-bridge.js 390 行）。两边实现的其实是同一批操作，改一处忘了另一处
- * 就会「桌面端能发、扩展端不能」。现在只有一份。
+ * 合并原因：这段逻辑曾经写了两遍，C# 用字符串拼 JS，扩展手写 JS，两边做的是同一批操作；
+ * 改一处漏一处时，会出现「桌面端能发、扩展端不能」。现在只有这一份实现。
  *
  * 约定：
  *   - 不依赖任何扩展 API（content script 与 CDP 注入环境都能跑）
@@ -30,11 +29,10 @@
  * cfg 需要的字段：
  *   id name url origins composerSelectors sendSelectors sendClassHints sendSvgPaths
  *   sendAriaLabels enterSends loginMarkers verifyUrlRegex
- *   genericComposerSelectors genericSendAriaLabels   ← 通用兜底（同样来自真源）
+ *   genericComposerSelectors genericSendAriaLabels   ← 通用规则（同样来自真源）
  *
- * 已废弃：enterSends 目前全站为 false，本文件不再伪造 KeyboardEvent
- * （isTrusted=false 的按键站点可以不认），找不到按钮就如实返回 nobutton。
- * 字段保留在 cfg 里只为将来「只能回车提交」的站点留逃生口。
+ * enterSends：当前 6 家都是 false，本文件不伪造 KeyboardEvent（isTrusted=false 的按键
+ * 站点可以不认），找不到发送按钮就返回 nobutton。该字段为将来某个「只能回车提交」的站点保留。
  */
 ;(function () {
   'use strict'
@@ -139,7 +137,7 @@
 
   // ---------- 输入框 ----------
 
-  /** provider 专属选择器优先，再补通用兜底（两段都来自真源）。 */
+  /** provider 专属选择器优先，之后补通用规则（两段都来自真源）。 */
   function composerSelectors(cfg) {
     return unique(listOf(cfg.composerSelectors).concat(listOf(cfg.genericComposerSelectors)))
   }
@@ -293,13 +291,13 @@
   /**
    * 找发送按钮。顺序（与合并前 C# 实现的顺序一致）：
    *   1) provider 专属 CSS
-   *   2) provider class 特征（要求同时具备；全部落空时允许「部分具备」兜底）
+   *   2) provider class 特征（要求同时具备；全部落空时退一步接受「部分具备」）
    *   3) provider 显式文案
    *   4) 通用文案（真源 generic.sendAriaLabels）
    *   5) 输入框附近最后一个「只有图标没有文字」的按钮
    *   6) 带 svg 且语义 class 像发送
    *   7) className 语义
-   *   8) provider 的 svg path 前缀（历史兜底）
+   *   8) provider 的 svg path 前缀（历史规则）
    *
    * requireEnabled=true 时只接受可点击的按钮（扩展在等待按钮就绪时用）。
    */

@@ -25,7 +25,7 @@ namespace BubbleAsk
             {
                 if (!createdNew)
                 {
-                    MessageBox.Show("Bubble Ask 已经在运行，请查看右下角托盘。", "Bubble Ask",
+                    MessageBox.Show("Bubble Ask 已在运行，请在任务栏通知区域查看托盘图标。", "Bubble Ask",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }

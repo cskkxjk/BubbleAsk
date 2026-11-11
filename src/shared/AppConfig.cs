@@ -44,11 +44,7 @@ namespace BubbleAsk
         public int ApiMaxTokens = 2048;
         public string ApiSystemPrompt = "你是一个简洁、准确的中文助手。回答控制在 300 字以内，除非我要求展开。";
 
-        public int BubbleWidth = 460;
-        public int BubbleMaxHeight = 560;
-
         public bool StartWithWindows = false;
-        public bool ShowBubble = true;
 
         public static string DataDir
         {
@@ -137,8 +133,8 @@ namespace BubbleAsk
                 config.HotkeyShot = Json.GetString(data, "HotkeyShot", config.HotkeyShot);
                 config.WindowWidth = Json.GetInt(data, "WindowWidth", config.WindowWidth);
                 config.WindowHeight = Json.GetInt(data, "WindowHeight", config.WindowHeight);
-            config.WindowX = Json.GetInt(data, "WindowX", config.WindowX);
-            config.WindowY = Json.GetInt(data, "WindowY", config.WindowY);
+                config.WindowX = Json.GetInt(data, "WindowX", config.WindowX);
+                config.WindowY = Json.GetInt(data, "WindowY", config.WindowY);
                 config.CdpPort = Json.GetInt(data, "CdpPort", config.CdpPort);
                 // 老配置里这个字段叫 EdgePath，读一次做兼容；新写入一律用 BrowserPath。
                 config.BrowserPath = Json.GetString(data, "BrowserPath", config.BrowserPath);
@@ -156,10 +152,7 @@ namespace BubbleAsk
                 config.ApiModel = Json.GetString(data, "ApiModel", config.ApiModel);
                 config.ApiMaxTokens = Json.GetInt(data, "ApiMaxTokens", config.ApiMaxTokens);
                 config.ApiSystemPrompt = Json.GetString(data, "ApiSystemPrompt", config.ApiSystemPrompt);
-                config.BubbleWidth = Json.GetInt(data, "BubbleWidth", config.BubbleWidth);
-                config.BubbleMaxHeight = Json.GetInt(data, "BubbleMaxHeight", config.BubbleMaxHeight);
                 config.StartWithWindows = Json.GetBool(data, "StartWithWindows", config.StartWithWindows);
-                config.ShowBubble = Json.GetBool(data, "ShowBubble", config.ShowBubble);
             }
             catch (Exception error)
             {
@@ -189,8 +182,8 @@ namespace BubbleAsk
                 data["HotkeyShot"] = HotkeyShot;
                 data["WindowWidth"] = WindowWidth;
                 data["WindowHeight"] = WindowHeight;
-            data["WindowX"] = WindowX;
-            data["WindowY"] = WindowY;
+                data["WindowX"] = WindowX;
+                data["WindowY"] = WindowY;
                 data["CdpPort"] = CdpPort;
                 data["BrowserPath"] = BrowserPath;
                 data["ProfileDir"] = ProfileDir;
@@ -203,10 +196,7 @@ namespace BubbleAsk
                 data["ApiModel"] = ApiModel;
                 data["ApiMaxTokens"] = ApiMaxTokens;
                 data["ApiSystemPrompt"] = ApiSystemPrompt;
-                data["BubbleWidth"] = BubbleWidth;
-                data["BubbleMaxHeight"] = BubbleMaxHeight;
                 data["StartWithWindows"] = StartWithWindows;
-                data["ShowBubble"] = ShowBubble;
                 File.WriteAllText(path, Json.Stringify(data));
             }
             catch (Exception error)

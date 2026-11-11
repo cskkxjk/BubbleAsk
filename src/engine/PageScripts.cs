@@ -104,8 +104,8 @@ namespace BubbleAsk
         /// <summary>
         /// 点发送按钮。返回 'nobutton' / 'disabled:...' / 'failed:click' / 'clicked:...'。
         ///
-        /// 不在页面里伪造 KeyboardEvent（isTrusted=false，站点可以不认）；Enter 兜底已全站关闭，
-        /// 找不到按钮就如实返回 nobutton，由用户自己处理。
+        /// 不在页面里伪造 KeyboardEvent（isTrusted=false，站点可以不认）。找不到按钮时
+        /// ChatDriver 按服务方的 EnterSends 决定是否改用 CDP 派发可信 Enter。
         /// </summary>
         internal static string BuildSendScript(WebProvider provider)
         {

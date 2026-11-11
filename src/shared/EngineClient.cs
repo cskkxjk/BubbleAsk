@@ -351,11 +351,6 @@ namespace BubbleAsk
 
         //#region 对外的操作面（与 ChatDriver 同名，便于替换）
 
-        public Task<bool> AskAsync(string prompt)
-        {
-            return AskAsync(prompt, null, null);
-        }
-
         /// <summary>
         /// 发送提问。providerId 为空表示由服务端按默认服务方（DeepSeek）处理；
         /// providerUrl 只在 custom 服务方时需要（服务端配置可能滞后，客户端带上最新地址）。
@@ -372,11 +367,6 @@ namespace BubbleAsk
             return IsOk(response);
         }
 
-        public Task<bool> AskWithImageAsync(string imagePath, string prompt)
-        {
-            return AskWithImageAsync(imagePath, prompt, null, null);
-        }
-
         public async Task<bool> AskWithImageAsync(string imagePath, string prompt, string providerId, string providerUrl)
         {
             Dictionary<string, object> payload = new Dictionary<string, object>();
@@ -391,11 +381,6 @@ namespace BubbleAsk
         }
 
         /// <summary>唤起 / 收起；返回 true 表示这次是「收起」。</summary>
-        public Task<bool> ToggleAsync()
-        {
-            return ToggleAsync(null, null);
-        }
-
         public async Task<bool> ToggleAsync(string providerId, string providerUrl)
         {
             Dictionary<string, object> payload = new Dictionary<string, object>();

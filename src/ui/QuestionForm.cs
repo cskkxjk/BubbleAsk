@@ -7,17 +7,14 @@ using System.Windows.Forms;
 namespace BubbleAsk
 {
     /// <summary>
-    /// 抓词提问前的那一句「你想问什么」。
+    /// 抓词提问前显示的问题输入卡片。
     ///
-    /// 以前按热键就按模板（默认「什么是%s」）直接发出去，用户没有插话的余地；
-    /// 现在先弹这个小卡片：
-    ///   - 写了问题 → 问题 + 选中的文字一起发（PromptBuilder.BuildWithQuestion）；
-    ///   - 直接回车（留空）→ 走老模板，一键提问的人不吃亏；
-    ///   - Esc / 取消 → 什么都不发。
+    /// 三种结果：
+    ///   - 写了问题 → 问题与选中文字一起发出（PromptBuilder.BuildWithQuestion）；
+    ///   - 直接回车（留空）→ 使用配置里的模板；
+    ///   - Esc 或「取消」→ 不发送任何内容。
     ///
-    /// 视觉上和网页端那两张卡片同源：白底圆角、细边、一颗小鲸鱼顶着问号，
-    /// 输入框做成「鱼肚」——浅蓝的圆角凹槽，文字就落在肚子里。
-    /// 全部自绘（无边框窗口），不用系统原生控件的那套 3D 边框。
+    /// 外观与网页端卡片一致：白底圆角、细边框，输入框做成浅蓝的圆角凹槽（鱼肚）。
     /// </summary>
     internal sealed class QuestionForm : Form
     {
@@ -32,7 +29,7 @@ namespace BubbleAsk
         private const int CardRadius = 14;
         private const int BellyRadius = 16;
 
-        /// <summary>鲸鱼不抢文字的戏，稍微透一点。</summary>
+        /// <summary>鲸鱼略微透明，避免压住旁边的文字。</summary>
         private const float MascotOpacity = 0.9F;
 
         private readonly TextBox _input;
@@ -99,7 +96,7 @@ namespace BubbleAsk
             hint.Bounds = new Rectangle(20, 142, 412, 18);
             hint.ForeColor = Dim;
             hint.Font = _smallFont;
-            hint.Text = "回车发送 · Esc 取消 · 留空就按模板「" + skeleton + "」提问";
+            hint.Text = "回车发送 · Esc 取消 · 留空则按模板「" + skeleton + "」提问";
             Controls.Add(hint);
 
             Button cancel = new Button();

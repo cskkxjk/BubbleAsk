@@ -81,7 +81,7 @@ namespace BubbleAsk
         /// <summary>
         /// 用户自己写的问题 + 选中的文字。
         ///
-        /// 问题放在最后（模型对「最后那句」最敏感），选中的文字放前面当材料。
+        /// 选中的文字放前面作为材料，问题放在最后：模型对末尾内容更敏感。
         /// 问题为空时返回空串，调用方据此回退到 Build(template, text)。
         /// </summary>
         public static string BuildWithQuestion(string question, string text)

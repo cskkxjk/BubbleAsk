@@ -77,11 +77,11 @@ namespace BubbleAsk
             menu.Renderer = new FlatMenuRenderer();
             menu.Items.Add(new ToolStripMenuItem("设置…", null, delegate { ShowSettings(); }));
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("打开对话窗口  (" + _config.HotkeySummon + ")", null,
+            menu.Items.Add(new ToolStripMenuItem("打开对话窗口 (" + _config.HotkeySummon + ")", null,
                 delegate { OpenChat(); }));
-            menu.Items.Add(new ToolStripMenuItem("对选中文字提问  (" + _config.HotkeyAsk + ")", null,
+            menu.Items.Add(new ToolStripMenuItem("对选中文字提问 (" + _config.HotkeyAsk + ")", null,
                 delegate { AskSelection(); }));
-            menu.Items.Add(new ToolStripMenuItem("截图提问  (" + _config.HotkeyShot + ")", null,
+            menu.Items.Add(new ToolStripMenuItem("截图提问 (" + _config.HotkeyShot + ")", null,
                 delegate { AskScreenshot(); }));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("重启浏览器会话", null, delegate { RestartSession(); }));
@@ -117,7 +117,7 @@ namespace BubbleAsk
                 string list = string.Join("、", blocked.ToArray());
                 Log.Warn("这些热键被别的程序占用了: " + list);
                 _tray.ShowBalloonTip(5000, "热键被占用",
-                    list + " 已被别的程序占用，托盘双击打开设置换一个。", ToolTipIcon.Warning);
+                    list + " 已被其它程序占用，双击托盘图标打开设置后更换。", ToolTipIcon.Warning);
             }
         }
 
@@ -251,7 +251,7 @@ namespace BubbleAsk
                 catch (Exception error)
                 {
                     Log.Error("抓取选中文字失败", error);
-                    Balloon("抓取失败", "目标程序可能不支持复制，试试截图提问。");
+                    Balloon("抓取失败", "目标程序可能不支持复制，请改用截图提问。");
                     return;
                 }
 
@@ -289,7 +289,7 @@ namespace BubbleAsk
                     if (!ok)
                     {
                         Balloon("没能自动发送",
-                            "窗口已打开：问题可能已填进输入框（也可能没有），请看一眼并手动按回车；详细原因在日志里。");
+                            "窗口已打开。问题可能已填入输入框，也可能没有；请确认后手动按回车。详细原因见日志。");
                     }
                 }
                 catch (Exception error)
@@ -346,7 +346,7 @@ namespace BubbleAsk
                     if (!ok)
                     {
                         Balloon("截图没能自动发出",
-                            "窗口已打开：图片可能已贴上（也可能没有），请看一眼并手动按回车；详细原因在日志里。");
+                            "窗口已打开。图片可能已粘贴到输入框，也可能没有；请确认后手动按回车。详细原因见日志。");
                     }
                 }
                 catch (Exception error)
@@ -419,7 +419,7 @@ namespace BubbleAsk
                     WebProvider selected = WebProviders.FromConfig(_config);
                     Log.Info("设置已保存：网页版服务方=" + selected.Id + "（" + selected.Name + "），地址=" + selected.Url);
                     // 窗口尺寸/调试端口/浏览器 这些要等下次拉起浏览器才生效，别一律说"已生效"。
-                    Balloon("设置已保存", "热键立即生效；网页版服务方会在下次打开网页窗口时切换；窗口尺寸、调试端口、浏览器改动会在下次拉起浏览器时生效。");
+                    Balloon("设置已保存", "热键立即生效。网页版服务方在下一次打开网页窗口时切换。窗口尺寸、调试端口与浏览器的改动在下次启动浏览器时生效。");
                 }
             }
             _settingsForm = null;

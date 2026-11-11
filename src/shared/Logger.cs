@@ -62,21 +62,6 @@ namespace BubbleAsk
             Write("ERROR", message + " :: " + (error == null ? "" : error.ToString()));
         }
 
-        public static string RecentText(int maxLines)
-        {
-            lock (Gate)
-            {
-                StringBuilder sb = new StringBuilder();
-                string[] items = Recent.ToArray();
-                int start = Math.Max(0, items.Length - maxLines);
-                for (int i = start; i < items.Length; i++)
-                {
-                    sb.AppendLine(items[i]);
-                }
-                return sb.ToString();
-            }
-        }
-
         private static void Write(string level, string message)
         {
             string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + " [" + level + "] " + message;

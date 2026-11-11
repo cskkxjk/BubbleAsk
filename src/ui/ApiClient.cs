@@ -209,7 +209,7 @@ namespace BubbleAsk
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path))
             {
-                throw new FileNotFoundException("图片不存在: " + path);
+                throw new FileNotFoundException("图片文件不存在：" + path);
             }
             using (Image image = Image.FromFile(path))
             {
@@ -273,7 +273,7 @@ namespace BubbleAsk
             }
             catch (Exception error)
             {
-                throw new ApiException(0, "连不上 " + endpoint + "：" + error.Message);
+                throw new ApiException(0, "无法连接 " + endpoint + "：" + error.Message);
             }
 
             if (!response.IsSuccessStatusCode)
@@ -293,6 +293,8 @@ namespace BubbleAsk
 
             StringBuilder all = new StringBuilder();
             StringBuilder raw = new StringBuilder();
+            // SSE 允许一条事件里有多行 data，拼起来才是完整负载（规范里叫 event data buffer）。
+            StringBuilder eventData = new StringBuilder();
             bool sawData = false;
             bool rawTruncated = false;
             bool hitMaxTokens = false;
@@ -325,8 +327,8 @@ namespace BubbleAsk
                                     }
                                     ObserveQuietly(readTask);
                                     throw new ApiException(0,
-                                        "读取响应超时（" + TimeoutText + "没有收到新内容）：服务器接了请求但一直不发正文，" +
-                                        "检查接口地址或换个时间重试。");
+                                        "读取响应超时（" + TimeoutText + " 内没有收到新内容）：服务端已接收请求但没有返回正文；" +
+                                        "请检查接口地址，或稍后重试。");
                                 }
                                 string line = await readTask;
                                 if (line == null)
@@ -356,7 +358,19 @@ namespace BubbleAsk
                                 {
                                     continue;
                                 }
-                                if (payload == "[DONE]")
+                                if (eventData.Length > 0)
+                                {
+                                    eventData.Append('\n');
+                                }
+                                eventData.Append(payload);
+                                string data = eventData.ToString();
+                                // 多行 data 只有拼成完整 JSON 才有意义：解析不出来就等下一行。
+                                if (data != "[DONE]" && Json.ParseObject(data).Count == 0)
+                                {
+                                    continue;
+                                }
+                                eventData.Length = 0;
+                                if (data == "[DONE]")
                                 {
                                     break;
                                 }
@@ -364,7 +378,7 @@ namespace BubbleAsk
                                 string reasoning;
                                 string finishReason;
                                 string streamError;
-                                bool hasDelta = TryParseChunk(payload, out content, out reasoning,
+                                bool hasDelta = TryParseChunk(data, out content, out reasoning,
                                     out finishReason, out streamError);
                                 if (streamError != null)
                                 {
@@ -434,8 +448,8 @@ namespace BubbleAsk
                 if (rawTruncated)
                 {
                     // 再往下解析只会把残缺的 JSON 当成空回答，不如直接说清楚。
-                    throw new ApiException(0, "服务端没有按流式返回，内容又超过 " + RawCacheLimit
-                        + " 字符，已被截断、无法解析。请改用支持 stream 的接口地址。");
+                    throw new ApiException(0, "服务端没有按流式返回，内容超过 " + RawCacheLimit
+                        + " 字符后已被截断，无法解析。请改用支持 stream 的接口地址。");
                 }
                 string rawError = ExtractStreamError(rawText);
                 if (rawError != null)
@@ -460,7 +474,7 @@ namespace BubbleAsk
                 if (hitMaxTokens)
                 {
                     throw new ApiException(0, "模型返回了空内容：max_tokens（" + request.MaxTokens
-                        + "）太小，一个字都没生成出来，可在设置里调大。");
+                        + "）过小，未生成任何文本，可在设置里调大。");
                 }
                 throw new ApiException(0, "模型返回了空内容（HTTP 200，但响应里没有正文）。");
             }
@@ -664,13 +678,13 @@ namespace BubbleAsk
             return new List<object>();
         }
 
-        /// <summary>把状态码翻译成人话，省得用户看 401 猜半天。</summary>
+        /// <summary>把 HTTP 状态码翻译成可读的提示。</summary>
         public static string DescribeHttpError(int status, string body)
         {
             string hint;
             if (status == 400)
             {
-                hint = "请求参数不对（最常见：模型名写错、上下文太长、图片太大或格式不支持）";
+                hint = "请求参数有误（常见原因：模型名错误、上下文过长、图片过大或格式不支持）";
             }
             else if (status == 401)
             {
@@ -682,7 +696,7 @@ namespace BubbleAsk
             }
             else if (status == 403)
             {
-                hint = "没有权限访问这个接口或模型（检查 Key 的权限、可用模型或所在地区）";
+                hint = "没有权限访问该接口或模型（检查 Key 权限、可用模型与所在地区）";
             }
             else if (status == 404)
             {
@@ -702,7 +716,7 @@ namespace BubbleAsk
             }
             else if (status >= 500)
             {
-                hint = "服务方自己出错了，稍后再试";
+                hint = "服务方内部错误，稍后重试";
             }
             else
             {

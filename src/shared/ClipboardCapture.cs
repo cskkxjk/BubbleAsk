@@ -99,27 +99,6 @@ namespace BubbleAsk
             }
         }
 
-        public static bool TrySetText(string text)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(text))
-                {
-                    Clipboard.Clear();
-                }
-                else
-                {
-                    Clipboard.SetText(text);
-                }
-                return true;
-            }
-            catch (Exception error)
-            {
-                Log.Error("写入文本到剪贴板失败", error);
-                return false;
-            }
-        }
-
         private static void ClearClipboardWithRetry()
         {
             for (int i = 0; i < 3; i++)

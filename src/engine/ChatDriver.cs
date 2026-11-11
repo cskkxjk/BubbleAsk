@@ -55,11 +55,6 @@ namespace BubbleAsk
             _edge.ShowAndFocus();
         }
 
-        public async Task<bool> AskAsync(string prompt)
-        {
-            return await AskAsync(prompt, _provider);
-        }
-
         public async Task<bool> AskAsync(string prompt, WebProvider provider)
         {
             LastStatus = "idle";
@@ -132,11 +127,6 @@ namespace BubbleAsk
             return false;
         }
 
-        public async Task<bool> AskWithImageAsync(string imagePath, string prompt)
-        {
-            return await AskWithImageAsync(imagePath, prompt, _provider);
-        }
-
         public async Task<bool> AskWithImageAsync(string imagePath, string prompt, WebProvider provider)
         {
             LastStatus = "idle";
@@ -155,12 +145,12 @@ namespace BubbleAsk
                 bool attached = await AttachImageAsync(imagePath);
                 if (!attached)
                 {
-                    Log.Warn("没找到上传入口，退回剪贴板粘贴");
+                    Log.Warn("没找到上传入口，改用剪贴板粘贴");
                     attached = await PasteImageAsync(imagePath);
                 }
                 if (!attached)
                 {
-                    Log.Warn("图片没能送进页面，退化为纯文本提问");
+                    Log.Warn("图片没能送进页面，改为只发送文字");
                     return await AskAsync(prompt, provider);
                 }
 
@@ -251,12 +241,14 @@ namespace BubbleAsk
             ClipboardCapture.SendPaste();
             Log.Info("已向页面粘贴截图");
             await Task.Delay(900);
-            return true;
-        }
-
-        public async Task<bool> OpenAsync()
-        {
-            return await OpenAsync(_provider);
+            // 粘贴没有返回值，只能回读输入框里是否出现图片；否则会在没有附图的情况下继续发送并当作成功。
+            ComposerState state = await ReadComposerAsync();
+            if (state != null && state.HasImage)
+            {
+                return true;
+            }
+            Log.Warn("粘贴后输入框里没有出现图片，判定为未附图");
+            return false;
         }
 
         public async Task<bool> OpenAsync(WebProvider provider)
@@ -280,11 +272,6 @@ namespace BubbleAsk
         /// 若当前页面不是目标服务方，先 CDP 导航过去（同一个 app 窗口里换页面）。
         /// 返回值：true 表示这次是「关掉」。
         /// </summary>
-        public async Task<bool> ToggleAsync()
-        {
-            return await ToggleAsync(_provider);
-        }
-
         public async Task<bool> ToggleAsync(WebProvider provider)
         {
             if (_edge.IsVisible)
@@ -716,7 +703,7 @@ namespace BubbleAsk
             try
             {
                 await EnsureConnectedAsync(provider);
-                // SPA 首屏可能还在渲染，给它一点时间，免得采集到空壳。
+                // SPA 首屏可能还在渲染，多等一会儿，避免采集到空页面。
                 await Task.Delay(2500);
                 return await _cdp.EvaluateAsync(PageScripts.BuildProbeScript(CurrentProvider), 15000);
             }

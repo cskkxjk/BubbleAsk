@@ -397,13 +397,32 @@ namespace BubbleAsk
                 {
                     // 前一个发送的结果与本条无关，不能挡住队列。
                 }
-                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CurrentToken());
+                await SendWithDeadlineAsync(socket, bytes);
             }
             finally
             {
                 // 无论成功、失败还是取消，都要放行后面排队的发送。
                 slot.TrySetResult(0);
             }
+        }
+
+        /// <summary>
+        /// 发送本身也带截止时间：TCP 窗口塞满时 SendAsync 会一直挂着，
+        /// 而这里的等待不计入 CallAsync 的 timeoutMs，热键会被拖住直到 90 秒看门狗。
+        /// </summary>
+        private async Task SendWithDeadlineAsync(ClientWebSocket socket, byte[] bytes)
+        {
+            Task sending = socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CurrentToken());
+            Task finished = await Task.WhenAny(sending, Task.Delay(DefaultTimeoutMs));
+            if (finished == sending)
+            {
+                await sending;
+                return;
+            }
+            Observe(sending);
+            Log.Warn("CDP 发送超时，断开连接");
+            AbortSocket();
+            throw new TimeoutException("CDP 发送超时");
         }
 
         /// <summary>吞掉不再被 await 的任务异常，避免未观察异常。</summary>

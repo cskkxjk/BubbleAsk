@@ -18,6 +18,9 @@ namespace BubbleAsk
         private CancellationTokenSource _cts;
         private int _generation;
 
+        /// <summary>提交给模型的历史消息上限。超出后丢弃最早的问答对，只保留第一条问题。</summary>
+        private const int MaxHistoryMessages = 21;
+
         public ApiChat(AppConfig config)
         {
             _config = config;
@@ -147,6 +150,7 @@ namespace BubbleAsk
             request.Model = _config.ApiModel;
             request.SystemPrompt = _config.ApiSystemPrompt;
             request.MaxTokens = _config.ApiMaxTokens;
+            TrimHistory();
             request.Messages = new List<ApiMessage>(_history);
 
             CancellationToken token = cts.Token;
@@ -193,7 +197,7 @@ namespace BubbleAsk
                         // 没人取消却抛了 OperationCanceledException —— 这是 HttpClient.Timeout 的超时。
                         Log.Error("API 请求超时: " + error.Message);
                         PostFail(bubble, generation,
-                            "请求超时（" + ApiClient.TimeoutText + "未响应）：网络太慢或中转没回话，稍后重试，或检查接口地址。",
+                            "请求超时（" + ApiClient.TimeoutText + " 未响应）：网络较慢，或中转服务没有返回内容；稍后重试，或检查接口地址。",
                             partial.ToString());
                     }
                 }
@@ -252,7 +256,7 @@ namespace BubbleAsk
                 {
                     return;
                 }
-                // 提示单独占一行，别跟刚流出来的正文黏在一起。
+                // 提示单独占一行，避免与刚流出来的正文连在一起。
                 bubble.AppendAnswer("\n");
                 bubble.Note(notice);
             });
@@ -283,12 +287,12 @@ namespace BubbleAsk
                 {
                     return;
                 }
-                // 半截答案已经显示在气泡里了，历史里也得有：否则下一轮追问变成两条连续 user，
+                // 半截答案已经显示在气泡里，历史里也要保留：否则下一轮追问会出现两条连续的 user 消息，
                 // 模型看不到用户实际读到的那段。
                 RememberPartial(partial);
                 if (!string.IsNullOrEmpty(partial))
                 {
-                    // ⚠ 另起一行，别和半截正文黏在一起。
+                    // 另起一行，避免与半截正文连在一起。
                     bubble.AppendAnswer("\n");
                 }
                 bubble.FailTurn(message);
@@ -307,6 +311,24 @@ namespace BubbleAsk
         private bool IsCurrent(int generation)
         {
             return generation == _generation;
+        }
+
+        /// <summary>历史只保留最近若干条：长对话继续追问时请求体不会无限增长。</summary>
+        private void TrimHistory()
+        {
+            if (_history.Count <= MaxHistoryMessages)
+            {
+                return;
+            }
+            int drop = _history.Count - MaxHistoryMessages;
+            List<ApiMessage> kept = new List<ApiMessage>();
+            kept.Add(_history[0]);
+            for (int i = 1 + drop; i < _history.Count; i += 1)
+            {
+                kept.Add(_history[i]);
+            }
+            Log.Info("历史消息过多，丢弃最早的 " + drop + " 条，保留 " + kept.Count + " 条");
+            _history = kept;
         }
 
         private void CancelCurrent()

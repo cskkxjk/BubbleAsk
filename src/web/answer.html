@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bubble Ask</title>
 <style>
-  /* 这套 HTML/CSS 是纯前端资产：不依赖任何宿主 API，Windows 用 WebView2 承载，
-     以后上 macOS 可以直接塞进 WKWebView / Tauri / Electron，一行不用改。 */
+  /* 这份 HTML/CSS 是纯前端资产，不依赖任何宿主 API：Windows 用 WebView2 承载，
+     换到 WKWebView / Tauri / Electron 时不需要改这个文件。 */
   :root {
     --ink: #1f2937;
     --ink-dim: #6b7280;
@@ -266,15 +266,15 @@
 
   <footer>
     <div class="belly">
-      <input id="input" type="text" autocomplete="off" placeholder="接着问点什么…">
+      <input id="input" type="text" autocomplete="off" placeholder="输入追问内容…">
     </div>
     <button class="send" id="send">追问</button>
   </footer>
 
 <script>
   //#region 极简 Markdown 渲染
-  // 只做对话里真会出现的语法：标题、列表、引用、表格、围栏代码、行内代码、加粗、
-  // 斜体、链接、分隔线。刻意不引第三方库 —— 这段要能被原样搬到别的宿主里。
+  // 只实现对话里会出现的语法：标题、列表、引用、表格、围栏代码、行内代码、加粗、
+  // 斜体、链接、分隔线。没有引入第三方库，便于把这份文件原样搬到别的宿主。
   function escapeHtml(text) {
     return String(text)
       .replace(/&/g, '&amp;')
@@ -446,7 +446,8 @@
     close: document.getElementById('close'),
   }
 
-  let current = null      // 当前回答：{ wrap, reasoningEl, bodyEl, raw }
+  let current = null      // 当前回答：{ reasoningEl, bodyEl, errorEl, raw, reasoning, streaming }
+  const turns = []        // 每轮回答，供「复制全文」使用
   let stickToBottom = true
   let renderFrame = 0
 
@@ -458,12 +459,6 @@
   function scrollToBottom() {
     if (!stickToBottom) return
     els.stream.scrollTop = els.stream.scrollHeight
-  }
-
-  function reportHeight() {
-    // 让宿主把窗口高度贴合内容（Markdown 渲染后的真实高度，不是按字数估）
-    const height = Math.min(560, Math.max(140, document.body.scrollHeight))
-    post('height:' + height)
   }
 
   function post(message) {
@@ -488,14 +483,9 @@
       const stick = stickToBottom
       current.bodyEl.innerHTML = renderMarkdown(current.raw) + (current.streaming ? '<span class="caret"></span>' : '')
       if (stick) scrollToBottom()
-      reportHeight()
     })
   }
 
-  function scrollOrRender() {
-    scrollToBottom()
-    scheduleRender()
-  }
   //#endregion
 
   //#region 宿主 API（C# 通过 ExecuteScriptAsync 调这些）
@@ -525,10 +515,25 @@
       bodyEl.className = 'md'
       turn.appendChild(bodyEl)
 
+      // 错误提示放在 bodyEl 之外：正文每次重渲染只会覆盖 bodyEl 的内容。
+      const errorEl = document.createElement('div')
+      errorEl.className = 'error'
+      errorEl.style.display = 'none'
+      turn.appendChild(errorEl)
+
       els.stream.appendChild(turn)
-      current = { wrap: turn, reasoningEl: reasoningEl, bodyEl: bodyEl, raw: '', reasoning: '', streaming: true }
+      current = {
+        reasoningEl: reasoningEl,
+        bodyEl: bodyEl,
+        errorEl: errorEl,
+        raw: '',
+        reasoning: '',
+        streaming: true,
+      }
+      turns.push(current)
       stickToBottom = true
-      scrollOrRender()
+      scrollToBottom()
+      scheduleRender()
       return true
     },
     appendReasoning: function (delta) {
@@ -537,7 +542,6 @@
       current.reasoningEl.style.display = ''
       current.reasoningEl.textContent = current.reasoning
       scrollToBottom()
-      reportHeight()
       return true
     },
     appendAnswer: function (delta) {
@@ -556,10 +560,8 @@
     failTurn: function (message) {
       if (!current) return false
       current.streaming = false
-      const error = document.createElement('div')
-      error.className = 'error'
-      error.textContent = '⚠ ' + (message || '出错了')
-      current.bodyEl.appendChild(error)
+      current.errorEl.style.display = ''
+      current.errorEl.textContent = '⚠ ' + (message || '出错了')
       scheduleRender()
       setBusy(false)
       return true
@@ -570,19 +572,11 @@
       note.textContent = text || ''
       els.stream.appendChild(note)
       scrollToBottom()
-      reportHeight()
       return true
     },
     focusInput: function () {
       els.input.focus()
       return true
-    },
-    setBusy: function (busy) {
-      setBusy(!!busy)
-      return true
-    },
-    bodyText: function () {
-      return current ? current.raw : ''
     },
   }
   //#endregion
@@ -609,8 +603,11 @@
     }
   })
   els.copy.addEventListener('click', function () {
-    const raw = current ? current.raw : ''
-    post('copy:' + raw)
+    const text = turns
+      .map(function (turn) { return turn.raw })
+      .filter(function (raw) { return raw.length > 0 })
+      .join('\n\n')
+    post('copy:' + text)
   })
   els.close.addEventListener('click', function () {
     post('close:')
@@ -622,8 +619,6 @@
     if (event.target.closest('button')) return
     post('drag:')
   })
-
-  reportHeight()
   //#endregion
 </script>
 </body>

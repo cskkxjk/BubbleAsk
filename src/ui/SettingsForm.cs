@@ -146,7 +146,7 @@ namespace BubbleAsk
             title.Location = new Point(72, 15);
 
             Label subtitle = new Label();
-            subtitle.Text = "选中文字 · 一个热键 · 气泡里回答";
+            subtitle.Text = "选中文字 · 热键提问 · 结果在独立窗口里";
             subtitle.AutoSize = true;
             subtitle.Font = new Font("Microsoft YaHei UI", 8.5f);
             subtitle.ForeColor = Muted;
@@ -308,19 +308,19 @@ namespace BubbleAsk
             _mode.DropDownStyle = ComboBoxStyle.DropDownList;
             _mode.Items.Add(new ComboItem("web", "网页版：驱动浏览器打开所选服务方"));
             _mode.Items.Add(new ComboItem("api", "API：直连模型，气泡里流式回答"));
-            AddRow(table, "运行模式", _mode, "网页版用浏览器登录态、不花额度；API 模式需要 key，回答显示在气泡里");
+            AddRow(table, "运行模式", _mode, "网页版复用浏览器登录态，不消耗 API 额度；API 模式需要 Key，回答显示在气泡里");
 
             _shotPrompt = new TextBox();
-            AddRow(table, "截图提问", _shotPrompt, "截完图自动带上的问句，不需要 %s");
+            AddRow(table, "截图提问", _shotPrompt, "截图提问时自动附带的问题，不使用 %s");
 
             _maxChars = new NumericUpDown();
             _maxChars.Minimum = 50;
             _maxChars.Maximum = 8000;
             _maxChars.Increment = 50;
-            AddRow(table, "最多截取字数", _maxChars, "超长内容会在中间省略");
+            AddRow(table, "最多截取字数", _maxChars, "超过上限的内容从中部省略");
 
             _autoSend = new CheckBox();
-            _autoSend.Text = "填入后自动发送（不勾选则只填入，等我按回车）";
+            _autoSend.Text = "填入后自动发送（不勾选则只填入，由我按回车）";
             _autoSend.AutoSize = true;
             _autoSend.ForeColor = Ink;
             AddRow(table, "发送方式", _autoSend, null);
@@ -349,10 +349,10 @@ namespace BubbleAsk
             }
             _webProvider.Items.Add(new ComboItem(WebProviders.CustomId, "自定义（自己填地址）"));
             AddRow(table, "网页版服务方", _webProvider,
-                "切换后下一次提问/唤起即生效；各站点的登录态按浏览器 profile 分别保存，第一次打开时登录一次即可");
+                "切换后下一次提问或唤起即生效；登录态按浏览器 profile 分别保存，每家服务方首次打开时登录一次");
 
             _chatUrl = new TextBox();
-            AddRow(table, "网页版地址", _chatUrl, "预设服务方的地址由程序固定；选「自定义」时才可编辑");
+            AddRow(table, "网页版地址", _chatUrl, "预设服务方的地址固定；选择「自定义」后才可编辑");
 
             _width = new NumericUpDown();
             _width.Minimum = 320;
@@ -375,7 +375,7 @@ namespace BubbleAsk
             _height.Margin = new Padding(6, 0, 0, 0);
             sizeRow.Controls.Add(_width, 0, 0);
             sizeRow.Controls.Add(_height, 1, 0);
-            AddRow(table, "窗口尺寸", sizeRow, "网页版小窗的宽 × 高（像素）");
+            AddRow(table, "窗口尺寸", sizeRow, "网页版小窗与 API 气泡共用的宽 × 高（像素）");
 
             _topMost = new CheckBox();
             _topMost.Text = "窗口置顶";
@@ -383,26 +383,22 @@ namespace BubbleAsk
             _topMost.ForeColor = Ink;
             AddRow(table, "置顶", _topMost, null);
 
-            // API 模式的气泡尺寸已与上面的「窗口尺寸」统一，这里不再单独配置。
-
-
-
             _browser = new ComboBox();
             _browser.DropDownStyle = ComboBoxStyle.DropDownList;
             _browser.SelectedIndexChanged += delegate { BrowserSelected(); };
-            AddRow(table, "浏览器", _browser, "网页版用哪个浏览器打开服务方页面；这些都支持，装哪个用哪个");
+            AddRow(table, "浏览器", _browser, "网页版用哪个浏览器打开服务方页面（自动检测顺序：Edge → Chrome → Brave → Vivaldi → Opera → Chromium）");
 
             _edgePath = new TextBox();
             _edgePath.TextChanged += delegate { SyncBrowserCombo(); };
-            AddRow(table, "浏览器路径", _edgePath, "留空自动检测（Edge → Chrome → Brave → Vivaldi → Opera）");
+            AddRow(table, "浏览器路径", _edgePath, "留空则由程序自动检测（Edge → Chrome → Brave → Vivaldi → Opera → Chromium）");
 
             _profileDir = new TextBox();
-            AddRow(table, "登录数据目录", _profileDir, "留空则按浏览器分开存，各浏览器登录态互不影响");
+            AddRow(table, "登录数据目录", _profileDir, "留空则按浏览器分别存储，各浏览器登录态互不影响");
 
             _cdpPort = new NumericUpDown();
             _cdpPort.Minimum = 1024;
             _cdpPort.Maximum = 65535;
-            AddRow(table, "调试端口", _cdpPort, "只用本机 127.0.0.1，别和别的调试端口撞");
+            AddRow(table, "调试端口", _cdpPort, "只监听本机 127.0.0.1，修改时避免与其它调试端口冲突");
 
             Panel page = new Panel();
             page.Controls.Add(table);
@@ -415,7 +411,7 @@ namespace BubbleAsk
             _hotkeySummon = new TextBox();
             AddRow(table, "唤起窗口", _hotkeySummon, "例如 Ctrl+Alt+D");
             _hotkeyAsk = new TextBox();
-            AddRow(table, "抓词提问", _hotkeyAsk, "选中文字后按它，直接抓取并提问");
+            AddRow(table, "抓词提问", _hotkeyAsk, "选中文字后按此键抓取并提问");
             _hotkeyShot = new TextBox();
             AddRow(table, "截图提问", _hotkeyShot, "拖框截图后连图带问题一起发");
 
@@ -424,8 +420,8 @@ namespace BubbleAsk
             tip.MaximumSize = new Size(520, 0);
             tip.ForeColor = Muted;
             tip.Font = new Font("Microsoft YaHei UI", 8.5f);
-            tip.Text = "写法：Ctrl / Alt / Shift / Win 加一个主键，例如 Ctrl+Shift+F2。\r\n" +
-                       "组合被别的程序占用时，启动日志里会写「热键被占用」，换一个即可。";
+            tip.Text = "写法：Ctrl / Alt / Shift / Win 之外再加一个主键，例如 Ctrl+Shift+F2。\r\n" +
+                       "组合被其它程序占用时，启动日志会记录「热键被占用」，此时需要换一个组合。";
             tip.Margin = new Padding(0, 18, 0, 0);
             table.RowCount = table.RowCount + 1;
             table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -448,7 +444,7 @@ namespace BubbleAsk
                 _provider.Items.Add(names[i]);
             }
             _provider.SelectedIndexChanged += delegate { ApplyProviderPreset(); };
-            AddRow(table, "服务方", _provider, "选预设会填好地址和模型；自定义则自己填");
+            AddRow(table, "服务方", _provider, "选择预设会填入地址与模型名；选择自定义需自行填写");
 
             _apiBase = new TextBox();
             AddRow(table, "接口地址", _apiBase, "OpenAI 兼容，例如 https://api.deepseek.com");
@@ -466,7 +462,7 @@ namespace BubbleAsk
             _systemPrompt.Multiline = true;
             _systemPrompt.Height = 76;
             _systemPrompt.ScrollBars = ScrollBars.Vertical;
-            AddRow(table, "系统提示词", _systemPrompt, "每轮对话开头都会带上，用来约束回答风格");
+            AddRow(table, "系统提示词", _systemPrompt, "每轮对话都会带上，用于约束回答风格");
 
             Panel page = new Panel();
             page.Controls.Add(table);
@@ -597,7 +593,7 @@ namespace BubbleAsk
 
         /// <summary>
         /// 选中某个网页版服务方：预设回填入口地址并锁住地址框（预设地址由 WebProviders 固定），
-        /// 「自定义」则放开编辑，并给一个默认地址兜底。
+        /// 选中「自定义」时放开编辑，并填入默认地址。
         /// </summary>
         private void WebProviderSelected()
         {
@@ -841,7 +837,7 @@ namespace BubbleAsk
                 {
                     _browser.Items.Add(new BrowserItem(found[i].Id, found[i].ToString(), found[i].ExePath));
                 }
-                _browser.Items.Add(new BrowserItem("custom", "自定义路径…（在下面填）", ""));
+                _browser.Items.Add(new BrowserItem("custom", "自定义路径…（在下方输入框填写）", ""));
                 if (found.Count == 0)
                 {
                     _browser.Items.Add(new BrowserItem("missing", "没有检测到浏览器", ""));
@@ -916,7 +912,7 @@ namespace BubbleAsk
             }
             if (item.Id == "custom")
             {
-                // 自定义：保持用户已经填的内容，把焦点交给路径框。
+                // 自定义：保留已填内容，把焦点交给路径框。
                 _edgePath.Focus();
                 if (_edgePath.TextLength > 0)
                 {
@@ -938,7 +934,7 @@ namespace BubbleAsk
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            // 打开时别让模板框里的文字整段高亮，看着像被选中了。
+            // 打开时取消模板框的整段选中状态。
             _template.SelectionStart = 0;
             _template.SelectionLength = 0;
         }

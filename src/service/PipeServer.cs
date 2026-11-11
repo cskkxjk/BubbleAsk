@@ -203,7 +203,7 @@ namespace BubbleAsk
                     pipe = null;
                     // 每个连接单开一个任务：send 很慢（要等页面渲染），
                     // 但 ping / health 不该被它挡住。串行化由宿主的 TryBegin 负责。
-                    // 赋值给局部变量而不是裸调用：C# 5 下裸调用未 await 会报 CS4014。
+                    // 赋值给局部变量：C# 5 下直接调用未 await 会报 CS4014。
                     Task handling = Task.Run(delegate { return HandleAsync(connected, token); });
                     GC.KeepAlive(handling);
                 }
