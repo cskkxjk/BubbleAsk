@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "划词提问（Bubble Ask）",
-    "description": "在会话里选中文字，一键把「精简会话轨迹 + 选中文字」交给 Bubble Ask 桌面端注入网页版（默认 DeepSeek，可选千问/豆包/ChatGPT/Gemini/Grok），让它解释这段文字在当前上下文中的含义。"
+    "description": "在会话中选中文字，把精简会话轨迹与选中文字交给所选网页版（默认 DeepSeek，可选千问、豆包、ChatGPT、Gemini、Grok），用于解释这段文字在当前上下文中的含义。"
   }
 }

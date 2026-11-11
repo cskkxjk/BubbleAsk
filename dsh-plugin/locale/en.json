@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Bubble Ask (selection ask)",
-    "description": "Select text in a session and hand a condensed session trace plus the selection to the Bubble Ask desktop app, which injects it into a web app (DeepSeek by default; Qwen, Doubao, ChatGPT, Gemini or Grok can be chosen in the bubble) so it explains what the selected text means in that context."
+    "description": "Select text in a session to send a condensed session trace plus the selection to a web app (DeepSeek by default; Qwen, Doubao, ChatGPT, Gemini or Grok can be chosen in Settings), which explains what the selected text means in that context."
   }
 }

@@ -13,8 +13,8 @@
  * 一个 exe 两种身份：带 `--service` 启动的是无界面后台服务（插件要拉起的就是它），
  * 不带参数启动的是托盘界面。插件只在服务没在跑时才拉起，且只拉起服务模式。
  *
- * 这个文件不依赖任何第三方包，也不做平台判断以外的魔法；Linux/macOS 上会
- * 明确报告「未找到 Bubble Ask」，而不是静默失败。
+ * 这个文件不依赖第三方包，除平台判断外不含别的逻辑；Linux/macOS 上会明确报告
+ * 「未找到 Bubble Ask」。
  */
 import fs from 'node:fs'
 import net from 'node:net'
@@ -139,13 +139,29 @@ async function request(pipeName, payload, timeoutMs) {
 }
 
 /**
+ * 并发去重的包装：Host 启动时会同时收到多条 /health（Client 半有三个组件各请求
+ * 一次），没有这层去重会并发拉起多个服务进程。进行中的调用共享同一个结果。
+ */
+let starting = null
+
+export function ensureApp(options = {}) {
+  if (starting) return starting
+  starting = ensureAppOnce(options)
+  starting.then(
+    () => { starting = null },
+    () => { starting = null },
+  )
+  return starting
+}
+
+/**
  * 确保服务在线；不在线就拉起（`--service` 模式）。
  *
  * @param options.appPath 显式指定的 exe 路径（插件配置），优先级最高
  * @param options.log 记录日志的回调
  * @returns {{ok: boolean, discovery?: object, error?: string, detail?: string}}
  */
-export async function ensureApp(options = {}) {
+async function ensureAppOnce(options = {}) {
   const log = typeof options.log === 'function' ? options.log : () => {}
   const explicit = typeof options.appPath === 'string' ? options.appPath.trim() : ''
 
@@ -216,8 +232,8 @@ function normalize(response) {
 /**
  * 发一条命令。
  *
- * 先按发现文件直接发（一次往返）；只有连不上时才走「探测 + 拉起 + 重试」，
- * 而不是每次操作都先 ping 一遍——那条 ping 是最常见的无谓延迟。
+ * 先按发现文件直接发送（一次往返）；只有连不上时才执行「探测 + 拉起 + 重试」。
+ * 每次操作前先 ping 一次是常见的多余延迟。
  */
 async function call(command, payload, options = {}) {
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : HEALTH_TIMEOUT_MS

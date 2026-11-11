@@ -1,19 +1,14 @@
 /**
  * Bubble Ask —— Client 半。
  *
- * 两件事：
- *   1. 在会话里盯住文字选区（鼠标松开 / 键盘选择都算）；
- *   2. 在选区旁边浮出一个小气泡，点下去把「精简会话轨迹 + 选中文字 + 你的问题」
- *      交给 Host 拼好，再由托盘应用按所选服务方（默认 DeepSeek，可选千问/豆包/
- *      ChatGPT/Gemini/Grok）注入网页版并发送。
+ * 三件事：
+ *   1. 盯住会话里的文字选区（鼠标松开、Shift+方向键都算）；
+ *   2. 在选区旁浮出提问卡片：写问题、发送，失败时可复制完整提问；
+ *   3. 维护设置页、右键设置面板与内嵌网页版面板。
  *
- * 刻意**不**在右侧栏渲染任何东西：
- *   - 装 DeepSeek 页面做不到（Electron guest 的分区不持久，每次重启要重新登录，
- *     且网页版会把 guest 判定为「使用环境异常」；原生窗口是独立 OS 窗口，无法内嵌）。
- *   - 所以再包一层「控制面板」也只是中间层。成功时它多余，失败时的价值
- *     用一个「复制全文」按钮就够了。
- *
- * 结果直接显示在气泡里：成功即收起，失败则留在原地并给出复制提问全文的入口。
+ * 发送执行者有两个：DeepSeek 优先交给插件自己的内嵌窗口（经桌面端 lease 通道开的
+ * Electron guest 打开网页版），其余服务方交给托盘应用的命名管道。内嵌这条失败时
+ * 回退到托盘应用。结果显示在卡片里：成功即收起，失败留在原地并给出「复制完整提问」。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-plugin-bubble-ask',
@@ -95,15 +90,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 服务方选择：设置页与右键面板共用同一份状态、同一套 health 同步。
-     * 规则和以前下拉框一致：桌面端说支持哪些就只列哪些，没手选过就沿用配置默认值。
+     * 服务方选择：设置页、右键面板与提问卡片共用一份状态。
+     *
+     * 存储里的选择优先，其次是 /health 报的宿主配置默认值。provider 每次渲染都从
+     * 存储现读，三个入口改完立即一致；桌面端不支持的 id 会改回可用值并写回存储。
      */
     function useProviderChoice() {
-      // '' = 还没定：既没在本机选过，也还没从 /health 问到桌面端的配置。
-      // 这种时候不要假装是 DeepSeek —— 卡片的标题和实际发送都得诚实。
-      const [provider, setProvider] = useState(() => readStoredProvider())
+      const [configured, setConfigured] = useState('')
       const [providers, setProviders] = useState(PROVIDERS)
       const [note, setNote] = useState('')
+      // 写入存储后强制重渲染：provider 由存储派生，不另存一份状态。
+      const [, setRevision] = useState(0)
 
       useEffect(() => {
         let cancelled = false
@@ -114,27 +111,49 @@ window.__ModuleLoader__.load({
             const payload = await response.json()
             if (cancelled || !payload || payload.ok !== true) return
             const app = payload.app || {}
+            const connected = app.connected === true
             const switchable = app.providerSwitchable === true
             const ids = switchable && Array.isArray(app.providers) ? app.providers : []
             const known = switchable
               ? (ids.length > 0 ? PROVIDERS.filter((item) => ids.includes(item.id)) : PROVIDERS)
               : PROVIDERS.filter((item) => item.id === 'deepseek')
-            if (known.length > 0) setProviders(known)
-            const configured = payload.settings && typeof payload.settings.provider === 'string'
-              ? payload.settings.provider
-              : ''
-            if (!readStoredProvider() && known.some((item) => item.id === configured)) setProvider(configured)
-            setNote(switchable ? '' : '当前桌面端不支持切换服务方，只能发到 DeepSeek。')
+            // 只有连上托盘应用时才知道它支持哪些服务方；连接不上时保留完整列表，
+            // 不按「只支持 DeepSeek」处理，也不改动存储里的选择。
+            if (connected && known.length > 0) setProviders(known)
+            if (connected) {
+              const configuredId = payload.settings && typeof payload.settings.provider === 'string'
+                ? payload.settings.provider
+                : ''
+              const fallbackId = known.some((item) => item.id === configuredId)
+                ? configuredId
+                : (known[0] ? known[0].id : '')
+              const stored = readStoredProvider()
+              if (stored && !known.some((item) => item.id === stored)) {
+                // 记忆里的服务方本机不支持（旧桌面端或注册表变化）：改回可用值并写回，
+                // 避免卡片标题与实际发送目标不一致。
+                if (fallbackId) storeProvider(fallbackId)
+                setRevision((value) => value + 1)
+                report('provider-corrected', { from: stored, to: fallbackId })
+              } else if (!stored && fallbackId) {
+                setConfigured(fallbackId)
+              }
+            }
+            if (switchable) setNote('')
+            else if (connected) setNote('桌面端版本低于 2.1.0，服务方只能为 DeepSeek。')
+            else if (paneBus.available()) setNote('未连接托盘应用：DeepSeek 由内嵌窗口发送，其它服务方需要桌面端 2.1.0 或更高版本。')
+            else setNote('未连接托盘应用，内嵌窗口也不可用：请先启动 BubbleAsk.exe。')
           } catch {
-            setNote('读不到桌面端状态：非 DeepSeek 的服务方需要桌面端托盘应用在运行。')
+            setNote('读不到插件状态：/bubble-ask/health 请求失败。')
           }
         })()
         return () => { cancelled = true }
       }, [])
 
+      const provider = readStoredProvider() || configured
+
       function choose(id) {
-        setProvider(id)
         storeProvider(id)
+        setRevision((value) => value + 1)
         report('settings-provider', { provider: id })
       }
 
@@ -143,7 +162,7 @@ window.__ModuleLoader__.load({
 
     /** 服务方下拉（设置页与右键面板共用）。 */
     function ProviderSelect({ provider, providers, onChange }) {
-      // provider 为空表示「还没定」：下拉先显示第一个，但没选之前不会写回存储。
+      // provider 为空表示还没有可用值：下拉先显示第一个，未选择时不写回存储。
       const value = provider || (providers[0] ? providers[0].id : '')
       return h('select', {
         className: 'dba-select',
@@ -183,7 +202,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 会话作用域的探针：只登记 id，不渲染任何东西。 */
+    /** 会话作用域的探针：只登记 id，不渲染内容。 */
     function SessionProbe(props) {
       const id = props && (props.sessionId || (props.session && props.session.id))
       useEffect(() => retainSession(id), [id])
@@ -229,13 +248,11 @@ window.__ModuleLoader__.load({
       '.dba-select{flex:auto;min-width:0;height:28px;border-radius:8px;padding:0 6px;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:var(--dsw-alias-bg-layer-1,#fff);',
       'color:var(--dsw-alias-label-primary,#111);font:inherit;outline:none}',
-      '.dba-select:disabled{opacity:.55;cursor:default}',
       '.dba-foot{display:flex;align-items:center;gap:8px;padding:0 10px 10px;flex-wrap:wrap}',
       '.dba-btn{pointer-events:auto;height:30px;padding:0 12px;border-radius:8px;cursor:pointer;font:inherit;',
       'border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));background:transparent;',
       'color:var(--dsw-alias-label-primary,#111)}',
       '.dba-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}',
-      '.dba-btn:disabled{opacity:.55;cursor:default}',
       '.dba-status{padding:0 10px 9px;color:var(--dsw-alias-label-tertiary,#888);min-height:14px;word-break:break-word}',
       // ---- 内嵌网页版面板 ----
       '.dba-pane{position:fixed;right:12px;bottom:12px;width:520px;height:calc(100vh - 96px);pointer-events:auto;',
@@ -287,7 +304,10 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** POST 一个 JSON 请求；HTTP 非 2xx 才抛错（`ok:false` 的语义留给调用方判断）。 */
+    /**
+     * POST 一个 JSON 请求。HTTP 非 2xx 抛错，并把响应体挂在 error.payload 上，
+     * 调用方仍可拿到 Host 返回的 prompt 等字段。
+     */
     async function postJson(path, body) {
       const response = await fetch(path, {
         method: 'POST',
@@ -301,7 +321,9 @@ window.__ModuleLoader__.load({
         payload = { ok: false, error: 'Host 返回了无法解析的内容' }
       }
       if (!response.ok) {
-        throw new Error(payload.error || payload.detail || `请求失败（HTTP ${response.status}）`)
+        const error = new Error(payload.error || payload.detail || `请求失败（HTTP ${response.status}）`)
+        error.payload = payload
+        throw error
       }
       return payload
     }
@@ -337,32 +359,30 @@ window.__ModuleLoader__.load({
     }
     //#endregion
 
-    /** 气泡本体。 */
+    /** 划词提问卡片。 */
     function BubbleAsk() {
-      const [bubble, setBubble] = useState({ visible: false, expanded: false, text: '', x: 0, y: 0 })
+      const [bubble, setBubble] = useState({ visible: false, text: '', x: 0, y: 0 })
       const [question, setQuestion] = useState('')
       const [status, setStatus] = useState('')
       const [busy, setBusy] = useState(false)
-      /** 失败时留着完整提问，给「复制全文」兜底。 */
+      /** 失败时保留完整提问，供「复制完整提问」使用。 */
       const [failedPrompt, setFailedPrompt] = useState('')
       /**
-       * 发到哪家：存储里的选择 > /health 报的桌面端配置 > 还没定。
-       * 和设置页、右键面板共用同一份状态（同一个 hook），不各存一套。
+       * 发到哪家：存储里的选择 > /health 报的宿主配置 > 还没有值。
+       * 设置页、右键面板与这张卡片共用同一个 hook。
        */
       const { provider, providers } = useProviderChoice()
-      /** 抑制选区重算的截止时间戳：点了气泡按钮后，同一次手势的 mouseup 不该把卡片打回去。 */
+      /** 抑制选区重算的截止时间戳：点了卡片里的按钮后，同一次手势的 mouseup 不重算选区。 */
       const suppressRef = useRef(0)
       const bubbleRef = useRef(bubble)
       bubbleRef.current = bubble
-      // provider 为空 = 还没定：标题别硬写成 DeepSeek，也先别把 provider 钉死发出去。
-      // 存储优先（设置页/右键面板改完要立刻反映到标题），其次是 /health 给的默认值。
-      const activeProviderId = readStoredProvider() || provider
-      const providerInfo = activeProviderId
-        ? providers.find((item) => item.id === activeProviderId) || null
+      // provider 为空表示还没有可用值：标题不写死 DeepSeek，请求也不钉死 provider。
+      const providerInfo = provider
+        ? providers.find((item) => item.id === provider) || null
         : null
 
       useEffect(() => {
-        /** 最近一次显示气泡的时间：拖选文字常伴随滚动，刚弹出时不要被滚动藏掉。 */
+        /** 最近一次显示卡片的时间：拖选文字常伴随滚动，刚弹出时不被滚动收起。 */
         let shownAt = 0
         /** 从一次用户手势里读选区。 */
         function readSelection(event) {
@@ -376,18 +396,13 @@ window.__ModuleLoader__.load({
           const text = selection ? String(selection).trim() : ''
           if (!text) {
             if (bubbleRef.current.visible) {
-              setBubble((prev) => ({ ...prev, visible: false, expanded: false }))
+              setBubble((prev) => ({ ...prev, visible: false }))
             }
             return
           }
           const anchor = selection.anchorNode
           const anchorElement = anchor && anchor.nodeType === 1 ? anchor : (anchor && anchor.parentElement) || null
           if (anchorElement && anchorElement.closest && anchorElement.closest('input, textarea, [contenteditable="true"]')) return
-          // 卡片已经展开：不要用同一个选区把状态覆盖回去（这是「点了没反应」的真正原因）。
-          if (bubbleRef.current.visible && bubbleRef.current.expanded) {
-            report('selection-ignored-expanded', { chars: text.length })
-            return
-          }
           let rect
           try {
             rect = selection.getRangeAt(0).getBoundingClientRect()
@@ -399,9 +414,8 @@ window.__ModuleLoader__.load({
           const x = Math.min(Math.max(rect.left + rect.width / 2, margin), window.innerWidth - margin)
           const y = Math.min(Math.max(rect.bottom + 8, 8), window.innerHeight - 60)
           shownAt = Date.now()
-          // 选中即出「鲸鱼提问卡片」：没有中间那层「问这段」气泡，
-          // 所以这里直接把 expanded 置真，渲染分支只有卡片一种。
-          setBubble({ visible: true, expanded: true, text: text.slice(0, 4000), x, y })
+          // 选中即出提问卡片，只有一个渲染分支。
+          setBubble({ visible: true, text: text.slice(0, 4000), x, y })
           setStatus('')
           setFailedPrompt('')
           report('selection-shown', { chars: text.length, x: Math.round(x), y: Math.round(y) })
@@ -410,10 +424,10 @@ window.__ModuleLoader__.load({
         const onKeyUp = (event) => {
           if (event.shiftKey || event.key === 'Shift') readSelection(event)
         }
-        // 只有「用户自己滚动」且已经展开卡片时才收起；刚弹出的 800ms 内一律不动。
+        // 只有用户自己滚动且卡片已显示时才收起；刚弹出的 800ms 内不处理滚动。
         const onScroll = () => {
           if (Date.now() - shownAt < 800) return
-          setBubble((prev) => (prev.visible && prev.expanded ? { ...prev, visible: false, expanded: false } : prev))
+          setBubble((prev) => (prev.visible ? { ...prev, visible: false } : prev))
         }
         document.addEventListener('mouseup', onMouseUp, true)
         document.addEventListener('keyup', onKeyUp, true)
@@ -425,38 +439,37 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      /**
-       * 与 Host 同步服务方列表/默认值（只同步一次，失败不影响使用）：
-       *   - 桌面端 < 2.1.0（health.app.providerSwitchable=false）会忽略 provider 字段，
-       *     下拉框只保留 DeepSeek，避免选了别家到发送时才被拒；
-       *   - 新桌面端按它支持的 id 列表取交集；
-       *   - 没手动选过服务方时，沿用 Host 配置的默认值。
-       */
-      // 服务方 / 列表 / 默认值现在统一由 useProviderChoice 管（设置页、右键面板、
-      // 这张卡片共用一份），这里不再各存一套，免得三处状态互相打架。
-
       function closeBubble() {
-        setBubble({ visible: false, expanded: false, text: '', x: 0, y: 0 })
+        setBubble({ visible: false, text: '', x: 0, y: 0 })
         setFailedPrompt('')
         setStatus('')
       }
 
+      // 卡片显示时按 Esc 取消：与设置页里「Esc 取消」的说明一致。
+      useEffect(() => {
+        if (!bubble.visible) return
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') closeBubble()
+        }
+        document.addEventListener('keydown', onKeyDown, true)
+        return () => document.removeEventListener('keydown', onKeyDown, true)
+      }, [bubble.visible])
+
       /**
-       * 走一次完整流程：Host 组上下文 → 托盘应用注入并发送。
+       * 走一次完整流程：Host 组装上下文 → 执行者注入并发送。
        * @param send true 直接发送；false 只整理并把完整提问复制到剪贴板（手动粘贴用）
        */
       async function runAsk(send) {
         const selection = bubbleRef.current.text
-        // 服务方在「设置 › Bubble Ask」或鲸鱼按钮右键面板里改：现读一次，改完下一句生效。
-        // 空串 = 还没定：此时不钉死 provider，交给桌面端按它自己的配置发，避免发错站。
-        const stored = readStoredProvider()
-        const providerId = stored || provider
+        // provider 由存储派生：设置页或右键面板改完，下一句立即生效。
+        // 空串表示还没有可用值，此时不钉死 provider，由桌面端按自己的配置发送。
+        const providerId = provider
         const providerName = providerId
           ? ((providers.find((item) => item.id === providerId) || providerInfo || { name: providerId }).name)
           : '桌面端配置的网页版'
         const providerField = providerId ? { provider: providerId } : {}
         setBusy(true)
-        setStatus(send ? `正在整理轨迹并发送到 ${providerName}…` : `正在整理会话轨迹（发到 ${providerName}）…`)
+        setStatus(send ? `正在整理会话轨迹并发送到 ${providerName}…` : `正在整理会话轨迹（发到 ${providerName}）…`)
         setFailedPrompt('')
         report(send ? 'action-send-start' : 'action-copy-start', {
           sessionId: currentSessionId,
@@ -464,8 +477,8 @@ window.__ModuleLoader__.load({
           provider: providerId,
         })
         try {
-          // 内嵌面板能发 DeepSeek 时，先只用 Host 组好提问（/prompt 不触发发送），
-          // 再由面板把同一份 prompt 填进自己开的 guest —— 这样「发送」不再需要托盘 exe。
+          // 内嵌面板能发 DeepSeek 时，先用 /prompt 组好提问（该路由不触发发送），
+          // 再由面板把同一份 prompt 填入自己开的 guest。
           const usePane = send && providerId === 'deepseek' && paneBus.available()
           let payload = null
           if (usePane) {
@@ -485,7 +498,7 @@ window.__ModuleLoader__.load({
               closeBubble()
               return
             } catch (paneError) {
-              // 内嵌这条路失败不直接判死：还有桌面端 exe 这条退路。
+              // 内嵌这条失败时回退到桌面端窗口。
               report('action-pane-failed', { detail: errorText(paneError), provider: providerId })
               setStatus('内嵌窗口失败，改用桌面端窗口…')
             }
@@ -508,20 +521,23 @@ window.__ModuleLoader__.load({
             }
             report('action-send-failed', { stage: payload.stage, detail: payload.detail, provider: providerId })
             setFailedPrompt(prompt)
-            setStatus(`没能发送到 ${actualName}（${payload.stage || '失败'}）：${payload.detail || ''} 可复制全文后到窗口里粘贴。`)
+            setStatus(`发送到 ${actualName} 失败（${payload.stage || '失败'}）：${payload.detail || ''} 可复制完整提问后手动粘贴。`)
             return
           }
 
           const copied = await copyText(prompt)
           report('action-copy-done', { copied, promptChars: prompt.length, provider: providerId })
           if (copied) {
-            setStatus(`已复制 ${prompt.length} 字，去 ${actualName} 窗口按 Ctrl+V 粘贴。`)
+            setStatus(`已复制 ${prompt.length} 字，在 ${actualName} 窗口按 Ctrl+V 粘贴。`)
             return
           }
           setFailedPrompt(prompt)
-          setStatus(`复制失败（共 ${prompt.length} 字），可点「复制全文」重试。`)
+          setStatus(`复制失败（共 ${prompt.length} 字），可点「复制完整提问」重试。`)
         } catch (error) {
           report('action-error', { send, message: errorText(error), provider: providerId })
+          // 请求失败时 Host 可能仍带回 prompt：保留它，卡片照常提供「复制完整提问」。
+          const carried = error && error.payload && typeof error.payload.prompt === 'string' ? error.payload.prompt : ''
+          if (carried) setFailedPrompt(carried)
           setStatus('失败：' + errorText(error))
         } finally {
           setBusy(false)
@@ -544,27 +560,26 @@ window.__ModuleLoader__.load({
       const cardLeft = Math.min(Math.max(bubble.x - 180, 12), Math.max(window.innerWidth - 372, 12))
       const cardTop = Math.min(Math.max(bubble.y + 6, 12), Math.max(window.innerHeight - 200, 12))
 
-      // 卡片只有一种形态：选中就出现，写问题 → 发送。
-      // 换服务方之类的配置不在这里，去「设置 › Bubble Ask」。
+      // 卡片只有一种形态：选中即出现，写问题 → 发送。服务方在设置页或右键面板里改。
       return h('div', { className: 'dba-layer', 'data-dba-root': '1' },
         style,
         h('div', {
           key: 'card',
           className: 'dba-card',
           style: { left: cardLeft + 'px', top: cardTop + 'px' },
-          // 卡片里任何一次按下都算「正在操作气泡」，别再让选区重算把卡片打回去。
+          // 卡片内的按下都算操作卡片，选区重算在 600ms 内跳过。
           onMouseDown: () => { suppressRef.current = Date.now() + 600 },
         },
           h('div', { className: 'dba-head' },
             h('img', { className: 'dba-whale', src: WHALE_ICON, alt: '', draggable: false }),
-            h('span', { className: 'dba-title' }, providerInfo ? `问 ${providerInfo.name}` : '问网页版（可在设置里选）'),
+            h('span', { className: 'dba-title' }, providerInfo ? `问 ${providerInfo.name}` : '问网页版（在设置里选）'),
             h('button', { className: 'dba-x', title: '关闭', onClick: closeBubble }, '✕')),
           h('div', { className: 'dba-body' },
             h('div', { className: 'dba-quote' }, quote),
             h('div', { className: 'dba-ask' },
               h('input', {
                 className: 'dba-input',
-                placeholder: '想问什么？（留空＝解释它在当前上下文中是什么意思）',
+                placeholder: '问题（留空则解释这段文字在上下文中的含义）',
                 value: question,
                 onChange: (event) => setQuestion(event.currentTarget.value),
                 onKeyDown: (event) => {
@@ -577,7 +592,7 @@ window.__ModuleLoader__.load({
               h('button', {
                 className: 'dba-send',
                 disabled: busy,
-                title: providerInfo ? `注入并自动发送到 ${providerInfo.name} 网页版` : '注入并自动发送到桌面端配置的网页版',
+                title: providerInfo ? `填入问题并发送到 ${providerInfo.name} 网页版` : '填入问题并发送到桌面端配置的网页版',
                 onClick: () => { void runAsk(true) },
               }, busy ? '…' : '发送'))),
           status ? h('div', { className: 'dba-status' }, status) : null,
@@ -585,37 +600,37 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'dba-foot' },
               h('button', {
                 className: 'dba-btn',
-                title: '复制上一次整理好的完整提问，自己去网页版窗口粘贴',
+                title: '复制整理好的完整提问，在网页版窗口里手动粘贴',
                 onClick: () => { void copyFailedPrompt() },
               }, '复制完整提问'))
             : null))
     }
 
-    //#region 内嵌网页版（自己开 guest，不依赖桌面端 exe）
+    //#region 内嵌网页版（插件自己开 guest，无需托盘 exe）
     /**
-     * 插件自己经桌面端 lease 通道开一个 Electron guest，打开网页版并注入唯一驱动
-     * （shared/driver.js），于是「发送」不再需要托盘 exe。
+     * 插件经桌面端 lease 通道开一个 Electron guest，打开网页版并注入唯一驱动
+     * （shared/driver.js），DeepSeek 的发送因此不依赖托盘 exe。
      *
-     * 三条实测出来的硬约束：
-     *   1. 主进程在 `will-attach-webview` 里把关：src 必须是 `about:blank#<lease>`、
+     * 三项宿主约束（均来自实测）：
+     *   1. 主进程在 `will-attach-webview` 里校验：src 必须是 `about:blank#<lease>`、
      *      partition 必须等于该 lease 的 partition，lease 只能从
-     *      `dshDesktop.browser.acquire()` 拿；裸 createElement('webview') 会被 preventDefault。
+     *      `dshDesktop.browser.acquire()` 取得；直接 createElement('webview') 会被 preventDefault。
      *   2. 主进程在 `did-attach-webview` 里等同一个 dom-ready 后读 URL 认领 lease
-     *      （URL 必须仍是 `about:blank#<lease>`）。立刻 loadURL 会让它读到的 URL 对不上
-     *      lease，直接把 guest 关掉 —— 所以 dom-ready 之后要多等一拍。
+     *      （URL 必须仍是 `about:blank#<lease>`）。立即 loadURL 会让它读到的 URL 与
+     *      lease 不匹配，guest 会被关闭，所以 dom-ready 之后要再等一拍。
      *   3. 站点按 UA 判定「使用环境异常」：UA 含 electron 或 window.process.type==='renderer'。
-     *      lease 的 UA 带 Electron，必须 `setUserAgent` 脱敏，且要在首个文档建立之前设。
+     *      lease 的 UA 带 Electron，必须用 `setUserAgent` 脱敏，且要在首个文档建立之前设置。
      *
      * 登录态：lease 的 partition 由主进程生成（`dsh-sidebar-browser-<uuid>`，无 `persist:`
-     * 前缀、不落盘），DSH 一重启就换新分区。实测把网页版 localStorage 里 7 个认证键
-     * （< 1KB）灌进全新分区即可免登录，所以登录一次后存进 DSH 自己的凭证存储
-     * （Host 半 `/bubble-ask/session`），下次建好 guest 再写回去。
+     * 前缀、不落盘），DSH 重启后是全新分区。把网页版 localStorage 里 7 个认证键
+     * （不到 1KB）写入新分区即可免登录，所以登录一次后存入 DSH 的凭证存储
+     * （Host 半 `/bubble-ask/session`），下次建好 guest 再写回。
      */
     const PANE_WORKSPACE = 'bubble-ask-webview'
     const PANE_HOME = 'https://chat.deepseek.com/'
     /**
-     * 跨分区够用的最小登录集 —— 实测（全新分区 + 只写这几个键 + reload）能直接进主界面
-     * 且能正常对话。全量 29 个键里 37KB 大部分是 feature store 缓存，属于可再生数据，不存。
+     * 跨分区够用的最小登录集：全新分区写入这几个键再 reload，能直接进主界面并正常对话。
+     * 全量 29 个键共 37KB，大部分是 feature store 缓存，可再生，不保存。
      */
     const SESSION_KEYS = [
       'userToken',
@@ -627,7 +642,7 @@ window.__ModuleLoader__.load({
       'hif_leim_cached',
     ]
 
-    /** 取主进程发放 lease 的桌面桥；非 `dsh-app://app` 主框架下不存在。 */
+    /** 取主进程发放 lease 的桌面桥；非 `dsh-app://app` 主框架下返回 null。 */
     function takeDesktopBrowser() {
       const carrier = globalThis.dshDesktop
       if (!carrier || carrier.protocolVersion !== 1) return null
@@ -699,12 +714,12 @@ window.__ModuleLoader__.load({
     const NOT_ATTACHED = /must be attached to the DOM|dom-ready event emitted/i
 
     /**
-     * 气泡、内嵌面板与常驻开关之间的总线。
+     * 提问卡片、内嵌面板与常驻开关之间的总线。
      *
      * 三者是三个独立的 slot 条目（`shell.overlay` 两条 + `conversation.session.header.utilities` 一条），
      * 互相拿不到 ref，所以用一个模块级单槽转交：
      *   - 面板挂载时登记 handler（发送）与 setOpen（开关）
-     *   - 气泡点「发送」调 ask()；拿不到面板就退回桌面端 exe
+     *   - 卡片点「发送」调 ask()；拿不到面板时回退到托盘应用
      *   - 标题栏右上角那颗小按钮调 toggle()，并订阅 open 显示当前状态
      */
     const paneBus = {
@@ -804,7 +819,7 @@ window.__ModuleLoader__.load({
      */
     function WebPane() {
       const [open, setOpen] = useState(false)
-      const [status, setStatus] = useState('待命')
+      const [status, setStatus] = useState('未启动')
       const [busy, setBusy] = useState(false)
       const hostRef = useRef(null)
       const guestRef = useRef(null)
@@ -820,7 +835,7 @@ window.__ModuleLoader__.load({
           if (!bridge) throw new Error('宿主没有 dshDesktop.browser（不是桌面端主框架）')
           const host = hostRef.current
           if (!host) throw new Error('面板容器还没挂载')
-          setStatus('正在建内嵌窗口…')
+          setStatus('正在创建内嵌窗口…')
           const reservation = await bridge.acquire(PANE_WORKSPACE)
           const element = document.createElement('webview')
           element.setAttribute('name', reservation.lease)
@@ -840,14 +855,11 @@ window.__ModuleLoader__.load({
             navigated: false,
             /** 初始化中的 Promise，保证并发调用只跑一次。 */
             readyPromise: null,
-            /** 页面是否已经到过 dom-ready（没到之前 executeJavaScript 会抛错）。 */
-            attached: false,
           }
           guestRef.current = held
           await blankReady
           // 约束 2：等主进程认领完 lease（它读的是同一时刻的 URL）。
           await sleep(400)
-          held.attached = true
           // 约束 3：UA 脱敏必须在首个文档建立之前。
           try {
             const ua = await element.executeJavaScript('navigator.userAgent', true)
@@ -865,6 +877,24 @@ window.__ModuleLoader__.load({
         connectingRef.current = task
         try {
           return await task
+        } catch (error) {
+          // 建窗口失败时释放 lease 并摘掉元素：留着会让下一次重试拿到一个坏掉的 guest。
+          const broken = guestRef.current
+          guestRef.current = null
+          if (broken) {
+            try {
+              broken.element.remove()
+            } catch {
+              /* 元素可能还没挂上 */
+            }
+            try {
+              Promise.resolve(broken.bridge.release(broken.lease)).catch(() => {})
+            } catch {
+              /* 主进程可能已重启 */
+            }
+          }
+          report('pane-connect-failed', { detail: errorText(error) })
+          throw error
         } finally {
           connectingRef.current = null
         }
@@ -949,12 +979,12 @@ window.__ModuleLoader__.load({
       /**
        * 确保「已登录 + 驱动已注入」。
        *
-       * 顺序是关键：先导航（同源才能写 localStorage）→ 判断是否已登录 →
-       * 没登录但有存档就写进去再 reload → 仍然没登录就把窗口交给用户手动登录，
-       * 并轮询到登录完成。最后注入驱动、抓一次登录态存档。
+       * 顺序：先导航（同源才能写 localStorage）→ 判断是否已登录 → 有存档则写入后
+       * reload → 仍未登录就把窗口交给用户手动登录，并轮询到登录完成 → 注入驱动、
+       * 保存一次登录态。
        *
-       * 幂等：已经就绪直接返回 cfg；正在跑就复用同一个 Promise。
-       * 「手动开面板」和「气泡发送」都会调它，不幂等就会出现两个并发初始化。
+       * 幂等：已就绪直接返回 cfg，正在执行则复用同一个 Promise。「手动开面板」和
+       * 「卡片发送」都调用它，避免并发初始化。
        */
       async function ensureReady(held, onProgress) {
         if (held.cfg) return held.cfg
@@ -997,7 +1027,7 @@ window.__ModuleLoader__.load({
           }
           step('正在装载页面驱动…')
           const cfg = await injectDriver(held)
-          // 登录成功就顺手存一次，下次换分区免登录。
+          // 登录成功后再保存一次，换分区后可免登录。
           try {
             const saved = await captureSession(held)
             if (saved) report('pane-session-cached', { saved })
@@ -1019,9 +1049,9 @@ window.__ModuleLoader__.load({
       /**
        * 在 guest 里求值，带「未 attach 就等」与超时。
        *
-       * Electron 在 guest 刚建、或 reload 后 dom-ready 之前调 executeJavaScript 会抛
-       * `The WebView must be attached to the DOM and the dom-ready event emitted`——
-       * 这不是致命错误，等一拍再试就行。
+       * Electron 在 guest 刚建、或 reload 后 dom-ready 之前调用 executeJavaScript 会抛
+       * `The WebView must be attached to the DOM and the dom-ready event emitted`。
+       * 这不是致命错误，等一拍再重试。
        */
       async function evaluate(held, expression, timeoutMs) {
         const deadline = Date.now() + (timeoutMs || 20000)
@@ -1045,7 +1075,7 @@ window.__ModuleLoader__.load({
         return evaluate(held, expression(JSON.stringify(held.cfg)))
       }
 
-      /** 填并发送。返回 { ok, stage, detail } —— 不抛错，交给气泡显示原因。 */
+      /** 填入并发送。返回 { ok, stage, detail }，不抛错，由卡片显示原因。 */
       async function fillAndSend(held, prompt) {
         const filled = await callDriver(
           held,
@@ -1060,7 +1090,7 @@ window.__ModuleLoader__.load({
         const clickedText = asText(clicked)
         if (clickedText.startsWith('clicked')) return { ok: true, stage: 'sent', detail: clickedText }
         if (clickedText.startsWith('disabled')) {
-          return { ok: false, stage: 'disabled', detail: '发送按钮处于禁用状态，文字可能没有真的填进去' }
+          return { ok: false, stage: 'disabled', detail: '发送按钮处于禁用状态，文字可能没有填入' }
         }
         if (clickedText === 'nobutton') {
           return { ok: false, stage: 'no-button', detail: '找不到发送按钮（文字已填入，可按 Enter 手动发送）' }
@@ -1068,17 +1098,17 @@ window.__ModuleLoader__.load({
         return { ok: false, stage: 'failed', detail: clickedText }
       }
 
-      /** 气泡点「发送」时走这里。 */
+      /** 卡片点「发送」时走这里。 */
       async function handleAsk(payload) {
         setOpen(true)
-        // 先让面板真的可见再建 guest：容器尺寸为 0 时 Electron 可能不给它建立视图。
+        // 先让面板可见再建 guest：容器尺寸为 0 时 Electron 可能不建立视图。
         await sleep(120)
         setBusy(true)
-        setStatus('准备内嵌网页版…')
+        setStatus('正在准备内嵌网页版…')
         try {
           const held = await connect()
           const cfg = await ensureReady(held, setStatus)
-          // 服务方只有 DeepSeek 走内嵌；其它家仍由桌面端 exe 负责（气泡那边已先判断）。
+          // 内嵌窗口只支持 DeepSeek；其它服务方由托盘应用发送（卡片已先判断）。
           if (payload && payload.providerId && payload.providerId !== cfg.id) {
             return { ok: false, stage: 'provider', detail: `内嵌窗口只支持 ${cfg.name}，其它服务方请用桌面端窗口` }
           }
@@ -1097,11 +1127,11 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 登记到总线：气泡据此判断走内嵌还是走桌面端 exe；小按钮据此开关面板。
+      // 登记到总线：卡片据此判断走内嵌窗口还是托盘应用；小按钮据此开关面板。
       useEffect(() => {
         paneBus.handler = handleAsk
         paneBus.bind(setOpen)
-        // 上报一次是否可用：/health 的 diag 里能看出「发送会走哪条路」。
+        // 上报一次可用性：/health 的 diag 可看出「发送会走哪条路」。
         report('pane-bus-ready', { available: paneBus.available() })
         return () => {
           if (paneBus.handler === handleAsk) paneBus.handler = null
@@ -1109,17 +1139,16 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      // 展开状态广播给标题栏右上角那颗小按钮（它据此显示「问 DeepSeek」/「收起」）。
+      // 展开状态广播给标题栏右上角那颗小按钮（它据此切换图标状态）。
       useEffect(() => {
         paneBus.publish(open)
       }, [open])
 
       /**
-       * 手动展开面板时把它启动起来。
+       * 手动展开面板时初始化内嵌窗口。
        *
-       * 只是「显示一个 div」是不够的：guest 还没建，用户会看到一片空白。
-       * 所以这里走和发送相同的初始化（connect → ensureReady），差别只在最后不填不发。
-       * 已经初始化过就直接返回，切开关不会重复加载页面。
+       * 只显示一个空 div 时 guest 还没建，用户看到的是空白，所以这里走与发送相同的
+       * 初始化（connect → ensureReady），只是不填不发。已初始化时直接返回。
        */
       useEffect(() => {
         if (!open) return
@@ -1129,7 +1158,7 @@ window.__ModuleLoader__.load({
           try {
             await sleep(120) // 等这一帧渲染完，容器才有尺寸
             if (cancelled) return
-            setStatus('准备内嵌网页版…')
+            setStatus('正在准备内嵌网页版…')
             const held = await connect()
             if (cancelled) return
             await ensureReady(held, setStatus)
@@ -1149,7 +1178,7 @@ window.__ModuleLoader__.load({
         }
       }, [open])
 
-      // 卸载时释放 lease 并摘元素，避免留下悬挂的 guest。
+      // 卸载时释放 lease 并摘除元素，避免留下悬挂的 guest。
       useEffect(() => function () {
         const held = guestRef.current
         guestRef.current = null
@@ -1166,7 +1195,7 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      /** 清掉 Host 存的登录态（换账号或凭据失效时用）。 */
+      /** 清除 Host 保存的登录态（换账号或凭据失效时使用）。 */
       async function forgetSession() {
         try {
           await fetch('/bubble-ask/session', { method: 'DELETE' })
@@ -1203,23 +1232,23 @@ window.__ModuleLoader__.load({
 
     /**
      * 鲸鱼图标：`chrome-extension/tools/art/whale.png`（品牌艺术图）等比缩到 44×27 的内嵌副本。
-     * 44px 是为了 2× 屏下按 22px 显示不糊；内嵌而不是外链，是因为 Client 半拿不到包内资源 URL。
+     * 44px 用于 2× 屏下按 22px 显示；内嵌为 data URL，因为 Client 半拿不到包内资源 URL。
      */
     const WHALE_ICON = 'data:image/png;base64,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'
 
     /**
-     * 会话标题栏右上角那颗常驻小按钮：不选文字也能开/关内嵌面板。
+     * 会话标题栏右上角的常驻小按钮：不选文字也能开关内嵌面板。
      *
-     * 位置是 `conversation.session.header.utilities`（右对齐的会话工具位，DSH 自己
-     * 把「打开方式」「定时任务」「下载会话日志」放在这里）。没有桌面桥时（浏览器里
-     * 打开 GUI）不渲染 —— 那种环境下内嵌面板本来就不可用，放个按钮只会误导。
+     * 位置是 `conversation.session.header.utilities`（右对齐的会话工具位，DSH 把
+     * 「打开方式」「定时任务」「下载会话日志」放在这里）。没有桌面桥时（在浏览器里
+     * 打开 GUI）不渲染该按钮，因为那种环境下内嵌窗口不可用。
      */
     function PaneToggle() {
       const [open, setOpen] = useState(paneBus.open)
       const [supported, setSupported] = useState(false)
 
       useEffect(() => {
-        // 桌面桥只在 dsh-app://app 主框架里有；没有就不显示按钮。
+        // 桌面桥只在 dsh-app://app 主框架里存在；没有就不显示按钮。
         const ok = takeDesktopBrowser() !== null
         setSupported(ok)
         report('pane-toggle-mount', { supported: ok })
@@ -1227,7 +1256,7 @@ window.__ModuleLoader__.load({
       }, [])
 
       if (!supported) return null
-      const label = open ? '收起 DeepSeek 内嵌窗口' : '打开 DeepSeek 内嵌窗口（不用先选文字）'
+      const label = open ? '收起 DeepSeek 内嵌窗口' : '打开 DeepSeek 内嵌窗口'
       return h('button', {
         type: 'button',
         className: 'dba-toggle' + (open ? ' dba-toggle-on' : ''),
@@ -1239,7 +1268,7 @@ window.__ModuleLoader__.load({
           report('pane-toggle-click', { open: !paneBus.open })
           paneBus.toggle()
         },
-        // 右键：就地弹设置面板（换服务方），左键行为不变
+        // 右键打开设置面板（切换服务方），左键行为不变
         onContextMenu: (event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -1256,39 +1285,38 @@ window.__ModuleLoader__.load({
     }
     //#endregion
 
-    //#region 设置页（划词气泡不再背这些配置）
+    //#region 设置页（划词卡片不再承载这些配置）
     /**
      * 「设置 › Bubble Ask」。
      *
-     * 划词卡片现在只有「写问题 + 发送」，换服务方这种事每次提问都要看一遍、
-     * 还容易误触，所以整体挪到 DSH 自己的设置面板：侧边栏底部的设置 →
-     * Bubble Ask。改完立即生效（发送时现读存储）。
+     * 划词卡片只保留「写问题 + 发送」，服务方等配置放到 DSH 设置面板的
+     * 「Bubble Ask」页。改完立即生效（provider 从存储派生）。
      */
     function BubbleSettings() {
       const { provider, providers, note, choose } = useProviderChoice()
 
       return h('div', { className: 'dba-settings' },
         h('style', { key: 'style' }, CSS),
-        h('div', { className: 'dba-set-title' }, '划词提问发到哪家网页版'),
+        h('div', { className: 'dba-set-title' }, '划词提问的发送目标'),
         h('div', { className: 'dba-set-row' },
           h('span', { className: 'dba-set-label' }, '发到'),
           h(ProviderSelect, { provider, providers, onChange: choose })),
         h('div', { className: 'dba-set-hint' },
-          'DeepSeek 走插件自己的内嵌窗口，不依赖桌面端；其余服务方由桌面端托盘应用注入它的浏览器窗口。'),
+          'DeepSeek 由插件自己的内嵌窗口发送；其余服务方由桌面端托盘应用发送。'),
         note ? h('div', { className: 'dba-set-hint' }, note) : null,
         h('div', { className: 'dba-set-hint' },
-          '划词后直接出现提问卡片：写问题回车发送，留空回车用默认问题，Esc 取消。'),
+          '划词后直接出现提问卡片：写问题回车发送，按 Esc 取消。'),
         h('div', { className: 'dba-set-hint' },
-          'API Key、提示词模板、热键在桌面端托盘图标 →「设置」里；这里管的是「发到谁」。'),
+          'API Key、提示词模板、热键在桌面端托盘图标的「设置」里；本页只设置发送目标。'),
         h('div', { className: 'dba-set-hint' },
-          '想更快一点：会话标题栏右上角的鲸鱼按钮，**右键**也能弹出同一份设置。'))
+          '会话标题栏右上角鲸鱼按钮的右键菜单提供同一组设置。'))
     }
 
     /**
-     * 右键鲸鱼按钮弹出的小面板。
+     * 右键鲸鱼按钮弹出的设置面板。
      *
-     * 画在 `shell.overlay` 里而不是按钮旁边：标题栏那行 overflow:clip，
-     * 就地弹会被裁掉一半。锚点坐标由按钮经 settingsBus 传进来。
+     * 画在 `shell.overlay` 里：标题栏那行 overflow:clip，就地弹会被裁掉。锚点坐标
+     * 由按钮经 settingsBus 传入。
      */
     function SettingsPopover() {
       const [state, setState] = useState(settingsBus.snapshot())
@@ -1325,13 +1353,13 @@ window.__ModuleLoader__.load({
           'data-dba-settings': '1',
           style: { left: left + 'px', top: top + 'px', width: width + 'px' },
         },
-          h('div', { className: 'dba-pop-title' }, 'Bubble Ask 设置'),
+          h('div', { className: 'dba-pop-title' }, 'Bubble Ask'),
           h('div', { className: 'dba-set-row' },
             h('span', { className: 'dba-set-label' }, '发到'),
             h(ProviderSelect, { provider, providers, onChange: choose })),
           note ? h('div', { className: 'dba-set-hint' }, note) : null,
-          h('div', { className: 'dba-set-hint' }, 'API Key / 提示词模板 / 热键：桌面端托盘图标 →「设置」。'),
-          h('div', { className: 'dba-set-hint' }, '左键开关内嵌窗口 · 右键出这个面板'))
+          h('div', { className: 'dba-set-hint' }, 'API Key / 提示词模板 / 热键：桌面端托盘图标的「设置」。'),
+          h('div', { className: 'dba-set-hint' }, '左键开关内嵌窗口，右键打开这个面板'))
       )
     }
     //#endregion

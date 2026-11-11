@@ -1,25 +1,21 @@
 /**
  * Bubble Ask —— Host 半。
  *
- * 职责：把当前会话的「精简轨迹」取出来，和用户选中的文字一起拼成一段带上下文的提问，
- * 再交给网页版（默认 DeepSeek，气泡里可切换千问/豆包/ChatGPT/Gemini/Grok）。
- * Client 半只负责选词、气泡和内嵌面板，通过本进程的 HTTP 路由拿结果。
+ * 职责：从当前会话取出精简轨迹，和选中的文字一起拼成一段带上下文的提问，再按所选服务方
+ * （默认 DeepSeek，另有千问/豆包/ChatGPT/Gemini/Grok）投递。Client 半负责选区、提问卡片与
+ * 内嵌面板，通过本进程的 HTTP 路由取结果。
  *
- * 投递方式有两条（外加固化兜底）：
- *   pane      —— Client 半自己经桌面端 lease 通道开 Electron guest 打开网页版，
- *                注入本进程下发的页面驱动后直接填入并发送；只在 DeepSeek 上走这条
- *   app       —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（同步回读校验）
- *   clipboard —— 只组上下文、不发送，把完整提问复制到剪贴板供手动粘贴
+ * 投递路径有两条，注入的是同一份 prompt，差别只在执行者：
+ *   pane —— Client 半经桌面端 lease 通道开 Electron guest 打开网页版，注入本进程下发的
+ *           页面驱动后填入并发送；只用于 DeepSeek
+ *   app  —— 经本地命名管道交给 Bubble Ask 托盘应用注入并发送（回读校验）
  *
- * 内嵌面板绕开了三处宿主限制（准入 lease、认领时序、UA 环境判定），并把登录态搬进
- * DSH 凭证存储以跨分区恢复；详细机制与实测见 dsh-plugin/README.md。
- *
- * 托盘应用仍是其它服务方（及内嵌失败时）的执行者：它持有唯一一份持久化登录 profile，
- * 插件只当薄客户端（见 lib/ask-client.mjs）。
+ * 另有 clipboard 结果模式：只组装上下文、不发送，把完整提问复制到剪贴板供手动粘贴。
+ * 内嵌面板的三项宿主约束与登录态存储见 dsh-plugin/README.md。
  */
 /**
- * 托盘应用通信模块（lib/ask-client.mjs）按需加载：缺文件时「复制提问」照样能用，
- * 只是「发送到 DeepSeek」这条自动路径会明确报未就绪，而不是整个插件挂掉。
+ * 托盘应用通信模块（lib/ask-client.mjs）按需加载：缺文件时手动复制提问仍可用，
+ * 自动发送返回「模块未就绪」。
  */
 let appModule
 async function loadApp() {
@@ -43,7 +39,7 @@ const DEFAULTS = {
   chatUrl: 'https://chat.deepseek.com/',
   /**
    * 默认网页版服务方：deepseek / qwen / doubao / chatgpt / gemini / grok。
-   * 气泡里的下拉选择会随每次请求覆盖它，并记在浏览器 localStorage。
+   * 设置页与右键面板的选择会随每次请求覆盖它，并记在浏览器 localStorage。
    */
   provider: 'deepseek',
   /** 轨迹里最多带几轮消息（user/assistant 各算一条） */
@@ -56,14 +52,13 @@ const DEFAULTS = {
    * 轨迹挑选策略：
    *   relevance（默认）—— 首条用户请求 + 命中选区的消息及邻居 + 最后 recentTail 条固定保留，
    *                       其余按与选区的相关性挑
-   *   recent —— 老行为，只取最后 maxMessages 条
+   *   recent —— 只取最后 maxMessages 条
    */
   traceMode: 'relevance',
   /**
    * relevance 模式下固定保留的末尾条数。
    *
-   * 默认 1（原为 3）：有了「命中锚点」之后，"最近的一定最相关"不再成立 ——
-   * 实测最近几条常是工具操作的元叙述，反而挤掉真信息。
+   * 默认 1：命中锚点优先之后，末尾几条常是工具操作的元叙述，保留过多会挤出实质内容。
    */
   recentTail: 1,
   /** 命中消息前后各带几条邻居消息进轨迹 */
@@ -74,19 +69,19 @@ const DEFAULTS = {
   hitWindowLines: 14,
   /** 每处命中窗口的字符上限 */
   hitWindowChars: 1200,
-  /** 工具结果最多进几条（作为「证据」，只在真的覆盖选区时进） */
+  /** 工具结果最多进几条（作为「证据」，仅在其覆盖选区时进入） */
   maxToolEntries: 2,
   /** 工具结果进轨迹所需的最小覆盖率 */
   toolMinCoverage: 0.12,
   /**
    * 助手正文的最短保留长度。低于这个长度且不含路径/错误/决策的句子
-   * 属于「过程性叙述」（Now let me…／正在…），不进轨迹。
+   * 属于过程性叙述（Now let me…／正在…），不进轨迹。
    */
   minAssistantChars: 60,
-  /** 浏览器/端口/profile 等归托盘应用自己管，插件不再重复配置，避免两处漂移。 */
+  /** 浏览器、CDP 端口、profile 目录由托盘应用配置，插件不声明这些字段。 */
   /**
-   * 托盘应用 exe 路径。留空时依次用「发现文件里记录的路径」，
-   * 两者都没有就报「未找到 Bubble Ask 托盘应用」。
+   * 托盘应用 exe 路径。留空时用发现文件（%APPDATA%\BubbleAsk\ipc.json）里记录的路径；
+   * 两者都没有时报「未找到 Bubble Ask」。
    */
   appPath: '',
 }
@@ -95,8 +90,9 @@ const DEFAULTS = {
  * 网页版服务方注册表。
  *
  * **数据来自唯一真源**：`shared/providers.json` → `lib/providers.data.js`（生成物）。
- * 插件只当客户端：选择器、导航、登录态、发送都在桌面端；这里只需要 id/名称/入口地址
- * 用于气泡里的下拉框与「复制提问」的兜底地址。custom 不在插件里提供（桌面端设置里可配）。
+ * 插件只做展示与解析：选择器、导航、登录态、发送都在桌面端；这里只需要 id/名称/入口地址
+ * 用于设置页与右键面板的下拉框，以及「复制完整提问」里的回退地址。custom 由桌面端配置，
+ * 插件不提供对应选项。
  *
  * 改服务方请改真源并运行 `node tools/gen-providers.mjs`，不要改生成物。
  */
@@ -112,7 +108,7 @@ function findProvider(id) {
 
 /**
  * 解析一次请求要用哪家服务方：
- *   1. 请求里带了 provider（气泡里的选择）—— 只认注册表里的 id，未知 id 明确报错；
+ *   1. 请求里带了 provider（设置页或右键面板的选择）—— 只认注册表里的 id，未知 id 明确报错；
  *   2. 没带 —— 用插件配置的 `provider`；
  *   3. 配置也不认识（手写 config 出错）—— 回退 DeepSeek，保证老用户行为不变。
  */
@@ -149,11 +145,11 @@ function versionAtLeast(a, b) {
 /**
  * 桌面端是否支持「按请求指定服务方」（AppVersion >= 2.1.0）。
  *
- * 旧桌面端会忽略 send 里的 provider 字段、按本机配置的入口发送 —— 切了服务方时
- * 必须先确认版本再发，不能发错站点。
+ * 旧桌面端会忽略 send 里的 provider 字段、按本机配置的入口发送。切换过服务方时
+ * 必须先确认版本再发送，否则内容会落到另一个站点。
  *
- * 刻意不做进程级缓存：用户升级桌面端后无需重启 DSH 即可生效；桌面端被降级/换回
- * 旧版时也能立刻重新拦截。一次 health 只是毫秒级管道往返，值得。
+ * 不做进程级缓存：升级桌面端后无需重启 DSH 即可生效，降级后也能立即重新拦截。
+ * 一次 health 是一次管道往返。
  */
 async function checkProviderSupport(app, settings, log) {
   try {
@@ -184,10 +180,9 @@ const ROUTE_DRIVER = '/bubble-ask/driver'
 /**
  * 内嵌面板的登录态存取。
  *
- * 为什么要这一层：lease 的 partition 由桌面端主进程生成，没有 `persist:` 前缀、
- * 也不落盘，DSH 一重启就换新分区 —— 用户必须重新登录。实测证明把网页版的
- * localStorage 认证键灌进新分区即可免登录（7 个键 / 不到 1KB），所以这里只做
- * 「存 / 取 / 清」三件事，把凭据放进 DSH 自己的凭证存储，而不是插件私有的文件。
+ * lease 的 partition 由桌面端主进程生成，没有 `persist:` 前缀、也不落盘，DSH 重启后
+ * 就是新分区，用户需要重新登录。把网页版 localStorage 的认证键写入新分区即可免登录
+ * （7 个键，不到 1KB）。这里只做「存 / 取 / 清」三件事，凭据存入 DSH 的凭证存储。
  *
  * GET  → { ok, keys: string[] }           只报键名，不回值
  * POST → { ok, saved: number }            写入给定键值
@@ -245,10 +240,10 @@ function sendJson(res, status, payload) {
 }
 
 /**
- * 这些是 Harness 注入的运行时上下文，不是用户真的说的话，拼轨迹时丢掉。
+ * 这些是 Harness 注入的运行时上下文，拼轨迹时丢弃。
  *
- * 正常路径已改用消息自带的 `source.kind`（见 `isUserSpeech`）判别，这份清单只在
- * 拿不到 `source` 的旧会话里兜底，不要再往里加新文案。
+ * 正常路径用消息自带的 `source.kind`（见 `isUserSpeech`）判别，这份清单只在拿不到
+ * `source` 的旧会话里备用，不再加新文案。
  */
 const RUNTIME_NOISE = [
   /^Time sampled while preparing/,
@@ -258,10 +253,9 @@ const RUNTIME_NOISE = [
   /^Current DSH file policy/,
   /^Approval prompts are disabled/,
   /^The approval policy changed from/,
-  // 子代理/队友的消息回显与后台通知，不是用户原话
+  // 子代理/队友的消息回显与后台通知
   /^Agent [0-9a-f-]{8,} sent a message:/,
   /^Background subagent [0-9a-f-]{8,} finished/,
-  /^\[BubbleAsk 自检\]/,
   /<system-reminder>/,
 ]
 
@@ -273,8 +267,8 @@ const ALWAYS_NOISE = [/^\[BubbleAsk 自检\]/]
  *
  * DSH 给每条注入消息都写了 `source.kind`：真实用户消息是 `user`，注入的是
  * `time-context` / `runtime-context` / `skill-catalog` / `agent-message` /
- * `agent-instructions` / `compact-checkpoint` 等。这个字段比 Harness 的文案稳定得多
- * （实测本机 895 条 user 消息里 580 条是注入），所以优先用它；拿不到再退回文案黑名单。
+ * `agent-instructions` / `compact-checkpoint` 等。这个字段比 Harness 的文案稳定
+ * （本机实测 895 条 user 消息中 580 条是注入），因此优先用它；拿不到时再用文案清单。
  */
 function isUserSpeech(message, text) {
   if (ALWAYS_NOISE.some((pattern) => pattern.test(text))) return false
@@ -292,13 +286,13 @@ const TOOL_RESULT_NOISE = [
   /^\{?"ok":(true|false),"stage"/,
 ]
 
-/** 取出若干类型块拼成的纯文本。 */
+/** 取出若干类型块拼成的纯文本（块之间补换行，避免两段文字首尾相接）。 */
 function blocksText(blocks, types) {
-  let text = ''
+  const parts = []
   for (const block of blocks) {
-    if (block && types.includes(block.type) && typeof block.text === 'string') text += block.text
+    if (block && types.includes(block.type) && typeof block.text === 'string') parts.push(block.text)
   }
-  return text.replace(/\s+/g, ' ').trim()
+  return parts.join('\n').replace(/\s+/g, ' ').trim()
 }
 
 /** 工具名归一化：mcp__foo__bar → foo.bar，其余原样。 */
@@ -361,7 +355,7 @@ function collectTraceEntries(messages, options = {}) {
         .filter((block) => block && block.type === 'tool-call')
         .map((block) => normalizeToolName(block.name))
         .filter(Boolean)
-      // 纯工具调用行（没有正文）不进轨迹 —— 用户明确说过不需要
+      // 纯工具调用行没有正文，不进轨迹
       if (!text) continue
       if (!worthKeeping({ text }, minAssistantChars)) continue
       entries.push({ index, kind: 'assistant', text, tools })
@@ -371,7 +365,7 @@ function collectTraceEntries(messages, options = {}) {
       const text = blocksText(blocks, ['text'])
       if (!text) continue
       if (TOOL_RESULT_NOISE.some((pattern) => pattern.test(text))) continue
-      // 完全重复的工具结果只留第一次（DROP：重复读取）
+      // 完全重复的工具结果只保留第一次
       const fingerprint = text.slice(0, 500)
       if (seenToolTexts.has(fingerprint)) continue
       seenToolTexts.add(fingerprint)
@@ -417,9 +411,8 @@ function clip(text, limit) {
 }
 
 /**
- * 「保信号、丢载体」的摘录（借鉴 billion-context 的 KEEP VERBATIM / DROP 契约）：
- * 不是粗暴砍前 N 字，而是按句切分后优先保留承载信息的句子 ——
- * 带行号的路径、错误原文、决策与理由、精确数值、结论句。
+ * 按句切分后优先保留承载信息的句子：带行号的路径、错误原文、决策与理由、
+ * 精确数值与结论句（借鉴 billion-context 的 KEEP VERBATIM / DROP 契约）。
  */
 function salientExcerpt(text, limit) {
   const value = String(text || '').trim()
@@ -489,11 +482,7 @@ function coverageOf(text, grams) {
   if (grams.size === 0) return 0
   const normalized = String(text || '').toLowerCase().replace(/[^0-9a-z\u4e00-\u9fff]+/g, '')
   if (!normalized) return 0
-  let hits = 0
-  for (let i = 0; i + 1 < normalized.length; i += 1) {
-    if (grams.has(normalized.slice(i, i + 2))) hits += 1
-  }
-  // 命中的去重比例更稳：同一片段重复出现不会刷高分数
+  // 去重比例：同一片段重复出现不会刷高分数
   const uniqueHit = new Set()
   for (let i = 0; i + 1 < normalized.length; i += 1) {
     const gram = normalized.slice(i, i + 2)
@@ -505,10 +494,10 @@ function coverageOf(text, grams) {
 /**
  * 把消息数组压成「精简轨迹」文本。
  *
- * 三个池子，分开处理（早期版本把工具 JSON 当正文一起打分，结果被大段 JSON 淹没）：
+ * 正文与工具结果分开打分，避免大段 JSON 挤占正文名额：
  *   1. 正文池（我 / 助手）—— 固定保留首条请求与最后 recentTail 条，其余按覆盖率挑
- *   2. 证据池（工具结果）—— 最多 toolBudget 条，且必须真的覆盖了选区文字；渲染成骨架
- *   3. 兜底 —— 名额没填满就从末尾往前补正文
+ *   2. 工具结果池 —— 最多 toolBudget 条，且必须真的覆盖了选区文字；渲染成骨架
+ *   3. 补位 —— 名额没填满时从末尾往前补正文
  */
 function condenseMessages(messages, options, selection, pinnedWindow) {
   const entries = collectTraceEntries(messages, options)
@@ -609,10 +598,7 @@ function condenseMessages(messages, options, selection, pinnedWindow) {
     counts,
     relevantEntries: relevant,
     totalEntries: entries.length,
-    toolCandidates: toolPool.length,
     mode,
-    /** 被选中的条目（含完整原文），供另一种格式重渲染 / 对照。 */
-    chosen,
   }
 }
 
@@ -690,8 +676,8 @@ function spanOf(indexes, total, neighbors) {
 /**
  * 字符窗口：以命中位置为圆心取一段，并对齐到行边界。
  *
- * 行窗口处理不了"整个文件被压成一行"这类工具输出（实测 main.js 的 grep 结果
- * 就是一个巨型单行），那时按行裁剪完全失效 —— 这里按字符兜底。
+ * 行窗口处理不了「整个文件被压成一行」这类工具输出（main.js 的 grep 结果就是一个
+ * 巨型单行），此时按行裁剪失效，改为按字符取窗口。
  */
 function charWindowAround(text, selection, maxChars) {
   const value = String(text || '')
@@ -730,10 +716,10 @@ function charWindowAround(text, selection, maxChars) {
 }
 
 /**
- * 围绕命中位置取一段上下文（而不是"留头留尾"）。
+ * 围绕命中位置取一段上下文。
  *
- * 之前的做法是 `clipBothEnds`：长工具结果只留头尾 —— 而"在长文件里找某一行"
- * 恰恰是最典型的场景，命中行正好被截掉。
+ * 长工具结果只留头尾时，「在长文件里找某一行」这类场景的命中行会被截掉，所以这里
+ * 按命中行取窗口。
  */
 function hitWindow(text, selection, options = {}) {
   const value = String(text || '')
@@ -791,16 +777,10 @@ function hitWindow(text, selection, options = {}) {
 }
 
 /**
- * 组装"围绕命中位置的上下文"：命中消息本身 + 其它包含选区的工具结果。
- *
- * 与【会话精简轨迹】的区别：轨迹是按相关性挑选的**背景**，这里是选区所在的
- * **原文现场**，必须完整到能看懂上下文，所以按行取窗口而不是摘句。
- */
-/**
  * 命中指纹：从命中位置往后取一段归一化文本。
  *
- * 用来识别"同一段原文被多处引用"（例如先 grep 出来、后来又被重新读了一遍），
- * 那种情况下两条消息的窗口前缀不同，但命中处的原文是一样的。
+ * 用来识别「同一段原文被多处引用」（例如先 grep 出来、后来又被重新读了一遍），
+ * 那种情况下两条消息的窗口前缀不同，但命中处的原文相同。
  */
 function matchFingerprint(text, selection, size = 240) {
   const needle = normalizeForMatch(selection)
@@ -811,6 +791,11 @@ function matchFingerprint(text, selection, size = 240) {
   return haystack.slice(at, at + size)
 }
 
+/**
+ * 组装「围绕命中位置的上下文」：命中消息本身 + 其它包含选区的工具结果。
+ *
+ * 精简轨迹是按相关性挑选的背景；这里是选区所在的原文，按行取窗口，保证上下文完整。
+ */
 function buildHitContext(messages, selection, options = {}) {
   const located = locateSelection(messages, selection, 0)
   const budget = options.totalChars ?? 2400
@@ -852,17 +837,17 @@ function buildHitContext(messages, selection, options = {}) {
   return { text: sections.join('\n\n'), hits: located.hits, exact: located.exact }
 }
 
-/** 组一段「带上下文的提问」。
+/**
+ * 组一段「带上下文的提问」。
  *
  * 结构固定为三段，顺序对应阅读顺序：
  *   1. 背景上下文（精简轨迹）
- *   2. 围绕命中位置的上下文（选区所在的原文现场，按行取窗口）
+ *   2. 围绕命中位置的上下文（选区所在的原文，按行取窗口）
  *   3. 选中的文字 + 我的问题
  */
 function buildPrompt({ trace, hit, selection, question, cwd }) {
-  const typed = (question && question.trim()) || ''
+  const typed = (typeof question === 'string' ? question : '').trim()
   const hasHit = Boolean(hit && hit.trim())
-  const level = { trace: '一', hit: hasHit ? '二' : '' }
   const selectionLabel = hasHit ? '三' : '二'
   const questionLabel = hasHit ? '四' : '三'
 
@@ -873,7 +858,7 @@ function buildPrompt({ trace, hit, selection, question, cwd }) {
 
   parts.push(
     '',
-    `【${level.trace}、会话精简轨迹（背景）】`,
+    '【一、会话精简轨迹（背景）】',
     '（标注：`[mNN]` 是消息引用号；我＝用户原话，助手＝AI 回复，括号里是它这一轮调用的工具；工具结果只保留骨架）',
     trace || '（这次会话还没有可用的消息）',
   )
@@ -881,8 +866,8 @@ function buildPrompt({ trace, hit, selection, question, cwd }) {
   if (hasHit) {
     parts.push(
       '',
-      `【${level.hit}、围绕命中位置的上下文】`,
-      '（选中的文字就是从下面这段原文里来的；这里取了它前后的内容，用来判断它到底指代什么）',
+      '【二、围绕命中位置的上下文】',
+      '（选中的文字来自下面这段原文；这里取了它前后的内容，用来判断它指代什么）',
       hit,
     )
   }
@@ -895,7 +880,7 @@ function buildPrompt({ trace, hit, selection, question, cwd }) {
     '"""',
   )
 
-  // 用户没填问题时不再单独重复一句默认问句，交给下面的指令说清楚即可。
+  // 没填问题时只由下面的指令说明任务，不再单独加一段默认问句。
   if (typed) {
     parts.push('', `【${questionLabel}、我的问题】`, typed)
   }
@@ -926,8 +911,8 @@ function buildPrompt({ trace, hit, selection, question, cwd }) {
  *   - 但更靠前的是限流：真实 prompt 换出来的 ~7.0–7.5K URL **稳定 429**，
  *     等 3 分钟、单次请求、去掉换行都一样；而 `?q=test` 和小 ASCII 一直 200。
  *
- * 结论：`?q=` 只适合短内容。长提问改走「打开网页 + 剪贴板」，既不压缩上下文也不碰阈值。
- * 这里把阈值取到 3000（远低于任何实测边界），超过就走剪贴板。
+ * 结论：`?q=` 只适合短内容。长提问改为打开网页后复制到剪贴板，上下文不压缩，
+ * URL 长度也不会超限。这里把阈值取到 3000（远低于实测边界），超过就用剪贴板。
  */
 const PREFILL_URL_SHORT_MAX = 3000
 
@@ -980,10 +965,10 @@ function traceOfSession(sessions, sessionId, options, selection) {
 /**
  * 组装一次提问：精简轨迹 + 选中文字 + 问题。
  *
- * 服务方只影响「兜底入口地址与预填」：真正的导航、登录检测、注入与发送由桌面端按同一个
- * provider id 完成。两条投递模式（都不压缩上下文，prompt 永远是完整版）：
- *   prefill   —— 仅当该站点支持 URL 预填（目前只有 DeepSeek 的 `?q=`）且 prompt 够短；
- *   clipboard —— 其余情况：给出该服务方入口地址 + 完整 prompt，由用户手动粘贴兜底。
+ * 服务方决定回退入口地址与预填参数；导航、登录检测、注入与发送由执行者按同一个
+ * provider id 完成。两种结果模式（都不压缩上下文，prompt 始终完整）：
+ *   prefill   —— 站点支持 URL 预填（目前只有 DeepSeek 的 `?q=`）且 prompt 够短；
+ *   clipboard —— 其余情况：给出该服务方入口地址 + 完整 prompt，由用户手动粘贴。
  */
 function prepareAsk(sessions, settings, input) {
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId : ''
@@ -1069,15 +1054,14 @@ export function apply(ctx, config = {}) {
   /**
    * 内嵌面板的登录态记录。
    *
-   * 走 DSH 自己的凭证存储（`ctx.credentials`，`@deepseek-ai/dsh-credentials-local`
-   * 在 base bundle 里默认挂载），不自己写文件：
-   *   - 记录按 `<scope>/<id>` 寻址，`scope` 必须是本插件注册名
-   *   - `modifyRecord` 是唯一写路径，记录在写时是独占的
+   * 存入 DSH 的凭证存储（`ctx.credentials`，`@deepseek-ai/dsh-credentials-local`
+   * 在 base bundle 里默认挂载），插件不自己写文件：
+   *   - 记录按 `<scope>/<id>` 寻址，`scope` 是本插件注册名
+   *   - `modifyRecord` 是唯一写路径，记录在写时独占
    *   - 凭据值不进配置、不进日志、不进 diag
    *
-   * 存的是网页版 localStorage 里的认证键（实测 7 个键不到 1KB 就够跨分区免登录）。
-   * 存网页版自己的 token 而不是另做一套登录，是因为它本来就是站点签发的凭据，
-   * 复制一份不会有第二套失效规则。
+   * 存的内容是网页版 localStorage 里的认证键（7 个键，不到 1KB，写入新分区即可免登录）。
+   * 这些 token 由站点签发，插件保存原值，不另建一套登录凭据。
    */
   const SESSION_SCOPE = 'bubble-ask'
   const SESSION_RECORD_ID = 'web-session'
@@ -1160,7 +1144,7 @@ export function apply(ctx, config = {}) {
           currentProviderName: pipe?.currentProviderName ?? null,
           webProvider: pipe?.webProvider ?? null,
           providers: pipe?.providers ?? null,
-          // 旧桌面端（< 2.1.0）会忽略 send 里的 provider 字段，气泡里只能提供 DeepSeek。
+          // 旧桌面端（< 2.1.0）会忽略 send 里的 provider 字段，插件对旧桌面端只提供 DeepSeek。
           providerSwitchable: versionAtLeast(pipe?.app, '2.1.0'),
         },
         // 插件自己的服务方注册表：Client 半据此渲染下拉框，不依赖桌面端版本。
@@ -1241,8 +1225,7 @@ export function apply(ctx, config = {}) {
   /**
    * 把已存的登录态取给 Client 半（含值）。
    *
-   * 单独一条路由而不是并进上面那条 GET：那条只回答「存了没有」，
-   * 这条要真的把凭据交出去，语义不同，混在一起容易误用。
+   * 与上一条 GET 分开：那条只回答「存了没有」，这条要把凭据交出去，语义不同。
    */
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -1279,30 +1262,31 @@ export function apply(ctx, config = {}) {
     path: ROUTE_SEND,
     async handler(req, res) {
       if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: '只接受 POST' })
+      let prepared = null
       try {
         const input = await readJsonBody(req)
-        const prepared = prepareAsk(sessions(), settings, input)
+        prepared = prepareAsk(sessions(), settings, input)
         if (!prepared.ok) return sendJson(res, 400, prepared)
-        // CDP 注入没有长度限制，prompt 本身就是完整版。
+        // 注入没有长度限制，prompt 保持完整版。
         const fullPrompt = prepared.prompt
         const providerId = prepared.providerId || DEFAULTS.provider
         log(`注入网页版（${prepared.providerName}）：${fullPrompt.length} 字（轨迹 ${prepared.stats.traceMessages} 条）`)
         const app = await loadApp()
         if (!app || typeof app.sendPrompt !== 'function') {
-          // 用 200 + ok:false：Client 端对非 2xx 是抛错的，那样就看不到这里的 prompt，
-          // 气泡里的「复制全文」逃生口就废了。状态交给 body 表达，别用 HTTP 码。
+          // 用 200 + ok:false：Client 端对非 2xx 会抛错并丢掉 body，卡片就拿不到 prompt，
+          // 无法提供「复制完整提问」。失败状态放在 body 里，不用 HTTP 状态码表达。
           return sendJson(res, 200, {
             ok: false,
             stage: 'module',
             error: '托盘通信模块未就绪',
-            detail: '可改用气泡里的「复制提问」或「复制全文」手动粘贴',
+            detail: '可在卡片里点「复制完整提问」后手动粘贴',
             prompt: fullPrompt,
             url: prepared.url,
             stats: prepared.stats,
           })
         }
-        // 旧版桌面端会忽略 send 里的 provider 字段、静默发到 DeepSeek：切了服务方时
-        // 必须先确认版本再发，而不是把内容发错站点。
+        // 旧版桌面端会忽略 send 里的 provider 字段、静默发到本机配置的服务方；切换过
+        // 服务方时先确认版本，避免内容落到另一个站点。
         if (providerId !== 'deepseek') {
           const support = await checkProviderSupport(app, settings, log)
           if (!support.ok) {
@@ -1310,7 +1294,7 @@ export function apply(ctx, config = {}) {
               ok: false,
               stage: support.error || 'provider-check',
               error: support.error === 'old-app' ? '桌面端版本过旧，暂不支持切换服务方' : '无法确认桌面端是否支持切换服务方',
-              detail: support.detail || '请把 Bubble Ask 桌面端升级到 2.1.0 或更高版本，或改用「复制提问」',
+              detail: support.detail || '请把 Bubble Ask 桌面端升级到 2.1.0 或更高版本，或改用「复制完整提问」',
               provider: providerId,
               providerName: prepared.providerName,
               prompt: fullPrompt,
@@ -1321,9 +1305,9 @@ export function apply(ctx, config = {}) {
         }
         const sent = await app.sendPrompt({
           prompt: fullPrompt,
-          // 总是显式带 provider：桌面端配置过其它默认服务方时，用户在这里明确选 DeepSeek
-          // 不能因为「省略就跟随配置」而发到别家。旧桌面端（< 2.1.0）会忽略这个增量字段，
-          // 仍按本机配置的入口发送（与升级前行为一致）；插件对旧桌面端只提供 DeepSeek。
+          // 总是显式带 provider：桌面端配置过其它默认服务方时，明确选择 DeepSeek 的请求
+          // 仍要发到 DeepSeek。旧桌面端（< 2.1.0）忽略这个增量字段，按本机配置的入口发送；
+          // 插件对旧桌面端只提供 DeepSeek。
           provider: providerId,
           appPath: settings.appPath,
           log: (line) => log(line),
@@ -1336,11 +1320,23 @@ export function apply(ctx, config = {}) {
           stats: prepared.stats,
           prefillUrl: prepared.url,
         }
-        // 发送成功时网页版会停在会话页；插件这边没有直达地址，留预填地址做参考。
+        // 发送成功时网页版停在会话页，插件没有直达地址，留预填地址作参考。
         if (!body.url) body.url = prepared.url
         sendJson(res, 200, body)
       } catch (error) {
-        sendJson(res, 500, { ok: false, stage: 'error', detail: String(error?.message ?? error) })
+        const detail = String(error?.message ?? error)
+        // 请求体读不出来（非法 JSON / 过大）时没有 prompt 可给，按客户端错误返回。
+        if (!prepared || !prepared.ok) return sendJson(res, 400, { ok: false, stage: 'input', detail })
+        // 注入阶段抛异常：仍把 prompt 交回，卡片可提供「复制完整提问」。
+        log(`发送失败：${detail}`)
+        sendJson(res, 200, {
+          ok: false,
+          stage: 'error',
+          detail,
+          prompt: prepared.prompt,
+          url: prepared.url,
+          stats: prepared.stats,
+        })
       }
     },
   }), 'bubble-ask: send route')
@@ -1386,20 +1382,9 @@ export function apply(ctx, config = {}) {
 }
 
 /**
- * 供离线分析与对照工具使用的内部导出。
+ * 供离线自检脚本使用的导出。
  *
- * DSH 只认 apply / inject / name，多导出这些不改变插件行为，
- * 但能让 `npm test` 之外的脚本用**真实实现**跑对照，而不是另写一份近似版本。
+ * DSH 只读 apply / inject / name；这两个导出供 `%TEMP%\ext-test\test-plugin.mjs` 用
+ * 真实实现做断言：prompt 拼装与版本比较。
  */
-export {
-  DEFAULTS,
-  PROVIDERS,
-  buildPrompt,
-  collectTraceEntries,
-  condenseMessages,
-  salientExcerpt,
-  describeToolResult,
-  prepareAsk,
-  resolveProvider,
-  versionAtLeast,
-}
+export { buildPrompt, versionAtLeast }
