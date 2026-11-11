@@ -54,6 +54,100 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * 右上角鲸鱼按钮的右键面板总线。
+     *
+     * 左键保持原样（开/关内嵌面板），右键弹出一个小设置面板。面板本身画在
+     * `shell.overlay` 里 —— 标题栏那行 overflow 会裁，就地弹会被切掉，所以按钮
+     * 只负责把锚点坐标发出来，由 overlay 里的 SettingsPopover 负责渲染。
+     */
+    const settingsBus = {
+      open: false,
+      x: 0,
+      y: 0,
+      subscribers: new Set(),
+      snapshot() {
+        return { open: this.open, x: this.x, y: this.y }
+      },
+      subscribe(fn) {
+        this.subscribers.add(fn)
+        return () => { this.subscribers.delete(fn) }
+      },
+      publish() {
+        const snap = this.snapshot()
+        for (const fn of this.subscribers) fn(snap)
+      },
+      show(x, y) {
+        this.open = true
+        this.x = x
+        this.y = y
+        this.publish()
+      },
+      hide() {
+        if (!this.open) return
+        this.open = false
+        this.publish()
+      },
+      toggle(x, y) {
+        if (this.open) this.hide()
+        else this.show(x, y)
+      },
+    }
+
+    /**
+     * 服务方选择：设置页与右键面板共用同一份状态、同一套 health 同步。
+     * 规则和以前下拉框一致：桌面端说支持哪些就只列哪些，没手选过就沿用配置默认值。
+     */
+    function useProviderChoice() {
+      const [provider, setProvider] = useState(() => readStoredProvider() || PROVIDERS[0].id)
+      const [providers, setProviders] = useState(PROVIDERS)
+      const [note, setNote] = useState('')
+
+      useEffect(() => {
+        let cancelled = false
+        void (async () => {
+          try {
+            const response = await fetch('/bubble-ask/health')
+            if (!response.ok) return
+            const payload = await response.json()
+            if (cancelled || !payload || payload.ok !== true) return
+            const app = payload.app || {}
+            const switchable = app.providerSwitchable === true
+            const ids = switchable && Array.isArray(app.providers) ? app.providers : []
+            const known = switchable
+              ? (ids.length > 0 ? PROVIDERS.filter((item) => ids.includes(item.id)) : PROVIDERS)
+              : PROVIDERS.filter((item) => item.id === 'deepseek')
+            if (known.length > 0) setProviders(known)
+            const configured = payload.settings && typeof payload.settings.provider === 'string'
+              ? payload.settings.provider
+              : ''
+            if (!readStoredProvider() && known.some((item) => item.id === configured)) setProvider(configured)
+            setNote(switchable ? '' : '当前桌面端不支持切换服务方，只能发到 DeepSeek。')
+          } catch {
+            setNote('读不到桌面端状态：非 DeepSeek 的服务方需要桌面端托盘应用在运行。')
+          }
+        })()
+        return () => { cancelled = true }
+      }, [])
+
+      function choose(id) {
+        setProvider(id)
+        storeProvider(id)
+        report('settings-provider', { provider: id })
+      }
+
+      return { provider, providers, note, choose }
+    }
+
+    /** 服务方下拉（设置页与右键面板共用）。 */
+    function ProviderSelect({ provider, providers, onChange }) {
+      return h('select', {
+        className: 'dba-select',
+        value: provider,
+        onChange: (event) => onChange(event.currentTarget.value),
+      }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))
+    }
+
     /** 当前会话 id：由会话作用域的探针登记，浮层再读它。 */
     const sessionCounts = new Map()
     let lastSessionId = ''
@@ -115,6 +209,11 @@ window.__ModuleLoader__.load({
       'background:var(--dsw-alias-label-accent,#247bbf);color:#fff;font:inherit;font-weight:600}',
       '.dba-send:disabled{opacity:.55;cursor:default}',
       '.dba-settings{display:flex;flex-direction:column;gap:10px;padding:14px 16px;max-width:560px}',
+      '.dba-pop{position:fixed;z-index:2147483001;pointer-events:auto;display:flex;flex-direction:column;gap:8px;',
+      'padding:12px;border-radius:12px;border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));',
+      'background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#111);',
+      'box-shadow:0 14px 36px rgba(0,0,0,.2);font:var(--dsw-font-xxs-12,12px/1.5 system-ui)}',
+      '.dba-pop-title{font-weight:600}',
       '.dba-set-title{font-weight:600;color:var(--dsw-alias-label-primary,#111)}',
       '.dba-set-row{display:flex;align-items:center;gap:8px}',
       '.dba-set-label{color:var(--dsw-alias-label-tertiary,#888);white-space:nowrap}',
@@ -1151,12 +1250,21 @@ window.__ModuleLoader__.load({
       return h('button', {
         type: 'button',
         className: 'dba-toggle' + (open ? ' dba-toggle-on' : ''),
-        title: label,
+        title: label + '（右键设置）',
         'aria-label': label,
         'aria-pressed': open,
+        'data-dba-pane-toggle': '1',
         onClick: () => {
           report('pane-toggle-click', { open: !paneBus.open })
           paneBus.toggle()
+        },
+        // 右键：就地弹设置面板（换服务方），左键行为不变
+        onContextMenu: (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          const rect = event.currentTarget.getBoundingClientRect()
+          report('pane-toggle-context', { open: !settingsBus.open })
+          settingsBus.toggle(rect.right, rect.bottom + 8)
         },
       }, h('img', {
         className: 'dba-toggle-whale',
@@ -1176,55 +1284,74 @@ window.__ModuleLoader__.load({
      * Bubble Ask。改完立即生效（发送时现读存储）。
      */
     function BubbleSettings() {
-      const [provider, setProvider] = useState(() => readStoredProvider() || PROVIDERS[0].id)
-      const [providers, setProviders] = useState(PROVIDERS)
-      const [note, setNote] = useState('')
-
-      useEffect(() => {
-        let cancelled = false
-        void (async () => {
-          try {
-            const response = await fetch('/bubble-ask/health')
-            if (!response.ok) return
-            const payload = await response.json()
-            if (cancelled || !payload || payload.ok !== true) return
-            const app = payload.app || {}
-            const switchable = app.providerSwitchable === true
-            const ids = switchable && Array.isArray(app.providers) ? app.providers : []
-            const known = switchable
-              ? (ids.length > 0 ? PROVIDERS.filter((item) => ids.includes(item.id)) : PROVIDERS)
-              : PROVIDERS.filter((item) => item.id === 'deepseek')
-            if (known.length > 0) setProviders(known)
-            setNote(switchable ? '' : '当前桌面端不支持切换服务方，只能发到 DeepSeek。')
-          } catch {
-            setNote('读不到桌面端状态：非 DeepSeek 的服务方需要桌面端托盘应用在运行。')
-          }
-        })()
-        return () => { cancelled = true }
-      }, [])
+      const { provider, providers, note, choose } = useProviderChoice()
 
       return h('div', { className: 'dba-settings' },
         h('style', { key: 'style' }, CSS),
         h('div', { className: 'dba-set-title' }, '划词提问发到哪家网页版'),
         h('div', { className: 'dba-set-row' },
           h('span', { className: 'dba-set-label' }, '发到'),
-          h('select', {
-            className: 'dba-select',
-            value: provider,
-            onChange: (event) => {
-              const next = event.currentTarget.value
-              setProvider(next)
-              storeProvider(next)
-              report('settings-provider', { provider: next })
-            },
-          }, providers.map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
+          h(ProviderSelect, { provider, providers, onChange: choose })),
         h('div', { className: 'dba-set-hint' },
           'DeepSeek 走插件自己的内嵌窗口，不依赖桌面端；其余服务方由桌面端托盘应用注入它的浏览器窗口。'),
         note ? h('div', { className: 'dba-set-hint' }, note) : null,
         h('div', { className: 'dba-set-hint' },
           '划词后直接出现提问卡片：写问题回车发送，留空回车用默认问题，Esc 取消。'),
         h('div', { className: 'dba-set-hint' },
-          '提示词模板、API Key、热键等还在桌面端托盘图标 →「设置」里；网页端的登录态在卡片发送后自动复用。'))
+          'API Key、提示词模板、热键在桌面端托盘图标 →「设置」里；这里管的是「发到谁」。'),
+        h('div', { className: 'dba-set-hint' },
+          '想更快一点：会话标题栏右上角的鲸鱼按钮，**右键**也能弹出同一份设置。'))
+    }
+
+    /**
+     * 右键鲸鱼按钮弹出的小面板。
+     *
+     * 画在 `shell.overlay` 里而不是按钮旁边：标题栏那行 overflow:clip，
+     * 就地弹会被裁掉一半。锚点坐标由按钮经 settingsBus 传进来。
+     */
+    function SettingsPopover() {
+      const [state, setState] = useState(settingsBus.snapshot())
+      const { provider, providers, note, choose } = useProviderChoice()
+
+      useEffect(() => settingsBus.subscribe(setState), [])
+
+      useEffect(() => {
+        if (!state.open) return
+        const onDown = (event) => {
+          const target = event.target
+          if (target && target.closest && (target.closest('[data-dba-settings]') || target.closest('[data-dba-pane-toggle]'))) return
+          settingsBus.hide()
+        }
+        const onKey = (event) => {
+          if (event.key === 'Escape') settingsBus.hide()
+        }
+        document.addEventListener('mousedown', onDown, true)
+        document.addEventListener('keydown', onKey, true)
+        return () => {
+          document.removeEventListener('mousedown', onDown, true)
+          document.removeEventListener('keydown', onKey, true)
+        }
+      }, [state.open])
+
+      if (!state.open) return null
+      const width = 268
+      const left = Math.min(Math.max(8, state.x - width), Math.max(8, window.innerWidth - width - 8))
+      const top = Math.min(Math.max(8, state.y), Math.max(8, window.innerHeight - 210))
+      return h('div', { className: 'dba-layer', 'data-dba-root': '1' },
+        h('style', { key: 'style' }, CSS),
+        h('div', {
+          className: 'dba-pop',
+          'data-dba-settings': '1',
+          style: { left: left + 'px', top: top + 'px', width: width + 'px' },
+        },
+          h('div', { className: 'dba-pop-title' }, 'Bubble Ask 设置'),
+          h('div', { className: 'dba-set-row' },
+            h('span', { className: 'dba-set-label' }, '发到'),
+            h(ProviderSelect, { provider, providers, onChange: choose })),
+          note ? h('div', { className: 'dba-set-hint' }, note) : null,
+          h('div', { className: 'dba-set-hint' }, 'API Key / 提示词模板 / 热键：桌面端托盘图标 →「设置」。'),
+          h('div', { className: 'dba-set-hint' }, '左键开关内嵌窗口 · 右键出这个面板'))
+      )
     }
     //#endregion
 
@@ -1254,6 +1381,12 @@ window.__ModuleLoader__.load({
           id: 'bubble-ask-webview',
           order: 901,
         }, WebPane))
+        // 右键鲸鱼按钮弹出的设置面板（画在 overlay 里，避免被标题栏裁掉）
+        context.slots.inject('shell.overlay', () => context.slots.register({
+          name: 'shell.overlay',
+          id: 'bubble-ask-settings',
+          order: 902,
+        }, SettingsPopover))
         // 会话标题栏右上角的常驻开关：不选文字也能开/关内嵌面板。
         context.slots.inject('conversation.session.header.utilities', () => context.slots.register({
           name: 'conversation.session.header.utilities',
