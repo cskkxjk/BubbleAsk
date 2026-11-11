@@ -60,7 +60,7 @@ github:<owner>/<repo>#path:/dsh-plugin
 
 ```powershell
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
-# {"ok":true,"cdpReady":true,"app":{"connected":true,"version":2,"app":"2.3.0",
+# {"ok":true,"cdpReady":true,"app":{"connected":true,"version":2,"app":"2.3.1",
 #  "currentProvider":"deepseek","providers":["deepseek","qwen",...,"custom"],
 #  "providerSwitchable":true,...},"providers":[...],"provider":"deepseek",...}
 # 插件未启用时该地址返回 404

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bubble Ask — 网页问答",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "划词即问：选中文字后直接出现提问卡片，把当前页面的结构与文字作为上下文，在右侧独立窗口里用 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok 网页版提问，使用浏览器已登录的账号。",
   "minimum_chrome_version": "88",
   "permissions": ["scripting", "tabs", "storage", "windows"],
