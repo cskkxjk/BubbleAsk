@@ -425,8 +425,13 @@ window.__ModuleLoader__.load({
           if (event.shiftKey || event.key === 'Shift') readSelection(event)
         }
         // 只有用户自己滚动且卡片已显示时才收起；刚弹出的 800ms 内不处理滚动。
-        const onScroll = () => {
+        // scroll 不冒泡，但会走捕获阶段：window 上的捕获监听同样会收到卡片内部的滚动
+        // （单行输入框里文字超出可视宽度时会自己横向滚动，引用区也可能可滚动）。
+        // 这类内部滚动不能当成"用户滚动了页面"，否则问题稍微长一点卡片就自己消失。
+        const onScroll = (event) => {
           if (Date.now() - shownAt < 800) return
+          const target = event && event.target
+          if (target && target.nodeType === 1 && target.closest && target.closest('[data-dba-root]')) return
           setBubble((prev) => (prev.visible ? { ...prev, visible: false } : prev))
         }
         document.addEventListener('mouseup', onMouseUp, true)

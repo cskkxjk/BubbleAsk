@@ -318,12 +318,19 @@
   // 点别处 / 滚动 / 改窗口大小 → 收起
   const hideOnOutside = (event) => {
     if (event.composedPath && event.composedPath().includes(host)) return
+    // composedPath 在某些环境下拿不到时，退回看事件目标是不是卡片自己（含 host 本身）
+    if (event.target && host.contains && host.contains(event.target)) return
     hide()
   }
   document.addEventListener('mousedown', hideOnOutside, true)
   // 有些脚本或无障碍工具只派发 click（没有 mousedown），一并处理
   document.addEventListener('click', hideOnOutside, true)
-  window.addEventListener('scroll', () => hide(), { capture: true, passive: true })
+  // 卡片装在 open shadow root 里，而 scroll 是非 composed 事件、跨不出 shadow 边界，
+  // 所以卡片内部（输入框横向滚动等）的 scroll 本来就不会到这里 ——
+  // DSH 插件端因为卡片在亮 DOM 里，同样的写法会把输入稍长就当成"用户滚动页面"而收起卡片。
+  // 这里统一走 hideOnOutside（内部事件一律忽略），作为防御：万一将来卡片移出 shadow，
+  // 或某些 Chromium 分支对 shadow 事件路径处理不一致，也不会误收起。
+  window.addEventListener('scroll', hideOnOutside, { capture: true, passive: true })
   window.addEventListener('resize', () => hide(), { passive: true })
 
   // 卡片里的按下不要冒泡给页面（否则页面自己的选择/拖拽逻辑会来抢）
