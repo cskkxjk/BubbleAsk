@@ -184,7 +184,7 @@ error: profile "desktop" is managed exclusively by the Electron application
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ```
 
-安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.3.1","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示桌面端已连通且协议版本一致；`providerSwitchable` 为 `true` 时设置页与右键面板的服务方下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
+安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.3.2","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示桌面端已连通且协议版本一致；`providerSwitchable` 为 `true` 时设置页与右键面板的服务方下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
 
 **功能验证**：在会话中选中一段回答，选区下方直接出现鲸鱼提问卡片。点击「复制完整提问」后，完整提问应已复制到剪贴板，卡片里显示「已复制 N 字」。桌面端 2.1.0+ 时，设置页与右键面板的服务方下拉应列出 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok；选一家发送后桌面端日志应出现对应 provider 名称与导航目标。
 
