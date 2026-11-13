@@ -28,7 +28,7 @@
 
 服务方数据只有一份：仓库根的 `shared/providers.json`。
 
-**版本号**：三件产物统一为同一个版本号（当前 `2.3.2`），此前三者各自演进。一致性由 `chrome-extension/tools/check-providers.mjs` 断言：比对 `manifest.json`、插件 `package.json` 与桌面端 `IpcContract.AppVersion`，不一致直接失败。
+**版本号**：三件产物统一为同一个版本号（当前 `2.3.3`），此前三者各自演进。一致性由 `chrome-extension/tools/check-providers.mjs` 断言：比对 `manifest.json`、插件 `package.json` 与桌面端 `IpcContract.AppVersion`，不一致直接失败。
 插件里的 `versionAtLeast(app, '2.1.0')` 是历史能力边界（2.1.0 引入按请求切换服务方），不随统一版本号变动。
 
 ```text
@@ -160,7 +160,7 @@ dsh-plugin/lib/ask-client.mjs send 请求带 provider（Host 把当前选择显�
 | 桌面端自测 | 163 项通过、0 失败（`TestProgram.cs` 中 168 处 `Check`，5 处按环境跳过） |
 | 扩展静态校验 | `node chrome-extension/tools/check-providers.mjs` PASS；比对 manifest、插件版本、真源与生成物，并检查加载文件齐全 |
 | 生成物漂移 | `node tools/gen-providers.mjs --check` PASS（6 家服务方 + 页面驱动，生成物无漂移） |
-| 打包 | `pack.ps1` 从三处版本源（`IpcContract.cs`、插件 `package.json`、扩展 `manifest.json`）读取版本号，产物名形如 `BubbleAsk-desktop-2.3.2.zip`、`BubbleAsk-dsh-plugin-2.3.2.zip`、`BubbleAsk-chrome-extension-2.3.2.zip` |
+| 打包 | `pack.ps1` 从三处版本源（`IpcContract.cs`、插件 `package.json`、扩展 `manifest.json`）读取版本号，产物名形如 `BubbleAsk-desktop-2.3.3.zip`、`BubbleAsk-dsh-plugin-2.3.3.zip`、`BubbleAsk-chrome-extension-2.3.3.zip` |
 | 真实站点 | DeepSeek 已实机验证（注入、点击、回读、回复均通过，见 `HANDOVER.md` §5.1）；其余 5 家未验证，选择器需按 §4.1 清单实机校准 |
 | DSH 插件 | `node --check` 通过（`index.js` / `client.js` / `lib/ask-client.mjs`）；真实站点未实测 |
 | 旧桌面端兼容 | 插件只支持桌面端 2.1.0+ 切服务方：旧桌面端 `/health` 无 `providerSwitchable` / `providers`，下拉只保留 DeepSeek（记忆的非 DeepSeek 选择会被纠正）；发非 DeepSeek 前还会查 `health.app` 版本，低于 2.1.0 返回 `stage:"old-app"` 并保留完整 prompt 供「复制全文」 |

@@ -184,7 +184,7 @@ error: profile "desktop" is managed exclusively by the Electron application
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ```
 
-安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.3.2","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示桌面端已连通且协议版本一致；`providerSwitchable` 为 `true` 时设置页与右键面板的服务方下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
+安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.3.3","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示桌面端已连通且协议版本一致；`providerSwitchable` 为 `true` 时设置页与右键面板的服务方下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
 
 **功能验证**：在会话中选中一段回答，选区下方直接出现鲸鱼提问卡片。点击「复制完整提问」后，完整提问应已复制到剪贴板，卡片里显示「已复制 N 字」。桌面端 2.1.0+ 时，设置页与右键面板的服务方下拉应列出 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok；选一家发送后桌面端日志应出现对应 provider 名称与导航目标。
 
@@ -424,7 +424,7 @@ chrome-extension/     Chrome / Edge 扩展（MV3）
 
 ## 测试
 
-`build.ps1 -Test` 返回 0 表示全部通过。当前 163 项断言通过、0 失败（`TestProgram.cs` 中 168 处 `Check`，5 处按环境跳过）。覆盖范围：
+`build.ps1 -Test` 返回 0 表示全部通过。当前 172 项断言通过、0 失败（`TestProgram.cs` 中 177 处 `Check`，5 处按环境跳过）。覆盖范围：
 
 - JSON 解析、模板拼装（含截图模板）、问题与选中文的组合、热键解析（含「无修饰键必须拒绝」）、配置往返（含 `BrowserPath` 与旧 `EdgePath` 迁移、`WebProvider` 推断）
 - 网页版服务方注册表：6 家 provider 完整性、默认/自定义解析、未知 id 回退 custom、真源加载顺序、通用规则来源、per-host 覆写合并、脚本生成含服务方选择器与文案
@@ -434,7 +434,7 @@ chrome-extension/     Chrome / Edge 扩展（MV3）
 - 流中 `error` 帧抛异常、`finish_reason=length` 的截断提示、空回答报错、非流式回退被截断报错
 - 针对本地桩服务执行真实流式请求（含 401 分支）
 - **端到端**：`ApiChat` → 气泡 → 桩服务 → 流式落字 → 追问第二轮；服务端不发送正文时气泡显示超时并恢复可用
-- 界面：设置窗口四页离屏渲染、提问卡片、气泡固定尺寸与保存的位置、气泡流式渲染、托盘图标
+- 界面：设置窗口四页离屏渲染、提问卡片（含 150% 缩放下尺寸与提示文字）、窗口夹回工作区、气泡固定尺寸与保存的位置、气泡流式渲染、托盘图标
 
 另有面向开发的截图自检模式，不访问剪贴板也不发送请求，仅执行「遮罩 → 拖框 → 出图」：
 

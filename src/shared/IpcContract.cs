@@ -17,7 +17,7 @@ namespace BubbleAsk
         public const int ProtocolVersion = 2;
 
         /// <summary>服务版本（桌面端功能版本；pack.ps1 从这里读分发包版本号）。</summary>
-        public const string AppVersion = "2.3.2";
+        public const string AppVersion = "2.3.3";
 
         /// <summary>服务模式的命令行开关：同一个 exe，带这个参数就不进界面。</summary>
         public const string ServiceSwitch = "--service";

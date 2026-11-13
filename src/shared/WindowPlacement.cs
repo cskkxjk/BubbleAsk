@@ -30,10 +30,20 @@ namespace BubbleAsk
         /// <summary>把窗口夹进工作区，别让它一半在屏幕外。</summary>
         public static Point Fit(Rectangle area, Size size, Point prefer)
         {
-            int maxX = Math.Max(area.Left + Margin, area.Right - size.Width - Margin);
-            int maxY = Math.Max(area.Top + Margin, area.Bottom - size.Height - Margin);
-            int x = Math.Min(Math.Max(prefer.X, area.Left + Margin), maxX);
-            int y = Math.Min(Math.Max(prefer.Y, area.Top + Margin), maxY);
+            return Fit(area, size, prefer, Margin);
+        }
+
+        /// <summary>同上，但由调用方指定与屏幕边缘的间隙（按 DPI 换算过的窗口用这个）。</summary>
+        public static Point Fit(Rectangle area, Size size, Point prefer, int margin)
+        {
+            if (margin < 0)
+            {
+                margin = 0;
+            }
+            int maxX = Math.Max(area.Left + margin, area.Right - size.Width - margin);
+            int maxY = Math.Max(area.Top + margin, area.Bottom - size.Height - margin);
+            int x = Math.Min(Math.Max(prefer.X, area.Left + margin), maxX);
+            int y = Math.Min(Math.Max(prefer.Y, area.Top + margin), maxY);
             return new Point(x, y);
         }
 

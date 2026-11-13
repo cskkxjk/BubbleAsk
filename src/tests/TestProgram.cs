@@ -108,6 +108,7 @@ namespace BubbleAsk
                 TestTimeoutRecovery();
                 TestApiChat();
                 TestOffscreenForm(outDir);
+                TestPlacement();
                 TestBubble(outDir);
                 TestIcon();
             }
@@ -1080,11 +1081,73 @@ namespace BubbleAsk
                     Check("question form renders", new FileInfo(path).Length > 2000, path);
                     form.Close();
                 }
+
+                // 150% 缩放：卡片按比例放大，提示文字仍放得下。
+                // 自测进程本身在 96 DPI，所以把控件字体同比例放大，模拟真实高 DPI 下的字形尺寸。
+                using (QuestionForm scaled = new QuestionForm("分布式系统里没有银弹，这句话是什么意思？", "什么是%s", 1.5F))
+                {
+                    scaled.StartPosition = FormStartPosition.Manual;
+                    scaled.Location = new Point(-3000, -3000);
+                    scaled.Show();
+
+                    List<Font> scaledFonts = new List<Font>();
+                    for (int i = 0; i < scaled.Controls.Count; i++)
+                    {
+                        Control child = scaled.Controls[i];
+                        Font bigger = new Font(child.Font.FontFamily, child.Font.Size * 1.5F, child.Font.Style);
+                        scaledFonts.Add(bigger);
+                        child.Font = bigger;
+                    }
+                    Application.DoEvents();
+
+                    Check("question form scales with dpi",
+                        scaled.ClientSize.Width == 678 && scaled.ClientSize.Height == 312,
+                        scaled.ClientSize.ToString());
+
+                    Label hint = FindLabel(scaled, "回车发送");
+                    Check("question form hint label", hint != null, "没有提示标签");
+                    if (hint != null)
+                    {
+                        Size text = TextRenderer.MeasureText(hint.Text, hint.Font);
+                        Check("question form hint fits at 150%", text.Width <= hint.Width,
+                            string.Format("文字 {0}px，标签 {1}px", text.Width, hint.Width));
+                    }
+
+                    string scaledPath = Path.Combine(outDir, "question-form-150.png");
+                    RenderForm(scaled, scaledPath);
+                    Check("question form renders at 150%", new FileInfo(scaledPath).Length > 2000, scaledPath);
+
+                    scaled.Close();
+                    for (int i = 0; i < scaledFonts.Count; i++)
+                    {
+                        scaledFonts[i].Dispose();
+                    }
+                }
             }
             catch (Exception error)
             {
                 Check("settings form renders", false, error.Message);
             }
+        }
+
+        /// <summary>按文字前缀找标签（不引 LINQ，只走控件树）。</summary>
+        private static Label FindLabel(Control root, string prefix)
+        {
+            for (int i = 0; i < root.Controls.Count; i++)
+            {
+                Control child = root.Controls[i];
+                Label label = child as Label;
+                if (label != null && label.Text != null && label.Text.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return label;
+                }
+                Label nested = FindLabel(child, prefix);
+                if (nested != null)
+                {
+                    return nested;
+                }
+            }
+            return null;
         }
 
         /// <summary>窗口里有没有文本框（不引 LINQ，只走控件树）。</summary>
@@ -1165,6 +1228,31 @@ namespace BubbleAsk
                     PaintRichText(child, form, target);
                 }
             }
+        }
+
+        /// <summary>窗口夹回工作区：间隙由调用方给，提问卡片按 DPI 换算过之后要用这个。</summary>
+        private static void TestPlacement()
+        {
+            Rectangle area = new Rectangle(0, 0, 1000, 800);
+            Size size = new Size(200, 100);
+
+            Point inside = WindowPlacement.Fit(area, size, new Point(300, 200), 12);
+            Check("placement keeps inside", inside.X == 300 && inside.Y == 200, inside.ToString());
+
+            Point beyond = WindowPlacement.Fit(area, size, new Point(5000, 5000), 12);
+            Check("placement clamps right-bottom",
+                beyond.X == 1000 - 200 - 12 && beyond.Y == 800 - 100 - 12,
+                beyond.ToString());
+
+            Point negative = WindowPlacement.Fit(area, size, new Point(-500, -500), 12);
+            Check("placement clamps left-top", negative.X == 12 && negative.Y == 12, negative.ToString());
+
+            // 窗口比工作区还大：保住左上间隙，不出现负偏移
+            Point oversized = WindowPlacement.Fit(area, new Size(1200, 900), new Point(0, 0), 12);
+            Check("placement oversized window", oversized.X == 12 && oversized.Y == 12, oversized.ToString());
+
+            Point zero = WindowPlacement.Fit(area, size, new Point(5000, 5000), 0);
+            Check("placement zero margin", zero.X == 800 && zero.Y == 700, zero.ToString());
         }
 
         private static void TestBubble(string outDir)
