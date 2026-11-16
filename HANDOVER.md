@@ -1,8 +1,8 @@
 # 接手说明（Handover）
 
 > 面向新维护者：项目定位、构建与自测、编码约定、架构地图、已核实的实现事实、仍影响维护的修复记录、遗留事项。
-> 基线：`main` 位于发布标签 `v2.3.3`，桌面端自测 172 项通过、0 失败。
-> 桌面端、DSH 插件与 Chrome 扩展均支持 6 家网页版服务方，三件产物统一版本号 2.3.3。
+> 基线：`main` 位于发布标签 `v2.3.4`，桌面端自测 174 项通过、0 失败。
+> 桌面端、DSH 插件与 Chrome 扩展均支持 6 家网页版服务方，三件产物统一版本号 2.3.4。
 
 ---
 
@@ -203,7 +203,7 @@ src/tests/
 - **登录检测**：`loginMarkers` 是 URL 片段（`login` / `signin` / `accounts.google.com` 等），`shared/driver.js` 的 `isLoginUrl` 与 `probe` 都按此判断，不做 DOM 登录态判断。
 - **实机校准**：`dist\BubbleAsk.Tests.exe --probe qwen` 会真实打开该站点并输出候选 composer / 发送按钮 JSON（`loginLikely`、`composerCandidates`、`sendCandidates`、`buttons`），照着输出改 `shared/providers.json`（再跑生成器）。
 
-### 4.3 DSH 插件（2.3.3）
+### 4.3 DSH 插件（2.3.4）
 
 插件在会话选区下方直接显示鲸鱼提问卡片，可切换 6 家服务方（默认 DeepSeek）。发送有两条路径：选 DeepSeek 且在 DSH 桌面端主框架里运行时，插件自己开内嵌网页版面板（`dshDesktop.browser` 的 lease + guest webview），并用 `shared/driver.js` 在 guest 里完成注入与点击；其余情况经本地命名管道交给桌面端。桌面端那条路径的导航、登录检测、注入与发送由桌面端完成。
 
@@ -216,7 +216,7 @@ src/tests/
 | `dsh-plugin/lib/driver.source.mjs` | 页面驱动源码，由 `shared/driver.js` 生成，经 Host 下发给内嵌面板 |
 | `dsh-plugin/cordis.patch.yml` | 插入 `bubble-ask` 条目 |
 
-- 插件 2.3.3 与桌面端 2.1.x 配合正常。桌面端低于 2.1.0 时插件下拉只提供 DeepSeek；若仍构造出非 DeepSeek 请求，`old-app` 拒绝并保留完整 prompt 供「复制全文」。
+- 插件 2.3.4 与桌面端 2.1.x 配合正常。桌面端低于 2.1.0 时插件下拉只提供 DeepSeek；若仍构造出非 DeepSeek 请求，`old-app` 拒绝并保留完整 prompt 供「复制全文」。
 - Client 半拿不到 `lib/providers.data.js`（`__ModuleLoader__` 的 `require` 只提供宿主包），因此源码里保留一份首帧兜底名单；它是唯一一处真源之外的服务方名单，靠生成器与 `--check` 维持一致，不要手改。
 - `versionAtLeast(app, '2.1.0')` 是能力边界（2.1.0 引入按请求切换服务方），不随统一版本号变动。
 - 验证：`node --check` 检查 `index.js` / `client.js` / `lib/ask-client.mjs`；`node chrome-extension/tools/check-providers.mjs` 断言三端版本号一致与生成物无漂移。真实站点仍未实测。
@@ -230,7 +230,7 @@ src/tests/
 - 原生界面保留两处用途：HTML 界面起不来时的回退界面，以及自测的渲染断言来源（`AnswerBubble.ForceNativeUi`）。
 - 宿主接口：C# 调页面 `ds.setTitle / ds.beginTurn / ds.appendReasoning / ds.appendAnswer / ds.endTurn / ds.failTurn / ds.note / ds.focusInput`；页面回宿主 `followup:… / copy:… / close:… / drag:…` 四类字符串消息。
 - 尺寸与位置：`WindowWidth` / `WindowHeight` 是两种模式的唯一尺寸来源；`AppConfig.WindowX` / `WindowY` 是共用位置。摆放规则集中在 `src/shared/WindowPlacement.cs`（`Default` 右侧居中、`Fit` 夹回工作区、`Resolve` 读保存值）。`EdgeHost.ComputePosition` 与 `AnswerBubble.ShowForAsk` 都调它。
-- 位置写回：只有 `AnswerBubble.RememberPosition`（关窗时）写 `WindowX` / `WindowY`。网页版小窗在启动参数 `--window-position` 里使用同一坐标，在浏览器窗口里的拖动不会写回配置。
+- 位置写回：`AnswerBubble.RememberPosition`（气泡关窗时）与 `EdgeHost.FlushPosition`（网页版小窗关闭、停止浏览器、服务退出时）都写 `WindowX` / `WindowY`，经 `AppConfig.SaveWindowPosition` 读盘再改这两个字段，不做整份覆盖。网页版小窗是浏览器自己的窗口，拖动不经过本程序，因此 `EdgeHost` 每秒读一次 `GetWindowRect`，窗口消失时把最后一次矩形写回；最小化、最大化与负坐标不记账。`--window-position` 仍按保存的坐标传入。
 
 ---
 

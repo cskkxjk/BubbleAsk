@@ -369,6 +369,19 @@ namespace BubbleAsk
             Check("config web provider unknown -> custom", AppConfig.LoadFrom(unknownProvider).WebProvider == "custom",
                 AppConfig.LoadFrom(unknownProvider).WebProvider);
 
+            // 只写回窗口位置：磁盘上其它字段要保留，不能整份覆盖
+            AppConfig before = new AppConfig();
+            before.PromptTemplate = "换过了%s";
+            before.ApiModel = "keep-me";
+            before.SaveTo(path);
+            AppConfig.SaveWindowPosition(path, 1280, 96);
+            AppConfig merged = AppConfig.LoadFrom(path);
+            Check("config save position", merged.WindowX == 1280 && merged.WindowY == 96,
+                merged.WindowX + "/" + merged.WindowY);
+            Check("config save position keeps fields",
+                merged.PromptTemplate == "换过了%s" && merged.ApiModel == "keep-me",
+                merged.PromptTemplate + "/" + merged.ApiModel);
+
             try
             {
                 Directory.Delete(dir, true);

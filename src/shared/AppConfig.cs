@@ -161,6 +161,26 @@ namespace BubbleAsk
             return config;
         }
 
+        /// <summary>
+        /// 只写回窗口位置：先读磁盘上的最新配置再改这两个字段，不把别的进程刚保存的设置冲掉。
+        /// </summary>
+        public static void SaveWindowPosition(int x, int y)
+        {
+            SaveWindowPosition(ConfigPath, x, y);
+        }
+
+        public static void SaveWindowPosition(string path, int x, int y)
+        {
+            AppConfig fresh = LoadFrom(path);
+            if (fresh.WindowX == x && fresh.WindowY == y)
+            {
+                return;
+            }
+            fresh.WindowX = x;
+            fresh.WindowY = y;
+            fresh.SaveTo(path);
+        }
+
         public void Save()
         {
             SaveTo(ConfigPath);

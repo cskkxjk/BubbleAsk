@@ -29,6 +29,14 @@ namespace BubbleAsk
         private IntPtr _hwnd = IntPtr.Zero;
         private BrowserInfo _browser;
 
+        /// <summary>每秒看一眼窗口矩形；用户拖动后关窗，下次从这里出来。</summary>
+        private const int TrackIntervalMs = 1000;
+
+        private readonly object _trackLock = new object();
+        private System.Threading.Timer _tracker;
+        private RECT _lastRect;
+        private bool _hasRect;
+
         public EdgeHost(AppConfig config)
         {
             _config = config;
@@ -73,6 +81,7 @@ namespace BubbleAsk
         {
             if (FindWindowHandle() != IntPtr.Zero)
             {
+                StartTracking();
                 return;
             }
             BrowserInfo browser = ResolveBrowser();
@@ -118,6 +127,7 @@ namespace BubbleAsk
                 if (FindWindowHandle() != IntPtr.Zero)
                 {
                     Log.Info("浏览器窗口已就绪");
+                    StartTracking();
                     return;
                 }
             }
@@ -170,8 +180,11 @@ namespace BubbleAsk
             {
                 return false;
             }
+            CaptureRect(handle);
             PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
             _hwnd = IntPtr.Zero;
+            FlushPosition();
+            StopTracking();
             return true;
         }
 
@@ -189,6 +202,14 @@ namespace BubbleAsk
         /// <summary>结束这个 profile 对应的浏览器进程。</summary>
         public void Stop()
         {
+            IntPtr handle = FindWindowHandle();
+            if (handle != IntPtr.Zero)
+            {
+                CaptureRect(handle);
+            }
+            FlushPosition();
+            StopTracking();
+
             List<int> pids = FindProfilePids();
             foreach (int pid in pids)
             {
@@ -206,6 +227,111 @@ namespace BubbleAsk
                 }
             }
             _hwnd = IntPtr.Zero;
+        }
+
+        /// <summary>
+        /// 开始跟踪窗口位置。
+        ///
+        /// 网页版小窗是浏览器自己的窗口，拖动它不经过本程序，所以只能轮询矩形；
+        /// 窗口消失（用户关掉）时把最后一次的位置写回配置，下次仍从那里打开。
+        /// </summary>
+        private void StartTracking()
+        {
+            lock (_trackLock)
+            {
+                if (_tracker != null)
+                {
+                    return;
+                }
+                _hasRect = false;
+                _tracker = new System.Threading.Timer(delegate { Track(); }, null, TrackIntervalMs, TrackIntervalMs);
+            }
+        }
+
+        private void StopTracking()
+        {
+            System.Threading.Timer timer;
+            lock (_trackLock)
+            {
+                timer = _tracker;
+                _tracker = null;
+            }
+            if (timer != null)
+            {
+                timer.Dispose();
+            }
+        }
+
+        private void Track()
+        {
+            try
+            {
+                IntPtr handle = _hwnd;
+                if (handle != IntPtr.Zero && IsWindow(handle))
+                {
+                    CaptureRect(handle);
+                    return;
+                }
+                // 窗口已经关掉：记下最后一次的位置，然后停止轮询
+                FlushPosition();
+                StopTracking();
+            }
+            catch (Exception error)
+            {
+                Log.Warn("跟踪网页版窗口位置失败: " + error.Message);
+            }
+        }
+
+        /// <summary>记下窗口当前的位置。最小化、最大化与负坐标（拖出屏幕）都不算。</summary>
+        private void CaptureRect(IntPtr handle)
+        {
+            if (IsIconic(handle) || IsZoomed(handle))
+            {
+                return;
+            }
+            RECT rect;
+            if (!GetWindowRect(handle, out rect))
+            {
+                return;
+            }
+            if (rect.Right - rect.Left <= 0 || rect.Bottom - rect.Top <= 0)
+            {
+                return;
+            }
+            lock (_trackLock)
+            {
+                _lastRect = rect;
+                _hasRect = true;
+            }
+        }
+
+        /// <summary>把记住的位置写回配置。关窗、停止浏览器、服务退出时调用。</summary>
+        public void FlushPosition()
+        {
+            int x;
+            int y;
+            lock (_trackLock)
+            {
+                if (!_hasRect)
+                {
+                    return;
+                }
+                x = _lastRect.Left;
+                y = _lastRect.Top;
+                _hasRect = false;
+            }
+            if (x < -20000 || y < -20000)
+            {
+                return;
+            }
+            if (_config.WindowX == x && _config.WindowY == y)
+            {
+                return;
+            }
+            _config.WindowX = x;
+            _config.WindowY = y;
+            AppConfig.SaveWindowPosition(x, y);
+            Log.Info("已记住网页版窗口位置 " + x + "," + y);
         }
 
         private Point ComputePosition()
@@ -343,5 +469,23 @@ namespace BubbleAsk
 
         [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsZoomed(IntPtr hWnd);
     }
 }

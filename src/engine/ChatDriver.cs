@@ -776,6 +776,7 @@ namespace BubbleAsk
 
         public void Dispose()
         {
+            _edge.FlushPosition();
             Reset();
         }
     }

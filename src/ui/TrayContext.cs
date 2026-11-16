@@ -411,6 +411,11 @@ namespace BubbleAsk
                 DialogResult result = form.ShowDialog();
                 if (result == DialogResult.OK)
                 {
+                    // 网页版小窗拖动后会把位置写进配置文件，设置页的内存副本可能还是旧的；
+                    // 保存前把这两个字段对齐到磁盘，免得把新位置改回去。
+                    AppConfig disk = AppConfig.Load();
+                    _config.WindowX = disk.WindowX;
+                    _config.WindowY = disk.WindowY;
                     _config.Save();
                     RebindHotkeys();
                     _engine.ApplyTopMost();

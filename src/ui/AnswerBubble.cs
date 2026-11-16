@@ -360,7 +360,8 @@ namespace BubbleAsk
             _config.WindowY = Top;
             try
             {
-                _config.Save();
+                // 只写回位置：网页版小窗关闭时也写这两个字段，整份保存会互相冲掉
+                AppConfig.SaveWindowPosition(Left, Top);
             }
             catch
             {

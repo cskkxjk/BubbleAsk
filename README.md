@@ -184,7 +184,7 @@ error: profile "desktop" is managed exclusively by the Electron application
 curl.exe -s http://127.0.0.1:<DSH 端口>/bubble-ask/health
 ```
 
-安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.3.3","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示桌面端已连通且协议版本一致；`providerSwitchable` 为 `true` 时设置页与右键面板的服务方下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
+安装成功时返回 `{"ok":true,"cdpReady":true,"app":{"connected":true,"app":"2.3.4","providers":["deepseek","qwen",...],"providerSwitchable":true,...},...}`；未安装时该路径返回 404（本机实测）。`cdpReady` 表示桌面端已连通且协议版本一致；`providerSwitchable` 为 `true` 时设置页与右键面板的服务方下拉可切换 6 家，桌面端低于 2.1.0 时只提供 DeepSeek。
 
 **功能验证**：在会话中选中一段回答，选区下方直接出现鲸鱼提问卡片。点击「复制完整提问」后，完整提问应已复制到剪贴板，卡片里显示「已复制 N 字」。桌面端 2.1.0+ 时，设置页与右键面板的服务方下拉应列出 DeepSeek / 千问 / 豆包 / ChatGPT / Gemini / Grok；选一家发送后桌面端日志应出现对应 provider 名称与导航目标。
 
@@ -289,7 +289,7 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 | `HotkeySummon` / `HotkeyAsk` / `HotkeyShot` | Ctrl+Alt+D / Q / A | 格式如 `Ctrl+Shift+F2` |
 | `ChatUrl` | chat.deepseek.com | 自定义服务方（`WebProvider=custom`）时打开的地址；预设服务方忽略此项 |
 | `WindowWidth` / `WindowHeight` | 480 / 720 | 网页版小窗与 API 气泡共用的尺寸（像素） |
-| `WindowX` / `WindowY` | `-1` / `-1` | 两个窗口共用的位置（`-1` = 未设置，默认右侧居中）。API 气泡关闭时写入，网页版小窗启动时读取 |
+| `WindowX` / `WindowY` | `-1` / `-1` | 两个窗口共用的位置（`-1` = 未设置，默认右侧居中）。API 气泡关闭、网页版小窗关闭时写入，网页版小窗启动时读取 |
 | `TopMost` | `true` | 网页版窗口置顶 |
 | `BrowserPath` | 空 | 浏览器可执行文件路径；留空则自动检测（Edge → Chrome → Brave → Vivaldi → Opera → Chromium） |
 | `ProfileDir` | 空 | 登录数据目录；留空则按浏览器分别存储（Edge 使用 `edge-profile`，其余使用 `profile-<浏览器 id>`） |
@@ -346,7 +346,7 @@ powershell -ExecutionPolicy Bypass -File .\pack.ps1 -SkipBuild   # 复用已有 
 - **API 返回 404**：地址或模型名错误；预设之外自行填写的地址需确认兼容 OpenAI 协议。
 - **无法连接**：气泡显示 `无法连接 http://...`，先确认该地址可从本机直连（企业网络可能拦截）。
 - **端口冲突**：在设置中修改 `CdpPort`，并使用菜单「重启浏览器会话」。
-- **窗口大小或位置不对**：设置里的「窗口尺寸」同时决定网页版小窗与 API 气泡的尺寸。两个窗口共用保存的位置，拖动 API 气泡并关闭后，下次打开回到该位置。
+- **窗口大小或位置不对**：设置里的「窗口尺寸」同时决定网页版小窗与 API 气泡的尺寸。两个窗口共用保存的位置：拖动网页版小窗或 API 气泡后关闭，下次打开回到该位置；换显示器后原坐标不在任何屏幕上时回到默认位置。
 - **气泡显示「读取响应超时」**：服务端已接收请求但未发送正文。该超时由本项目实现（.NET Framework 的 `HttpClient.Timeout` 在响应头到达后失效），超时后气泡恢复可用，不会滞留在「回答中」状态。
 - **未检测到浏览器或需更换浏览器**：设置 →「窗口与网页」→ 浏览器下拉框。自动检测顺序为 Edge → Chrome → Brave → Vivaldi → Opera → Chromium；登录数据按浏览器分别存储，更换后需各自登录一次。
 - **插件划词卡片在输入较长问题时消失**：旧版插件客户端的缺陷。卡片收起逻辑接收了 window 捕获阶段的全部 `scroll` 事件，而单行输入框中文字超出可视宽度时会自行横向滚动，被误判成「用户滚动了页面」；引用区（`max-height:96px; overflow:auto`）滚动同样会触发。现已忽略来自卡片内部的滚动。若仍复现，说明 GUI 仍在用缓存的旧客户端，刷新页面或重启 DSH 即可。
@@ -424,7 +424,7 @@ chrome-extension/     Chrome / Edge 扩展（MV3）
 
 ## 测试
 
-`build.ps1 -Test` 返回 0 表示全部通过。当前 172 项断言通过、0 失败（`TestProgram.cs` 中 177 处 `Check`，5 处按环境跳过）。覆盖范围：
+`build.ps1 -Test` 返回 0 表示全部通过。当前 174 项断言通过、0 失败（`TestProgram.cs` 中 179 处 `Check`，5 处按环境跳过）。覆盖范围：
 
 - JSON 解析、模板拼装（含截图模板）、问题与选中文的组合、热键解析（含「无修饰键必须拒绝」）、配置往返（含 `BrowserPath` 与旧 `EdgePath` 迁移、`WebProvider` 推断）
 - 网页版服务方注册表：6 家 provider 完整性、默认/自定义解析、未知 id 回退 custom、真源加载顺序、通用规则来源、per-host 覆写合并、脚本生成含服务方选择器与文案
